@@ -109,9 +109,13 @@ class MaterialsSaddlesDataset(Dataset):
     validate : bool
         On first index build (cache miss), verify each triplet's R/S/P
         ordering against the README spec (`side` / `image_type` /
-        presence of `eigenmode` on the saddle row). Default True. Cached
-        index files are trusted on reload (re-run with `rebuild_index=True`
-        to force re-verification).
+        presence of `eigenmode` on the saddle row). Default False — the
+        fast path relies on the documented "row ids are sequential 1..N
+        per shard, R/S/P groups of 3" invariant of MaterialsSaddles
+        shards and reads only `db.count()` per shard (orders of magnitude
+        faster than per-row data decode on lemat-sized shards). Pass
+        `validate=True` the first time you ingest a new dataset variant
+        to verify the invariant holds.
     rebuild_index : bool
         If True, ignore any cached index and rebuild from scratch.
     """
@@ -124,7 +128,7 @@ class MaterialsSaddlesDataset(Dataset):
         default_spin: int = 0,
         stats_cache: str | None = None,
         index_cache_dir: str | None = None,
-        validate: bool = True,
+        validate: bool = False,
         rebuild_index: bool = False,
     ):
         self.shards = self._resolve_shards(shards)
@@ -228,27 +232,48 @@ class MaterialsSaddlesDataset(Dataset):
     def _build_index(
         self, shard_path: str, *, validate: bool,
     ) -> list[tuple[int, int, int]]:
-        """Walk the shard's rows in DB iteration order, group into triplets,
-        and (optionally) verify each triplet matches the README spec.
+        """Group the shard's rows into triplets, and (optionally) verify each
+        triplet matches the README spec.
 
         Returns a list of `(R_id, S_id, P_id)` per triplet in iteration order.
+
+        Fast path (default, ``validate=False``): exploits the MaterialsSaddles
+        guarantee that row ids are sequential 1..N within each shard and each
+        consecutive triple is one triplet (R, S, P). Reads only ``db.count()``
+        — no per-row decode of the data blob. ~3 orders of magnitude faster
+        than the slow path on multi-GB lemat shards (lemat shard count is
+        ~686k rows; the slow path decoded every row's info JSON).
+
+        Slow path (``validate=True``): walks every row, reads ``row.data
+        ['info']``, verifies role / side / image_type / eigenmode presence
+        per the README spec. Use when first ingesting a new dataset or after
+        any concern that the upstream format has drifted.
         """
         db = connect(shard_path, type="aselmdb", readonly=True, use_lock_file=False)
         triplets: list[tuple[int, int, int]] = []
-        buf: list[tuple[int, dict]] = []  # (row_id, info_dict)
         try:
-            for row in db.select():
-                buf.append((row.id, dict(row.data.get("info", {}))))
-                if len(buf) == 3:
-                    if validate:
+            if not validate:
+                row_count = db.count()
+                if row_count % 3 != 0:
+                    raise RuntimeError(
+                        f"{shard_path}: row count {row_count} is not a multiple "
+                        "of 3 (file should be a clean R/S/P stream)."
+                    )
+                n = row_count // 3
+                triplets = [(3*i + 1, 3*i + 2, 3*i + 3) for i in range(n)]
+            else:
+                buf: list[tuple[int, dict]] = []  # (row_id, info_dict)
+                for row in db.select():
+                    buf.append((row.id, dict(row.data.get("info", {}))))
+                    if len(buf) == 3:
                         self._verify_triplet(buf, shard_path, len(triplets))
-                    triplets.append((buf[0][0], buf[1][0], buf[2][0]))
-                    buf = []
-            if buf:
-                raise RuntimeError(
-                    f"{shard_path}: trailing partial triplet of length {len(buf)} "
-                    "(file should be a clean multiple of 3)"
-                )
+                        triplets.append((buf[0][0], buf[1][0], buf[2][0]))
+                        buf = []
+                if buf:
+                    raise RuntimeError(
+                        f"{shard_path}: trailing partial triplet of length {len(buf)} "
+                        "(file should be a clean multiple of 3)"
+                    )
         finally:
             db.close()
         return triplets

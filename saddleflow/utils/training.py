@@ -53,6 +53,17 @@ class TrainingConfig:
 
     log_every: int = 10
     save_every_epochs: int = 10
+    # If > 0, also checkpoint every N optimizer steps to
+    # ``<output-dir>/checkpoint_step_NNNNNNNN``. Essential for multi-day runs
+    # where a single epoch exceeds the SLURM time-limit — without intra-epoch
+    # saves a kill loses all work.
+    save_every_steps: int = 0
+    # If > 0, run validation every N optimizer steps (in addition to the
+    # per-epoch val controlled by ``val_every_epochs``). Useful for big-data
+    # runs where one epoch is many thousand steps — gives a finer-grained val
+    # curve. Each call is a full sweep over the val loader, so set this large
+    # enough that the val cost is a small fraction of training time.
+    val_every_steps: int = 0
 
     resume_from: str | None = None
 
@@ -130,11 +141,21 @@ def train(
     """
     # `accelerate` is imported lazily so EMA / TrainingConfig / identity_collate
     # can be used in environments where the dependency is not installed.
-    from accelerate import Accelerator
+    from datetime import timedelta
+    from accelerate import Accelerator, InitProcessGroupKwargs
     from accelerate.utils import set_seed
 
     set_seed(config.seed)
-    accelerator = Accelerator(mixed_precision=config.mixed_precision)
+    # NCCL's default 10-min collective timeout is too tight on multi-node setups
+    # where the *first* allreduce (inside accelerator.prepare's DDP weight
+    # broadcast) lands after slow concurrent backbone load + dataset setup.
+    # 30 min covers cold-cache UMA load across 64-512 GPUs on Perlmutter without
+    # affecting steady-state training (per-step collectives finish in ms).
+    ddp_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=30))
+    accelerator = Accelerator(
+        mixed_precision=config.mixed_precision,
+        kwargs_handlers=[ddp_kwargs],
+    )
     out_dir = Path(config.output_dir)
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +253,18 @@ def train(
     history: list[dict] = []
     t0 = time.time()
 
+    # Stop when global_step reaches the planned total. Without this, a resume
+    # from a mid-epoch checkpoint (e.g., step 8000 of a 30k-step run) would
+    # iterate num_epochs full epochs from start_epoch and OVERSHOOT — adding
+    # thousands of extra steps at the LR floor that just burn wall-clock for
+    # near-zero training gain. With this cap, resume(8000)→30000 produces the
+    # same model+step count as a continuous run.
+    total_optim_steps = max(1, config.num_epochs * len(dataloader))
+    stop_now = False
+
     for epoch in range(start_epoch, config.num_epochs):
+        if stop_now:
+            break
         loss_module.train()
         epoch_loss = 0.0
         epoch_n = 0
@@ -259,6 +291,40 @@ def train(
                 print(f"[train] ep {epoch:4d} step {global_step:7d} mode {mode} "
                       f"loss {loss_val:.4f}  lr {lr:.2e}  n_mobile {out['n_mobile']}")
             global_step += 1
+            # Optional intra-epoch checkpoint. Only writes on main_process; the
+            # `accelerator.save_state` call inside _save_checkpoint is itself
+            # rank-aware (sharded under FSDP). Triggered AFTER the step bump so
+            # `meta.json` records the post-step value.
+            if (config.save_every_steps > 0
+                    and global_step % config.save_every_steps == 0
+                    and accelerator.is_main_process):
+                _save_checkpoint(
+                    accelerator, ema, out_dir,
+                    f"checkpoint_step_{global_step:08d}",
+                    epoch, global_step,
+                )
+            # Optional intra-epoch validation. Full val sweep — _evaluate
+            # handles eval/train mode toggling and EMA swap. All ranks call it
+            # (it does collective gather() internally). Logged to history with
+            # global_step + epoch so the curve can be plotted directly.
+            if (config.val_every_steps > 0
+                    and global_step % config.val_every_steps == 0
+                    and val_loader is not None):
+                val_losses = _evaluate(loss_module, val_loader, ema, accelerator)
+                if accelerator.is_main_process:
+                    print(f"[val]   step {global_step:7d} live {val_losses['live']:.4f}  "
+                          f"ema {val_losses['ema']:.4f}")
+                    history.append({
+                        "epoch": epoch, "global_step": global_step,
+                        "mean_val_loss_live": val_losses["live"],
+                        "mean_val_loss_ema": val_losses["ema"],
+                        "mean_val_loss": val_losses["ema"],
+                        "elapsed_sec": time.time() - t0,
+                        "kind": "val_step",
+                    })
+            if global_step >= total_optim_steps:
+                stop_now = True
+                break
 
         mean_epoch_loss = epoch_loss / max(1, epoch_n)
         rec = {"epoch": epoch, "global_step": global_step,

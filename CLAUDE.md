@@ -10,6 +10,47 @@ The ML method is **flow matching**. The velocity field is a three-stage module: 
 
 Production model: **`v7_6_2a`** (checkpoint at `$SCRATCH/SaddleFlow_mp20bat/v7_6_2a/`, invocation in `examples/MP20Bat/run.sh`). `v7_6_2a` is **not** the LiC-sweep v6 below; the v7-line extended v6 with force-FiLM, a frozen force backbone, an eigenmode aux head, a Dimer-style output residual, multi-layer feature stacks and endpoint feature injection. `v7_6_2a` simplified the v7-line back down — **keeps** what helped (full backbone unfreeze, 4-block time-FiLM, convergent v_target schedule `t_floor=0.1`, CoM-symmetric MSE, x_t perturbation σ=0.05) and **drops** the rest (force injection, frozen force backbone, eigenmode head, Dimer residual, endpoint features, multi-layer stacks, GlobalAttn).
 
+### Reproducing the test-set parity figures (the paper figures) — working recipe
+
+`examples/MaterialsSaddles/eval_mp20bat_testset.sh` produces, for one checkpoint, the parity plots (`parity_all_atoms_log`, `parity_maxdisp_log`) + the four histograms + `results.npz`/`summary.json`:
+
+```
+conda activate saddleflow                 # env with saddleflow + fairchem
+cd examples/MaterialsSaddles
+bash eval_mp20bat_testset.sh <CKPT_DIR> <OUT_DIR> [live|ema] [subset=mp20bat] [K=10] [NUM_CASES=0]
+```
+
+It is **single-node `accelerate launch`** over the GPUs on the current node (`--num_processes = #GPUs on node`), then `replot_parity.py`. The 1737-case mp20bat test split is ~5 min on 4 A100s. Internally: `eval_full_testset_K10.py` (sample+score, writes histograms) → `replot_parity.py` (parity scatters). There is **no** dedicated eval-submit `.sh` besides this one — `run.sh` is training-only, and the paper figures were originally made by invoking the two Python scripts directly (README "Post-training analyses").
+
+**Other subsets (lemat / oc20 / oc22) — use a random subset, not first-N.** Their full test splits are 25k–4.7M cases. Pass `NUM_CASES` (6th arg) > 0 and the wrapper draws that many triplets **uniformly at random** (seeded) via `eval_full_testset_K10.py --random-sample`. This flag matters: the parquet splits are sorted by `ms_id`, so `--num-cases N` *without* `--random-sample` takes a biased contiguous low-id slice. 2000 random ≈ a few min/subset on 4 A100s and is representative. The cross-subset sweep used for the 2026-05-30 analysis:
+
+```
+CKPT=$SCRATCH/SaddleFlow_MaterialsSaddles/runs/MaterialsSaddles_20260529_125142/checkpoint_final
+for s in lemat oc20 oc22; do
+  bash eval_mp20bat_testset.sh "$CKPT" \
+    $SCRATCH/SaddleFlow_MaterialsSaddles/eval_subsets_K10_NEWMODEL/$s live "$s" 10 2000
+done
+```
+
+**Gotchas (these cost real time on 2026-05-30):**
+- **Don't multi-node `srun` this.** A 1737-case eval needs one node. Inside an `salloc` that defaulted to 1 task/node (`SLURM_NTASKS=4` for `-N 4`), `srun --ntasks=16 --ntasks-per-node=4` fails with *"More processors requested than permitted"* / *"Insufficient GRES available in allocation"* — the alloc can't subdivide 4 GPUs/node across 4 tasks. `accelerate launch` on one node sidesteps it. (Only if you genuinely need a multi-node step: request `salloc … --ntasks-per-node=4 --gpus-per-node=4`.)
+- **Live vs EMA.** `checkpoint_final/` has both `model.safetensors` (live) and `ema.pt` (EMA shadow). The eval defaults to **live**; pass `ema` (→ `--use-ema`) for the shadow.
+- **Env:** `FAIRCHEM_CACHE_DIR=$SCRATCH/fairchem_cache` (cached UMA-S-1.2) so ranks don't re-download.
+- **Sanity check:** `rmsd_base_all_mean` in `summary.json` is the model-independent `(R+P)/2` baseline — two runs on the same subset/seed that don't report the **identical** baseline are not comparing the same test set.
+
+**Full-dataset model on the mp20bat test set (2026-05-30; K=10, seed=0, N=1737, baseline `(R+P)/2` mean 0.327 Å).** Model `runs/MaterialsSaddles_20260529_125142/checkpoint_final` (trained on the full MaterialsSaddles dataset): RMSD mean **0.276 Å** / median **0.144 Å**, 79.5 % beat the midpoint baseline, 59.9 % under 0.20 Å (live; EMA ≈ identical: mean 0.277, 80.7 % beat baseline). Figures in `$SCRATCH/SaddleFlow_MaterialsSaddles/eval_mp20bat_test_K10_NEWMODEL/{live,ema}/`. To compare against the mp20bat-only paper model apples-to-apples, run the **same** wrapper on that checkpoint (no saved paper-side `summary.json` was found on scratch — the `v7_6_2a` path in this file is stale; the production checkpoint was not on this filesystem as of 2026-05-30).
+
+**Cross-subset sweep, same model (2026-05-30; K=10, seed=0, live; lemat/oc20/oc22 = 2000 random cases, mp20bat = full 1737).** Figures under `$SCRATCH/SaddleFlow_MaterialsSaddles/eval_subsets_K10_NEWMODEL/{lemat,oc20,oc22}/` (+ mp20bat dir above).
+
+| subset | train share | RMSD med | baseline med | beat baseline | RMSD mean | maxd med |
+|---|---|---|---|---|---|---|
+| lemat | 91.8 % | 0.168 | 0.221 | 71.0 % | 0.234 | 0.512 |
+| oc20 | 7.6 % | 0.093 | 0.121 | 71.0 % | 0.128 | 0.516 |
+| oc22 | 0.49 % | 0.102 | 0.108 | **51.1 %** | 0.153 | 0.664 |
+| mp20bat | 0.10 % | 0.144 | 0.224 | 79.5 % | 0.276 | 0.497 |
+
+**Reading the table (compare *parity gap* model-vs-its-own-baseline, not absolute RMSD).** The model adds the least value exactly where it saw the least data: oc22 (0.49 % of training) barely beats the `(R+P)/2` midpoint (51 % — a coin flip), while lemat/oc20/mp20bat improve on the midpoint by 23–36 %. lemat's *absolute* RMSD (0.168) is higher than oc20/oc22 (~0.09–0.10) **not** because it's worse-learned but because lemat reactions are physically larger — ⟨‖Δ‖⟩ = 2.41 Å (lemat) vs 1.95/1.86 (oc20/oc22) per `dataset_stats.json`; its baseline is correspondingly higher (0.221). mp20bat punches above its 0.10 % share (79.5 % beat-baseline) via chemistry transfer from lemat's MP/Alexandria oxides. Caveat about "more data helped mp20bat": it helped **average** atom error (RMSD) but the full-data generalist *regressed* on **maxd** (worst single atom) vs the mp20bat-only specialist — specialist→generalist trade. A short low-LR fine-tune on mp20bat is the expected fix.
+
 **Paper guidance.** Describe only "Used in production" below — clean, exactly what was trained. Skip the off-by-default switches; the "Mode 1 architecture sweep" table and "What was tried" sections are internal research history that motivated the design. For the experiments section, read `examples/MP20Bat/` — `README.md` documents the on-disk layout, `run.sh` has the exact hyperparameters, the `*.py` scripts are the eval pipeline, and numbers / figures live under `<RUN>/checkpoint_final/`.
 
 ### Used in production
@@ -79,7 +120,15 @@ Implementation in `saddleflow/models/velocity_head.py`. Mirrors fairchem's `Line
 
 ## Flow formulation
 
-The released training scheme is product-conditional flow matching: every triplet provides a `(start, partner, saddle)` triple where the start is one endpoint (R or P, doubled per epoch by the dataset's R↔P doubling) and the partner is the other. Each training sample sets `x_0 = (start + partner)/2` (the PBC-correct geodesic midpoint, since `partner_un_pos` is MIC-unwrapped to `start`), `x_1 = saddle_un`, and feeds the velocity head a per-atom Δ_partner = MIC(partner − x_t) at every flow step. The `mode` field on `FlowMatchingConfig` is reserved for future training schemes; only `mode=1` is implemented.
+The released training scheme is product-conditional flow matching: every triplet provides a `(start, partner, saddle)` triple where the start is one endpoint (R or P, doubled per epoch by the dataset's R↔P doubling) and the partner is the other. Each training sample sets `x_0 = (start + partner)/2` (the PBC-correct geodesic midpoint, since `partner_un_pos` is MIC-unwrapped to `start`), `x_1 = saddle_un`, and feeds the velocity head a per-atom Δ_partner = MIC(partner − x_t) at every flow step. This is `mode=1`, the only mode implemented.
+
+### Search modes (`mode` on `FlowMatchingConfig`)
+
+The `mode` field selects which kind of transition-state search SaddleFlow performs. **Only `mode=1` is currently implemented**; `mode=2` is planned (see below) and the config hard-raises on any other value.
+
+- **`mode=1` — double-ended search (NEB-style).** Both endpoints of the reaction are known: you supply a reactant–product pair `(R, P)` and SaddleFlow proposes the saddle *between* them. This is the analogue of NEB / string methods, which interpolate a path between two given minima and climb to the saddle on it. Use case: high-throughput screening of reactions you can already enumerate as `(R, P)` pairs — the saddle's identity is bounded by the two endpoints you provide. This is the released method and what the MP20Bat paper covers.
+
+- **`mode=2` — one-ended / open-ended search (Dimer-style).** Only a single minimum is known (one endpoint, the reactant); **the product is unknown**. SaddleFlow discovers transition states *accessible from* that single starting structure without being told where the reaction leads. This is the analogue of the Dimer method and other single-ended saddle searches, which start from one minimum and walk uphill to find a first-order saddle with no second endpoint specified. Use case: reaction *discovery* — enumerating the unknown reaction channels (and hence the unknown products) reachable from a given structure, e.g. mapping diffusion/hopping pathways, catalytic steps, or decomposition routes when the product set has not been pre-enumerated. **Coming, not yet implemented** — *what* it does and *where* it applies are fixed (the above); *how* it will be trained and sampled is deliberately left open here.
 
 ### Space and endpoints
 - **Flow state:** actual Cartesian atomic coordinates `r(t) ∈ ℝ^(N×3)` in Å. UMA is always fed physical atomic positions, never displacement vectors.
@@ -271,6 +320,7 @@ MIT — see [`LICENSE`](LICENSE).
 - **UMA `(N, (lmax+1)², C)` vs e3nn `(N, Irreps.dim)` layouts not interchangeable.** All SaddleFlow modules use UMA's `SO3_Linear`; add conversion helpers if you mix in e3nn ops.
 - **Negative z in the Li/C cell (`-15 Å`)** is intentional (vacuum, left-handed cell). MIC math and fairchem neighbour-list handle it; don't "fix" the sign.
 - **Isotropic Gaussian on `x_0` drifts the field radial-outward.** Any Gaussian tail crossing into a neighbouring symmetry wedge creates equivariance-linked targets no SO(3)-equivariant model can simultaneously satisfy → SGD collapses to the symmetry-averaged radial compromise. Fixed by midpoint anchoring + Δ_partner conditioning.
+- **Force injection on mixed-task batches uses only `batch[0]`'s task_name.** `saddleflow/flow/matching.py:687,722` pass `task_name=batch[0]["task_name"]` to the force-head forward, so all samples in the batch get forces computed under sample 0's MoE routing. Correct for homogeneous-task batches (LiC, MP20Bat) and for the current MaterialsSaddles production config which sets `--no-inject-force` (force path never executes). **WRONG** if you enable `--inject-force` *and* train across multiple subsets simultaneously (e.g. `--all-subsets` + force injection). Fix when needed: sort the dataloader by `task_name` so each batch is homogeneous, or process per-task subbatches in the force forward. The main velocity-head forward path is fine — it uses per-sample `task_name` via `AtomicData.from_ase(task_name=...)` → `data.dataset` list → UMA's `csd_embedding` per-system.
 
 ## What was tried and what worked (short)
 
