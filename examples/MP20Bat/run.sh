@@ -8,6 +8,24 @@
 #SBATCH -A _replace_me_
 #SBATCH -J saddleflow_mp20bat
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ LEGACY LAUNCHER — DO NOT COPY THIS PATTERN FOR NEW MULTI-NODE JOBS.
+# ─────────────────────────────────────────────────────────────────────────────
+# This script uses `accelerate launch --num_machines N --rdzv_backend c10d`
+# with --ntasks-per-node=1. That pattern WORKED for this 4-node MP20Bat run
+# (the production model in the paper was trained with it), but at 128 nodes /
+# 512 ranks it RELIABLY hangs / times out: torch-elastic's dynamic c10d
+# rendezvous strands ~2 stragglers per attempt no matter the timeout (verified
+# 2026-05-22 over multiple jobs; see CLAUDE.md "Multi-node launch" section).
+#
+# CANONICAL multi-node launcher: examples/MaterialsSaddles/run.sh — srun-native
+# SPMD with env-var DDP (one srun task per GPU, RANK=$SLURM_PROCID,
+# init_process_group from env://, no elastic agent, no quorum dance). That is
+# what fairchem/UMA itself uses for multinode (common/distutils.py::setup) and
+# what scales reliably to 128+ nodes on Perlmutter. For any NEW dataset or
+# multi-node run, copy MaterialsSaddles/run.sh, not this one.
+# ─────────────────────────────────────────────────────────────────────────────
+#
 # Mode-1 product-conditional flow matching, full UMA-S-1.2 unfreeze, 4-block
 # time-FiLM, hybrid PBC-correct convergent v_target with σ=0.05 Å perturb,
 # CoM-symmetric loss. Trains on the MaterialsSaddles `mp20bat` subset.

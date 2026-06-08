@@ -71,6 +71,8 @@ sbatch $WORK/codes/SaddleFlow/examples/MP20Bat/run.sh
 
 This trains on the full `mp20bat` subset (~34,742 triplets) for 60 epochs with 4 nodes × 3 A100s, then auto-runs a 50-case post-training eval. Heavy outputs (checkpoints, eval `.npz`, `.traj` files) all land under `$SCRATCH/SaddleFlow_mp20bat/runs/<TIMESTAMP>/`. See [`examples/MP20Bat/README.md`](examples/MP20Bat/README.md) for the full pipeline (training → full-test-set eval at K=10 → K=10 vs K=50 stability → paper-style parity figures).
 
+**For full-dataset / large-scale training (all four MaterialsSaddles subsets — lemat + oc20 + oc22 + mp20bat = 34 M triplets — at 128+ nodes), use [`examples/MaterialsSaddles/`](examples/MaterialsSaddles/) instead.** Its `run.sh` uses srun-native SPMD (each SLURM task = one rank, env-var DDP), which scales reliably past 128 nodes. The MP20Bat launcher above is the proven 4-node paper config; its `accelerate launch --num_machines=N` pattern is fragile at large scale — see [`CLAUDE.md`](CLAUDE.md) "Training infrastructure" for why.
+
 For a quick sanity-check on small data:
 
 - [`examples/LiC_simpler/`](examples/LiC_simpler/) — single-saddle training on pristine graphene (1 triplet); ~18 min on one A100.

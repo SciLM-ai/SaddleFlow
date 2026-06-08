@@ -112,8 +112,8 @@ done
 ## Layout on disk
 
 ```
-$SCRATCH/SaddleFlow_mp20bat/                                  ← run root (override with $SADDLEFLOW_RUN_ROOT)
-└── runs/mp20bat_<TIMESTAMP>/
+$SCRATCH/SaddleFlow_MaterialsSaddles/                         ← run root (override with $SADDLEFLOW_RUN_ROOT)
+└── runs/MaterialsSaddles_<TIMESTAMP>/
     ├── config.json
     ├── dataset_stats.json
     ├── history.json
@@ -152,7 +152,7 @@ Optional overrides used by `run.sh`:
 |---|---|---|
 | `SADDLEFLOW_PYTHON` | `python` | which python on `$PATH` |
 | `SADDLEFLOW_REPO` | `<script>/../..` | root of the SaddleFlow repo |
-| `SADDLEFLOW_RUN_ROOT` | `$SCRATCH/SaddleFlow_mp20bat` | where `runs/` is created |
+| `SADDLEFLOW_RUN_ROOT` | `$SCRATCH/SaddleFlow_MaterialsSaddles` | where `runs/` is created |
 
 ### 1. Smoke test (single-node allocation)
 
@@ -165,24 +165,45 @@ training and eval code path.
 
 ### 2. Full training
 
-Edit `#SBATCH -A _replace_me_` to your cluster allocation, then submit *from
-your scratch root* so the SLURM logs land there too:
+Edit `#SBATCH -A` to your cluster allocation if it isn't already
+`m1883_g`. The script's `#SBATCH -o/-e` already write to
+`$SCRATCH/SaddleFlow_MaterialsSaddles/logs/`, so you can submit from anywhere —
+but **`SLURM_SUBMIT_DIR` must be `examples/MaterialsSaddles/`** for `run.sh` to
+find `train.py`, so cd there first:
 
 ```bash
-cd $SCRATCH/SaddleFlow_mp20bat
-sbatch $WORK/codes/SaddleFlow/examples/MP20Bat/run.sh
+cd /path/to/SaddleFlow/examples/MaterialsSaddles
+sbatch run.sh
 ```
 
-Everything heavy (checkpoints, EMA, optimizer state, dataset shards, eval npz,
-`.traj` files) is written under `$SCRATCH/SaddleFlow_mp20bat/` — `$WORK` only
-holds the source code.
+To resume from a checkpoint (typical, since runs span multiple sbatches at
+128-node scale — node failures and SLURM walltimes are routine at this scale):
 
-Expected runtime on 4 × A100: ~30 h for 60 epochs.
+```bash
+cd /path/to/SaddleFlow/examples/MaterialsSaddles
+RESUME_FROM=$SCRATCH/SaddleFlow_MaterialsSaddles/runs/MaterialsSaddles_<TS>/checkpoint_step_NNNNNNNN \
+    sbatch run.sh
+```
+
+Everything heavy (checkpoints, EMA, optimizer state, dataset shards, logs)
+lands under `$SCRATCH/SaddleFlow_MaterialsSaddles/`. The repo only holds source.
+
+**Launch mechanism (do not "modernize"):** `run.sh` uses srun-native SPMD —
+one srun task per GPU with `RANK=$SLURM_PROCID`, `init_process_group` from
+`env://`. We deliberately do NOT use `accelerate launch --num_machines=N`
+because torch-elastic's dynamic c10d rendezvous strands stragglers and times
+out at ≥128 nodes (verified May 2026). See run.sh's header + CLAUDE.md
+"Training infrastructure" for the full rationale.
+
+Expected runtime on 128 nodes × 4 A100 = 512 GPUs (run.sh default): **~21 h
+for 2 epochs from a fresh resume of `checkpoint_step_00008000`**, ~5.6 s/step
+measured. Fits in a single 48 h `regular`-QOS sbatch with margin for one
+NODE_FAIL/resume cycle.
 
 ### 3. Post-training analyses (the paper figures)
 
 ```bash
-RUN=$SCRATCH/SaddleFlow_mp20bat/runs/mp20bat_<TIMESTAMP>
+RUN=$SCRATCH/SaddleFlow_MaterialsSaddles/runs/MaterialsSaddles_<TIMESTAMP>
 
 # Full test set at K=10 (deterministic Euler, ~30 min on 3 GPUs)
 accelerate launch --num_processes 3 --multi_gpu --mixed_precision bf16 \
@@ -201,15 +222,24 @@ python analysis_fmax_parity.py --ckpt-dir $RUN/checkpoint_final
 
 ## Resuming an interrupted training
 
-Per-epoch checkpoints land at `<output-dir>/checkpoint_epoch_NNNNN`. If SLURM
-times out or a node dies:
+Checkpoints land at both `<output-dir>/checkpoint_epoch_NNNNN` (per epoch) and
+`<output-dir>/checkpoint_step_NNNNNNNN` (every `SAVE_EVERY_STEPS=2000` steps,
+controlled in run.sh). Intra-epoch checkpoints are the resume target after a
+NODE_FAIL or walltime — losing only ≤2000 steps of work. After the resume,
+`training.py`'s stop-at-`num_epochs × len(dataloader)` cap (added 2026-05-30)
+ensures the loop exits at the planned step count rather than re-iterating
+`num_epochs` full passes from scratch.
 
 ```bash
-RESUME_FROM=$SCRATCH/SaddleFlow_mp20bat/runs/mp20bat_PREV/checkpoint_epoch_42 \
+cd /path/to/SaddleFlow/examples/MaterialsSaddles
+RESUME_FROM=$SCRATCH/SaddleFlow_MaterialsSaddles/runs/MaterialsSaddles_<TS>/checkpoint_step_00008000 \
     sbatch run.sh
 ```
 
-Restores model + optimizer + EMA + RNG and continues from the next epoch.
+Restores model + optimizer + EMA + scheduler step counter + RNG. LR picks up
+mid-cosine at exactly where it left off (no re-warmup spike); the cap fix
+means resume(8000) → 30000 is the same model+step count as a continuous
+0 → 30000 run.
 
 ## Resolved data paths
 
