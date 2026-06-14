@@ -273,6 +273,79 @@ def load_official_splits(subset: str = "mp20bat", *, accelerator_state=None
     return out["train"], out["val"], out["test"]
 
 
+def load_local_triplet_splits(
+    shards_dir, manifest_csv, *, accelerator_state=None,
+) -> tuple[list[int], list[int], list[int]]:
+    """Split loader for a *local* triplet dataset (not on HuggingFace).
+
+    Mirrors :func:`load_official_splits` but reads the split assignment from a
+    CSV manifest with columns ``triplet_index, ms_id_R, ..., split`` (the
+    ``dataset1_split_manifest.csv`` of the lemat-bulk family) instead of the HF
+    parquet files, and reads the shards directly from ``shards_dir`` (no
+    HF staging).
+
+    Returns ``(train_tids, val_tids, test_tids)`` where ``tid`` is the
+    positional triplet index used by ``MaterialsSaddlesDataset`` (records
+    ``2*tid`` / ``2*tid+1`` are the R→S / P→S samples).
+
+    The join is by the **reactant** ms_id (``ms_id_R``), the unambiguous anchor:
+    within each shard the R-row ms_ids are consecutive in steps of 3
+    (``first_ms_id + 3*j`` for local triplet ``j``; verified on the lemat-bulk
+    shards), so we build ``{ms_id_R: tid}`` from only ``db.count()`` + the first
+    row per shard — the same fast path as the HF loader, order-independent.
+    """
+    import csv
+    from ase.db import connect
+
+    shard_paths = sorted(Path(shards_dir).glob("*.aselmdb"))
+    if not shard_paths:
+        raise SystemExit(f"[data_prep] no *.aselmdb shards under {shards_dir}")
+    msidR_to_tid: dict[int, int] = {}
+    tid = 0
+    for sp in shard_paths:
+        db = connect(str(sp), type="aselmdb", readonly=True, use_lock_file=False)
+        try:
+            row_count = db.count()
+            if row_count % 3 != 0:
+                raise SystemExit(
+                    f"[data_prep] {sp}: row count {row_count} not a multiple of 3."
+                )
+            n = row_count // 3
+            first_ms = int(next(db.select(limit=1)).data["info"]["ms_id"])
+        finally:
+            db.close()
+        for j in range(n):
+            msidR_to_tid[first_ms + 3 * j] = tid + j
+        tid += n
+
+    out: dict[str, list[int]] = {"train": [], "val": [], "test": []}
+    unmatched = 0
+    with open(manifest_csv) as f:
+        reader = csv.DictReader(f)
+        if "ms_id_R" not in reader.fieldnames or "split" not in reader.fieldnames:
+            raise SystemExit(
+                f"[data_prep] {manifest_csv}: expected columns 'ms_id_R' and "
+                f"'split', got {reader.fieldnames}."
+            )
+        for row in reader:
+            t = msidR_to_tid.get(int(row["ms_id_R"]))
+            if t is None:
+                unmatched += 1
+                continue
+            split = row["split"].strip()
+            if split in out:
+                out[split].append(t)
+    if unmatched:
+        print(f"[data_prep] WARNING: {unmatched} manifest rows had an ms_id_R "
+              f"not present in the local shards (manifest/shards mismatch?).")
+    for k in out:
+        out[k] = sorted(out[k])
+    print(f"[data_prep] local manifest splits ({manifest_csv}): "
+          f"train={len(out['train']):,}  val={len(out['val']):,}  "
+          f"test={len(out['test']):,}  (of {tid:,} triplets in {len(shard_paths)} shards)")
+    return out["train"], out["val"], out["test"]
+
+
 # ----- CLI: run this file standalone to pre-stage data on a new machine -----
 
 def _cli():

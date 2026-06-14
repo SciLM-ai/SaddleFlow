@@ -37,7 +37,8 @@ import torch
 # Make the local data_prep helper importable regardless of how train.py is invoked.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data_prep import (  # noqa: E402
-    ALL_SUBSETS, ensure_subset, ensure_subsets, load_official_splits,
+    ALL_SUBSETS, ensure_subset, ensure_subsets, load_local_triplet_splits,
+    load_official_splits,
 )
 
 from saddleflow.data import MaterialsSaddlesDataset
@@ -64,7 +65,16 @@ def parse_args():
                         "subsets, ~30M triplets total). Overrides --subsets.")
     p.add_argument("--shards-dir", default=None,
                    help="Only valid with a single subset. Override the auto-"
-                        "resolved shards directory.")
+                        "resolved shards directory. When set, HuggingFace "
+                        "staging is skipped and the shards are read directly "
+                        "from this local directory (use with --split-manifest "
+                        "for local non-HF triplet datasets).")
+    p.add_argument("--split-manifest", default=None,
+                   help="Path to a CSV manifest (columns triplet_index, "
+                        "ms_id_R, ..., split) giving the train/val/test split "
+                        "for a LOCAL triplet dataset (e.g. the lemat-bulk "
+                        "dataset1_split_manifest.csv). Bypasses the HF parquet "
+                        "splits. Requires --shards-dir.")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--default-task-name", default="omat",
                    help="Used only as fallback when atoms.info['task_name'] is missing.")
@@ -240,7 +250,15 @@ def main():
     # Only the global main process touches the network/filesystem; others wait.
     from accelerate import PartialState
     state = PartialState()
-    staged = ensure_subsets(subsets, accelerator_state=state)
+    if args.split_manifest is not None and args.shards_dir is None:
+        raise SystemExit("--split-manifest requires --shards-dir (local dataset).")
+    if args.shards_dir is not None:
+        # Local dataset: shards are already on disk, no HuggingFace staging.
+        staged = {subsets[0]: Path(args.shards_dir)}
+        print(f"[train] local shards: {subsets[0]} → {args.shards_dir} "
+              f"(HF staging skipped)")
+    else:
+        staged = ensure_subsets(subsets, accelerator_state=state)
 
     # Build one MaterialsSaddlesDataset per subset, then concat. Each subset has
     # its own splits (parquet) and its own dataset-wide triplet_id ordering, so
@@ -296,9 +314,14 @@ def main():
             ds.delta_norm_mean = 2.0  # rough cross-subset mean; not used by loss
         delta_norm_means.append((float(ds.delta_norm_mean), ds.num_triplets))
 
-        train_tids, val_tids, test_tids = load_official_splits(
-            s, accelerator_state=state,
-        )
+        if args.split_manifest is not None:
+            train_tids, val_tids, test_tids = load_local_triplet_splits(
+                sdir, args.split_manifest, accelerator_state=state,
+            )
+        else:
+            train_tids, val_tids, test_tids = load_official_splits(
+                s, accelerator_state=state,
+            )
         if args.limit_triplets > 0:
             n = args.limit_triplets
             train_tids = train_tids[:n]
@@ -579,7 +602,9 @@ def main():
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
             "shards_dirs": {s: str(staged[s]) for s in subsets},
             "split": {
-                "source": "official HuggingFace parquet (per-subset)",
+                "source": (f"local manifest {args.split_manifest}"
+                           if args.split_manifest is not None
+                           else "official HuggingFace parquet (per-subset)"),
                 "subsets": subsets,
                 "n_train_records": len(train_idxs),
                 "n_val_records":   len(val_idxs),
