@@ -67,6 +67,18 @@ class TrainingConfig:
 
     resume_from: str | None = None
 
+    # --- Benchmark instrumentation (all no-ops at defaults; production unaffected) ---
+    # If > 0, stop after this many optimizer steps regardless of num_epochs. Also
+    # used as the scheduler's total-step horizon so warmup/cosine behave sanely.
+    max_steps: int = 0
+    # Steps to run before opening the timing window — excludes DDP init, cudnn
+    # autotune, dataloader warm-up and the first allreduce from the throughput
+    # measurement. Only consulted when bench_output is set.
+    bench_warmup_steps: int = 0
+    # If set, write a throughput JSON here when training stops AND skip the final
+    # checkpoint + test eval (a benchmark run produces no model artifact).
+    bench_output: str | None = None
+
     extras: dict = field(default_factory=dict)  # stashed for reproducibility in run-config
 
 
@@ -217,6 +229,8 @@ def train(
                 print(f"[train] param_group[{i}] '{g.get('name', '?')}': "
                       f"{n_i:,} params  lr={lr_i:.2e}  wd={wd_i:g}")
     total_steps = max(1, config.num_epochs * len(dataloader))
+    if config.max_steps > 0:
+        total_steps = config.max_steps
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda s: _lr_lambda(s, config.warmup_steps, total_steps, config.min_lr_ratio),
@@ -260,7 +274,14 @@ def train(
     # near-zero training gain. With this cap, resume(8000)→30000 produces the
     # same model+step count as a continuous run.
     total_optim_steps = max(1, config.num_epochs * len(dataloader))
+    if config.max_steps > 0:
+        total_optim_steps = config.max_steps
     stop_now = False
+
+    # Benchmark timing state (only active when config.bench_output is set).
+    bench_active = bool(config.bench_output)
+    bench_step_times: list[float] = []   # full wall-clock per timed step (incl. data load)
+    bench_window_t0: float | None = None
 
     for epoch in range(start_epoch, config.num_epochs):
         if stop_now:
@@ -268,7 +289,16 @@ def train(
         loss_module.train()
         epoch_loss = 0.0
         epoch_n = 0
+        _prev_t = None  # for per-step timing (reset each epoch; loses 1 sample/epoch boundary)
         for batch in dataloader:
+            # Open the timing window exactly when warmup ends, after syncing so
+            # no warm-up GPU work bleeds into the measured wall-clock, and reset
+            # the peak-memory counter so the reported footprint is steady-state.
+            if bench_active and global_step == config.bench_warmup_steps:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                bench_window_t0 = time.perf_counter()
             with accelerator.accumulate(loss_module):
                 out = loss_module(batch)
                 loss = out["loss"]
@@ -284,6 +314,16 @@ def train(
             loss_val = accelerator.gather(loss.detach()).mean().item()
             epoch_loss += loss_val
             epoch_n += 1
+
+            # Per-step wall-clock between consecutive sync points (the gather above
+            # forces a CUDA sync via .item()), so this includes data loading and
+            # collectives — the honest end-to-end step cost. Only kept in the
+            # timed window.
+            if bench_active and global_step >= config.bench_warmup_steps:
+                _now = time.perf_counter()
+                if _prev_t is not None:
+                    bench_step_times.append(_now - _prev_t)
+                _prev_t = _now
 
             if accelerator.is_main_process and global_step % config.log_every == 0:
                 lr = scheduler.get_last_lr()[0]
@@ -346,6 +386,17 @@ def train(
             _save_checkpoint(accelerator, ema, out_dir, f"checkpoint_epoch_{epoch+1:05d}",
                              epoch + 1, global_step)
 
+    # Benchmark finalization: close the timing window, write throughput JSON, and
+    # short-circuit before the (slow, irrelevant) final checkpoint + test eval.
+    if bench_active:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        window_sec = (time.perf_counter() - bench_window_t0) if bench_window_t0 is not None else 0.0
+        timed_steps = max(0, global_step - config.bench_warmup_steps)
+        if accelerator.is_main_process:
+            _write_bench_result(config, accelerator, window_sec, timed_steps, bench_step_times)
+        return {"history": history, "global_step": global_step, "test_loss": None}
+
     if accelerator.is_main_process:
         _save_checkpoint(accelerator, ema, out_dir, "checkpoint_final", config.num_epochs, global_step)
         (out_dir / "history.json").write_text(json.dumps(history, indent=2))
@@ -397,6 +448,72 @@ def _evaluate(loss_module, val_loader, ema: EMA, accelerator) -> dict:
         return {"live": live, "ema": ema_loss}
     finally:
         loss_module.train()
+
+
+def _write_bench_result(config, accelerator, window_sec: float, timed_steps: int,
+                        step_times: list[float]) -> None:
+    """Write a single-config throughput record to ``config.bench_output``.
+
+    Called once, on the main process only, after the timing window closes. The
+    window-based ``samples_per_sec`` is the headline number (it includes data
+    loading, the optimizer step and all DDP collectives — the honest end-to-end
+    rate); the per-step median/p90 are a jitter diagnostic.
+    """
+    import socket
+    import statistics
+
+    world = accelerator.num_processes
+    bs = config.batch_size
+    global_batch = bs * world
+    sps = (timed_steps * global_batch / window_sec) if window_sec > 0 else 0.0
+
+    def _q(xs, q):
+        if not xs:
+            return None
+        s = sorted(xs)
+        i = min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))
+        return s[i]
+
+    gpu_name = None
+    peak_alloc = peak_resv = None
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        peak_alloc = torch.cuda.max_memory_allocated() / (1024 ** 3)
+        peak_resv = torch.cuda.max_memory_reserved() / (1024 ** 3)
+
+    result = {
+        "hostname": socket.gethostname(),
+        "gpu_name": gpu_name,
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "num_nodes": int(os.environ.get("SLURM_NNODES", 0)) or None,
+        "world_size": world,
+        "gpus_per_node": (world // int(os.environ["SLURM_NNODES"]))
+                          if os.environ.get("SLURM_NNODES") else None,
+        "batch_size_per_gpu": bs,
+        "global_batch": global_batch,
+        "mixed_precision": config.mixed_precision,
+        "warmup_steps": config.bench_warmup_steps,
+        "timed_steps": timed_steps,
+        "window_sec": window_sec,
+        "steps_per_sec": (timed_steps / window_sec) if window_sec > 0 else 0.0,
+        "samples_per_sec": sps,
+        "samples_per_sec_per_gpu": sps / world if world else 0.0,
+        "mean_ms_per_step": (window_sec / timed_steps * 1000.0) if timed_steps else None,
+        "median_ms_per_step": (_q(step_times, 0.5) * 1000.0) if step_times else None,
+        "p10_ms_per_step": (_q(step_times, 0.10) * 1000.0) if step_times else None,
+        "p90_ms_per_step": (_q(step_times, 0.90) * 1000.0) if step_times else None,
+        "peak_mem_alloc_gib": peak_alloc,
+        "peak_mem_reserved_gib": peak_resv,
+        "wall_clock_unix": time.time(),
+    }
+    out = Path(config.bench_output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2))
+    print(f"[bench] {world} GPU(s) bs={bs} (global {global_batch}): "
+          f"{sps:,.1f} samples/s total  "
+          f"({result['samples_per_sec_per_gpu']:,.1f}/GPU)  "
+          f"mean {result['mean_ms_per_step']:.1f} ms/step  "
+          f"peak {peak_alloc:.1f} GiB → {out}")
 
 
 def _save_checkpoint(

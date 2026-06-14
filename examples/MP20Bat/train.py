@@ -193,6 +193,17 @@ def parse_args():
     p.add_argument("--limit-triplets", type=int, default=0,
                    help="If > 0, restrict the dataset to the first N triplets (debug only).")
 
+    # --- Throughput benchmark (scaling study; see examples/scaling_bench/) ---
+    p.add_argument("--max-steps", type=int, default=0,
+                   help="If > 0, stop after this many optimizer steps regardless of "
+                        "--num-epochs. Used for throughput benchmarking.")
+    p.add_argument("--bench-warmup", type=int, default=0,
+                   help="Optimizer steps to run before the timing window opens "
+                        "(excludes DDP init / cudnn autotune / first allreduce).")
+    p.add_argument("--bench-output", default=None,
+                   help="If set, write a throughput JSON here and SKIP the final "
+                        "checkpoint + test eval. Marks this as a benchmark run.")
+
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -459,6 +470,8 @@ def main():
         mixed_precision=args.mixed_precision, seed=args.seed,
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
         resume_from=args.resume_from,
+        max_steps=args.max_steps, bench_warmup_steps=args.bench_warmup,
+        bench_output=args.bench_output,
         extras={
             "mode": args.mode,
             "delta_endpoint_channels": head_delta_C,
