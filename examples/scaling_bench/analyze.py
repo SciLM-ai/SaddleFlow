@@ -127,15 +127,17 @@ def main():
               f"window after warmup._\n")
 
     # ---- Per-GPU headline table --------------------------------------------
-    md.append("## Per-GPU throughput (single GPU)\n")
-    md.append("| machine | GPU | batch | samples/s | ms/step | peak mem (GiB) |")
+    # Best single-GPU operating point across ALL benched batch sizes. This is the
+    # fair "what one GPU can do" number — a GPU that keeps speeding up with batch
+    # (GH200) should be credited at its best batch, not pinned to the small one.
+    md.append("## Per-GPU throughput (best single-GPU operating point, across batch sizes)\n")
+    md.append("| machine | GPU | best batch | samples/s | ms/step | peak mem (GiB) |")
     md.append("|---|---|--:|--:|--:|--:|")
     per_gpu_best: dict[str, dict] = {}
     for m in machines:
-        sp = scaling_points(by_machine[m])
-        one = next((r for r in sp if r["world_size"] == 1), None)
-        if one is None:
-            one = min(by_machine[m], key=lambda r: r["world_size"])
+        singles = [r for r in by_machine[m] if r["world_size"] == 1]
+        one = (max(singles, key=lambda r: r["samples_per_sec"]) if singles
+               else min(by_machine[m], key=lambda r: r["world_size"]))
         per_gpu_best[m] = one
         md.append(f"| {m} | {one.get('gpu_name','?')} | {one['batch_size_per_gpu']} | "
                   f"{fmt(one['samples_per_sec'])} | {fmt(one.get('mean_ms_per_step'))} | "
@@ -146,8 +148,10 @@ def main():
         a, b = machines
         ra, rb = per_gpu_best[a]["samples_per_sec_per_gpu"], per_gpu_best[b]["samples_per_sec_per_gpu"]
         hi, lo = (a, b) if ra >= rb else (b, a)
-        md.append(f"**Per-GPU speedup:** {hi} is **{max(ra,rb)/max(1e-9,min(ra,rb)):.2f}×** "
-                  f"faster per GPU than {lo} (same model, same batch).\n")
+        md.append(f"**Per-GPU speedup (best operating point):** {hi} is "
+                  f"**{max(ra,rb)/max(1e-9,min(ra,rb)):.2f}×** faster per GPU than {lo} "
+                  f"(at batch {per_gpu_best[hi]['batch_size_per_gpu']} vs "
+                  f"{per_gpu_best[lo]['batch_size_per_gpu']}).\n")
 
     # ---- Scaling table ------------------------------------------------------
     md.append("## Strong/weak scaling (fixed per-GPU batch)\n")
@@ -184,27 +188,33 @@ def main():
 
     # ---- Projected full mp20bat production wall-clock -----------------------
     md.append("## Projected full mp20bat training wall-clock\n")
-    md.append(f"_Production run = {PROD_EPOCHS} epochs × {PROD_RECORDS_PER_EPOCH:,} "
-              f"records = {PROD_SAMPLES:,} sample-presentations. Wall-clock = "
-              f"samples ÷ measured samples/s at each machine's largest benched config._\n")
-    md.append("| machine | benched config | samples/s | projected wall-clock |")
-    md.append("|---|---|--:|--:|")
-    prod: dict[str, dict] = {}
-    for m in machines:
-        sp = scaling_points(by_machine[m])
-        if not sp:
-            continue
-        top = sp[-1]
-        hrs = PROD_SAMPLES / max(1e-9, top["samples_per_sec"]) / 3600.0
-        prod[m] = {"cfg": top, "hours": hrs}
-        md.append(f"| {m} | {top['world_size']} GPU (global batch {top['global_batch']}) | "
-                  f"{fmt(top['samples_per_sec'])} | {hrs:.2f} h |")
-    md.append("")
-    if len(machines) == 2 and all(m in prod for m in machines):
-        a, b = machines
-        fast, slow = (a, b) if prod[a]["hours"] <= prod[b]["hours"] else (b, a)
-        md.append(f"**{fast}** completes the full run **{prod[slow]['hours']/prod[fast]['hours']:.2f}×** "
-                  f"faster than **{slow}** at the benched configs.\n")
+    # Apples-to-apples: project at the largest GPU count benched on ALL machines,
+    # so a machine isn't credited just for having run more GPUs.
+    ws_sets = [set(r["world_size"] for r in scaling_points(by_machine[m])) for m in machines]
+    common = set.intersection(*ws_sets) if ws_sets else set()
+    proj_n = max(common) if common else None
+    prod: dict[str, float] = {}
+    if proj_n is not None:
+        md.append(f"_Production run = {PROD_EPOCHS} epochs × {PROD_RECORDS_PER_EPOCH:,} "
+                  f"records = {PROD_SAMPLES:,} sample-presentations. Projected at "
+                  f"**{proj_n} GPU** (the largest count benched on every machine) for an "
+                  f"apples-to-apples comparison; wall-clock = samples ÷ samples/s._\n")
+        md.append(f"| machine | config | samples/s | projected wall-clock |")
+        md.append("|---|---|--:|--:|")
+        for m in machines:
+            r = next((x for x in scaling_points(by_machine[m]) if x["world_size"] == proj_n), None)
+            if r is None:
+                continue
+            hrs = PROD_SAMPLES / max(1e-9, r["samples_per_sec"]) / 3600.0
+            prod[m] = hrs
+            md.append(f"| {m} | {proj_n} GPU (global batch {r['global_batch']}) | "
+                      f"{fmt(r['samples_per_sec'])} | {hrs:.2f} h |")
+        md.append("")
+        if len(prod) == 2:
+            a, b = list(prod)
+            fast, slow = (a, b) if prod[a] <= prod[b] else (b, a)
+            md.append(f"**{fast}** finishes the full run **{prod[slow]/prod[fast]:.2f}×** "
+                      f"faster than **{slow}** at {proj_n} GPU.\n")
 
     # ---- Grace-Blackwell (Horizon) projection ------------------------------
     md.append("## Grace-Blackwell (Horizon) projection — extrapolated, not measured\n")

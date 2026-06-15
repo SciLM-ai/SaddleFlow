@@ -203,6 +203,10 @@ def parse_args():
     p.add_argument("--bench-output", default=None,
                    help="If set, write a throughput JSON here and SKIP the final "
                         "checkpoint + test eval. Marks this as a benchmark run.")
+    p.add_argument("--profile-output", default=None,
+                   help="If set, run torch.profiler over the timed window and write "
+                        "a step-breakdown JSON here (GPU-kernel vs CPU/host time, "
+                        "dataload vs compute, top ops). Implies a benchmark run.")
 
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
@@ -471,7 +475,7 @@ def main():
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
         resume_from=args.resume_from,
         max_steps=args.max_steps, bench_warmup_steps=args.bench_warmup,
-        bench_output=args.bench_output,
+        bench_output=args.bench_output, profile_output=args.profile_output,
         extras={
             "mode": args.mode,
             "delta_endpoint_channels": head_delta_C,

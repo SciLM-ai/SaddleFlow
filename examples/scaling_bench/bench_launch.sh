@@ -95,6 +95,17 @@ RUNDIR="$BENCH_OUT_DIR/_rundir"      # shared across configs → dataset stats c
 OUT_JSON="$BENCH_OUT_DIR/${MACHINE}_n${NODES}_g${NPROC}_b${BATCH}.json"
 mkdir -p "$BENCH_OUT_DIR" "$RUNDIR"
 
+# Profiling mode: set PROFILE_JSON to run torch.profiler and write a step
+# breakdown there INSTEAD of a throughput JSON (profiler overhead would pollute
+# the throughput number, so we don't write both to the same file).
+if [ -n "${PROFILE_JSON:-}" ]; then
+    OUTPUT_FLAGS="--profile-output $PROFILE_JSON"
+    RESULT_PATH="$PROFILE_JSON"
+else
+    OUTPUT_FLAGS="--bench-output $OUT_JSON"
+    RESULT_PATH="$OUT_JSON"
+fi
+
 echo "============================================================"
 echo "[bench] machine=$MACHINE  GPUs=$NPROC (${NODES}n × ${TPN}/n, ${GPN}/node)  batch=$BATCH (global $(( NPROC * BATCH )))"
 echo "[bench] steps=$MAX_STEPS (warmup $WARMUP)  limit_triplets=$LIMIT_TRIPLETS  workers=$NUM_WORKERS"
@@ -149,7 +160,7 @@ srun --nodelist="$SUBSET_NODES" --nodes="$NODES" --ntasks="$NPROC" \
         --val-every-epochs 1000000 \
         --max-steps $MAX_STEPS \
         --bench-warmup $WARMUP \
-        --bench-output $OUT_JSON
+        $OUTPUT_FLAGS
   "
 
-echo "[bench] wrote $OUT_JSON"
+echo "[bench] wrote $RESULT_PATH"

@@ -78,6 +78,27 @@ GH200 has 96 GB HBM3e (vs A100 40 GB), so it should fit a much larger batch —
 run `BATCH_LIST="16 32 64 96 128"` on 1 GPU to capture that headroom; it's a real
 part of the efficiency story (fewer grad-accum steps, higher utilization).
 
+## Profiling mode (where the per-step time goes)
+
+To attribute the per-step cost (GPU kernels vs CPU kernel-dispatch vs dataload),
+set `PROFILE_JSON` — `bench_launch.sh` then runs `torch.profiler` over the timed
+window and writes a step breakdown there instead of a throughput JSON:
+
+```bash
+# inside an allocation, single GPU is cleanest:
+export BENCH_GPUS_PER_NODE=1 MAX_STEPS=70 WARMUP=20      # (=1 on Vista, 4 on Perlmutter)
+PROFILE_JSON=$SCRATCH/saddleflow_bench/profile_b16.json NPROC=1 BATCH=16 \
+    bash examples/scaling_bench/bench_launch.sh
+```
+
+Key fields: `cpu_dispatch_frac_pct` + `kernel_launches_per_step` (the launch-bound
+signal), `dataload_ms_per_step` vs `compute_ms_per_step`, and `top_ops`. On
+Perlmutter A100 this revealed the step fires ~10.5k tiny CUDA kernels and spends
+~30% of wall-clock in CPU-side launch/sync at batch 16 (rising to ~61% at batch
+64) — i.e. it's CPU-launch-bound, which is the case for the Grace-CPU + NVLink-C2C
+argument. (`device_kernel_ms_per_step` is Σ kernel time across streams and can
+exceed wall-clock when kernels overlap, so it is *not* a utilization %.)
+
 ## Fairness notes (so the numbers survive review)
 
 - **Identical workload:** same model/flags/seed, same `LIMIT_TRIPLETS` slice of

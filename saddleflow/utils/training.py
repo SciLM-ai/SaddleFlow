@@ -78,6 +78,10 @@ class TrainingConfig:
     # If set, write a throughput JSON here when training stops AND skip the final
     # checkpoint + test eval (a benchmark run produces no model artifact).
     bench_output: str | None = None
+    # If set, run torch.profiler over the timed window and write a step-breakdown
+    # JSON here (GPU-kernel vs CPU/host time, dataload vs compute, top ops). Also
+    # implies the bench short-circuit (no checkpoint / test eval).
+    profile_output: str | None = None
 
     extras: dict = field(default_factory=dict)  # stashed for reproducibility in run-config
 
@@ -278,10 +282,14 @@ def train(
         total_optim_steps = config.max_steps
     stop_now = False
 
-    # Benchmark timing state (only active when config.bench_output is set).
-    bench_active = bool(config.bench_output)
+    # Benchmark timing state (active for either throughput bench or profiling).
+    profile_active = bool(config.profile_output)
+    bench_active = bool(config.bench_output) or profile_active
     bench_step_times: list[float] = []   # full wall-clock per timed step (incl. data load)
     bench_window_t0: float | None = None
+    prof = None                          # torch.profiler handle (profiling runs only)
+    prof_dataload = 0.0                  # Σ host wait fetching batches, timed window
+    prof_compute = 0.0                   # Σ fwd+bwd+opt+ema+gather, timed window
 
     for epoch in range(start_epoch, config.num_epochs):
         if stop_now:
@@ -291,6 +299,7 @@ def train(
         epoch_n = 0
         _prev_t = None  # for per-step timing (reset each epoch; loses 1 sample/epoch boundary)
         for batch in dataloader:
+            _body_top = time.perf_counter()  # after the dataloader yielded this batch
             # Open the timing window exactly when warmup ends, after syncing so
             # no warm-up GPU work bleeds into the measured wall-clock, and reset
             # the peak-memory counter so the reported footprint is steady-state.
@@ -299,6 +308,14 @@ def train(
                     torch.cuda.synchronize()
                     torch.cuda.reset_peak_memory_stats()
                 bench_window_t0 = time.perf_counter()
+                if profile_active:
+                    from torch.profiler import ProfilerActivity
+                    from torch.profiler import profile as _torch_profile
+                    _acts = [ProfilerActivity.CPU]
+                    if torch.cuda.is_available():
+                        _acts.append(ProfilerActivity.CUDA)
+                    prof = _torch_profile(activities=_acts, record_shapes=False, with_stack=False)
+                    prof.start()
             with accelerator.accumulate(loss_module):
                 out = loss_module(batch)
                 loss = out["loss"]
@@ -323,6 +340,12 @@ def train(
                 _now = time.perf_counter()
                 if _prev_t is not None:
                     bench_step_times.append(_now - _prev_t)
+                    if profile_active:
+                        # Partition the inter-step interval: time waiting on the
+                        # dataloader to yield (_body_top - prev end) vs time in the
+                        # actual step (fwd+bwd+opt+ema+gather).
+                        prof_dataload += _body_top - _prev_t
+                        prof_compute += _now - _body_top
                 _prev_t = _now
 
             if accelerator.is_main_process and global_step % config.log_every == 0:
@@ -393,8 +416,14 @@ def train(
             torch.cuda.synchronize()
         window_sec = (time.perf_counter() - bench_window_t0) if bench_window_t0 is not None else 0.0
         timed_steps = max(0, global_step - config.bench_warmup_steps)
+        if prof is not None:
+            prof.stop()
         if accelerator.is_main_process:
-            _write_bench_result(config, accelerator, window_sec, timed_steps, bench_step_times)
+            if config.bench_output:
+                _write_bench_result(config, accelerator, window_sec, timed_steps, bench_step_times)
+            if config.profile_output and prof is not None:
+                _write_profile_result(config, accelerator, window_sec, timed_steps,
+                                      prof, prof_dataload, prof_compute)
         return {"history": history, "global_step": global_step, "test_loss": None}
 
     if accelerator.is_main_process:
@@ -514,6 +543,92 @@ def _write_bench_result(config, accelerator, window_sec: float, timed_steps: int
           f"({result['samples_per_sec_per_gpu']:,.1f}/GPU)  "
           f"mean {result['mean_ms_per_step']:.1f} ms/step  "
           f"peak {peak_alloc:.1f} GiB → {out}")
+
+
+def _write_profile_result(config, accelerator, window_sec: float, timed_steps: int,
+                          prof, dataload_s: float, compute_s: float) -> None:
+    """Write a per-step breakdown from a torch.profiler run to config.profile_output.
+
+    The headline is ``gpu_util_pct`` = GPU-kernel busy time ÷ wall-clock: if it's
+    well under 100%, the step is CPU/host-bound (graph construction, dispatch,
+    host↔device copies), which is the case for the Grace-CPU + NVLink-C2C argument.
+    ``top_ops`` names where the time goes. Profiler overhead inflates absolute
+    wall_ms vs a clean bench — read the RATIOS, not the absolutes.
+    """
+    import socket
+    from torch.autograd import DeviceType
+
+    n = max(1, timed_steps)
+    ka = prof.key_averages()
+
+    def _cuda(k):
+        for attr in ("self_device_time_total", "self_cuda_time_total"):
+            v = getattr(k, attr, None)
+            if v:
+                return float(v)
+        return 0.0
+
+    def _cpu(k):
+        return float(getattr(k, "self_cpu_time_total", 0.0))
+
+    def _is_device(k):
+        # Actual on-GPU kernel events have device_type CUDA; CPU-side operators and
+        # user annotations (which also carry an attributed device time for the
+        # kernels they launch) are CPU — summing only device events avoids the
+        # double-count that otherwise pushes "GPU busy" past wall-clock.
+        return getattr(k, "device_type", None) == DeviceType.CUDA
+
+    # True GPU busy time = Σ self device time over device(kernel) events only.
+    gpu_busy_ms = sum(_cuda(k) for k in ka if _is_device(k)) / 1e3 / n
+    tot_cpu_us = sum(_cpu(k) for k in ka if not _is_device(k))
+    wall_ms = window_sec * 1e3 / n
+
+    # CPU-side kernel-dispatch + sync overhead — the signature of a launch-bound
+    # step (many tiny kernels). Named CUDA-runtime calls in the profiler.
+    DISPATCH = {"cudaLaunchKernel", "cudaStreamSynchronize", "cudaMemcpyAsync",
+                "cudaDeviceSynchronize", "cudaMemsetAsync", "Command Buffer Full"}
+    cpu_dispatch_ms = sum(_cpu(k) for k in ka if k.key in DISPATCH) / 1e3 / n
+    _launch = next((k for k in ka if k.key == "cudaLaunchKernel"), None)
+    kernel_launches_per_step = (_launch.count / n) if _launch is not None else None
+
+    top = sorted(ka, key=lambda k: _cpu(k) + _cuda(k), reverse=True)[:15]
+    ops = [{
+        "name": k.key,
+        "cpu_ms_per_step": _cpu(k) / 1e3 / n,
+        "cuda_ms_per_step": _cuda(k) / 1e3 / n,
+        "calls_per_step": k.count / n,
+    } for k in top]
+
+    result = {
+        "hostname": socket.gethostname(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "world_size": accelerator.num_processes,
+        "batch_size_per_gpu": config.batch_size,
+        "timed_steps": timed_steps,
+        "wall_ms_per_step": wall_ms,
+        # Σ device-kernel time across ALL CUDA streams. Can exceed wall_ms when
+        # kernels overlap on concurrent streams — so it is NOT a utilization %;
+        # it is total GPU kernel-work. The launch-bound signal is cpu_dispatch.
+        "device_kernel_ms_per_step": gpu_busy_ms,
+        "cpu_dispatch_ms_per_step": cpu_dispatch_ms,
+        "cpu_dispatch_frac_pct": (100.0 * cpu_dispatch_ms / wall_ms) if wall_ms else None,
+        "kernel_launches_per_step": kernel_launches_per_step,
+        "cpu_self_ms_per_step": tot_cpu_us / 1e3 / n,
+        "dataload_ms_per_step": dataload_s * 1e3 / n,
+        "compute_ms_per_step": compute_s * 1e3 / n,
+        "top_ops": ops,
+        "note": "torch.profiler overhead inflates absolute wall_ms vs a clean "
+                "bench; the launch-bound signal is cpu_dispatch_frac_pct (CPU time "
+                "in kernel launch/sync ÷ wall) and kernel_launches_per_step.",
+    }
+    out = Path(config.profile_output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2))
+    frac = result["cpu_dispatch_frac_pct"]
+    print(f"[profile] wall {wall_ms:.0f} ms/step | device-kernel {gpu_busy_ms:.0f} ms "
+          f"| CPU dispatch {cpu_dispatch_ms:.0f} ms ({frac:.0f}% of wall) over "
+          f"{kernel_launches_per_step:,.0f} launches | dataload "
+          f"{result['dataload_ms_per_step']:.0f} ms → {out}")
 
 
 def _save_checkpoint(
