@@ -85,6 +85,12 @@ SUBSET_NODES=$(IFS=,; echo "${_ALLOC_NODES[*]:0:$NODES}")
 MASTER_PORT=$(( 29500 + NPROC ))     # vary by config to dodge TIME_WAIT reuse
 CVD=$(seq -s, 0 $(( GPN - 1 )))      # 0,1,2,3 on Perlmutter; 0 on a 1-GPU node
 
+# GPU srun flags — Perlmutter tracks GPUs as a Slurm GRES so it wants
+# --gpus-per-node/--gpu-bind; Vista does NOT (Gres=(null), 1 GH200/node always
+# visible) and rejects them with "Invalid generic resource (gres) specification".
+# Override with BENCH_SRUN_GPU_FLAGS="" on such clusters. Unset → Perlmutter default.
+SRUN_GPU_FLAGS="${BENCH_SRUN_GPU_FLAGS---gpus-per-node=$GPN --gpu-bind=none}"
+
 RUNDIR="$BENCH_OUT_DIR/_rundir"      # shared across configs → dataset stats computed once
 OUT_JSON="$BENCH_OUT_DIR/${MACHINE}_n${NODES}_g${NPROC}_b${BATCH}.json"
 mkdir -p "$BENCH_OUT_DIR" "$RUNDIR"
@@ -99,7 +105,7 @@ echo "============================================================"
 # srun-native SPMD (one task per GPU). See examples/MaterialsSaddles/run.sh and
 # CLAUDE.md "Multi-node launch" for why this beats `accelerate launch` here.
 srun --nodelist="$SUBSET_NODES" --nodes="$NODES" --ntasks="$NPROC" \
-     --ntasks-per-node="$TPN" --gpus-per-node="$GPN" --gpu-bind=none \
+     --ntasks-per-node="$TPN" $SRUN_GPU_FLAGS \
      --distribution=block \
   bash -c "
     set -euo pipefail
