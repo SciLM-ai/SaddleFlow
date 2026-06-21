@@ -528,14 +528,20 @@ class FlowMatchingLoss(nn.Module):
             x_t = wrap_positions(x_t_unwrapped, sample["cell"])
 
             if use_corrected:
-                # PBC-correct convergent target — points from x_t toward saddle
-                # along the MIC-shortest periodic image. (1 − t) ≥ t_floor here
-                # by the `use_corrected` predicate, so no division blowup.
-                # Frozen-atom rows of v_target evaluate to MIC(saddle − x_t)/Δt
-                # which is approximately 0 for fixed atoms (their saddle and
-                # x_t positions are identical by construction); they get masked
-                # to 0 by `apply_output_projections` downstream anyway.
-                v_target = mic_displacement(x1, x_t, sample["cell"]) / (1.0 - t)
+                # Convergent target — points from x_t toward the saddle. Computed
+                # in the CONTINUOUS (unwrapped) frame: x1 (saddle_un) and
+                # x_t_unwrapped are both unwrapped relative to `start`, so the raw
+                # difference is the displacement to the SAME saddle image the
+                # trajectory interpolates toward. (1 − t) ≥ t_floor here by the
+                # `use_corrected` predicate, so no division blowup.
+                #
+                # Do NOT use mic_displacement(x1, x_t): x_t is wrapped and MIC
+                # re-snaps to the nearest periodic image, which differs from x1's
+                # image whenever |saddle − midpoint| > half-cell (common in small
+                # cells), pointing the target at the WRONG copy of the saddle.
+                # Frozen-atom rows are ~0 (saddle and x_t share fixed positions)
+                # and get masked downstream anyway.
+                v_target = (x1 - x_t_unwrapped) / (1.0 - t)
             else:
                 # v7-5 original / pre-v7-6: straight-line constant target.
                 v_target = x1 - x0
