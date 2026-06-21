@@ -491,7 +491,16 @@ class FlowMatchingLoss(nn.Module):
         data_list_P: list[AtomicData] = []
 
         for sample in batch:
-            x0, x1, t, _ = sample_endpoints(sample, self.config, generator=generator)
+            # The sampler may return a 5th element: a per-sample x_t-perturbation
+            # sigma (used by the private x0-recipe hook so different recipes can
+            # carry different off-line noise). The public midpoint sampler returns
+            # 4 — fall back to the global config sigma then.
+            _ep = sample_endpoints(sample, self.config, generator=generator)
+            if len(_ep) == 5:
+                x0, x1, t, _, xt_sigma = _ep
+            else:
+                x0, x1, t, _ = _ep
+                xt_sigma = self.config.xt_perturb_sigma
             x_t_unwrapped = (1.0 - t) * x0 + t * x1
 
             # v7-6 hybrid target schedule (only when --xt-target-correction).
@@ -514,14 +523,14 @@ class FlowMatchingLoss(nn.Module):
             # Apply perturbation when:
             #   - in the corrected regime, OR
             #   - target correction OFF (v7-5 / Mode 1 v5 backward-compat)
-            apply_perturb = cfg.xt_perturb_sigma > 0.0 and (
+            apply_perturb = xt_sigma > 0.0 and (
                 use_corrected or not cfg.xt_target_correction
             )
             if apply_perturb:
                 from ..data.transforms import gaussian_perturbation
                 mobile = ~sample["fixed"]
                 eps = gaussian_perturbation(
-                    mobile, cfg.xt_perturb_sigma,
+                    mobile, xt_sigma,
                     generator=generator, dtype=x_t_unwrapped.dtype,
                 )
                 x_t_unwrapped = x_t_unwrapped + eps
