@@ -168,9 +168,17 @@ def train(
     # 30 min covers cold-cache UMA load across 64-512 GPUs on Perlmutter without
     # affecting steady-state training (per-step collectives finish in ms).
     ddp_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=30))
+    handlers = [ddp_kwargs]
+    # FIND_UNUSED_PARAMS=1 -> DDP find_unused_parameters=True. The default (False)
+    # deadlocks the gradient reducer if any parameter receives no gradient on some
+    # rank for some batch (a hang at a data-dependent step). Suspected cause of the
+    # Vista 32-node ALLREDUCE hangs; opt-in so the validated default path is unchanged.
+    if os.environ.get("FIND_UNUSED_PARAMS") == "1":
+        from accelerate.utils import DistributedDataParallelKwargs
+        handlers.append(DistributedDataParallelKwargs(find_unused_parameters=True))
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
-        kwargs_handlers=[ddp_kwargs],
+        kwargs_handlers=handlers,
     )
     out_dir = Path(config.output_dir)
     if accelerator.is_main_process:

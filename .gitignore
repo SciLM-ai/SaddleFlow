@@ -56,3 +56,6 @@ slurm-*.out
 
 # Reference codes — kept locally for design reference; will be deleted before public release
 other_codes/
+
+# Private experiments tree (its own git repo; not part of the public package)
+private/
