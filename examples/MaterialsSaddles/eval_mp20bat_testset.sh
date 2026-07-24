@@ -56,6 +56,7 @@ export FAIRCHEM_CACHE_DIR="${FAIRCHEM_CACHE_DIR:-$SCRATCH/fairchem_cache}"
 export HF_HOME="${HF_HOME:-$SCRATCH/.cache/huggingface}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1                         # live (unbuffered) eval stdout
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true   # let accelerate see all node GPUs
 
 EMA_FLAG=""
@@ -77,8 +78,10 @@ echo "[eval] ckpt=$CKPT"
 echo "[eval] out=$OUT  weights=$WEIGHTS  subset=$SUBSET  K=$K  gpus=$NPROC  num_cases=${NUM_CASES} (0=full)"
 
 # 1) Sample + score the test split → results.npz, summary.json, histograms.
+# `--multi_gpu` requires >=2 processes; on a single-GPU node (e.g. Vista GH200) omit it.
+MULTIGPU=""; [ "$NPROC" -ge 2 ] 2>/dev/null && MULTIGPU="--multi_gpu"
 "$PYTHON" -m accelerate.commands.launch \
-    --num_processes "$NPROC" --multi_gpu --mixed_precision bf16 \
+    --num_processes "$NPROC" $MULTIGPU --mixed_precision bf16 \
     eval_full_testset_K10.py \
     --ckpt-dir "$CKPT" --subset "$SUBSET" --K "$K" --seed 0 \
     --output-dir "$OUT" $EMA_FLAG $SUBSET_FLAGS

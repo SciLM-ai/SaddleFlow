@@ -80,6 +80,10 @@ def parse_args():
     p.add_argument("--ckpt-dir", required=True)
     p.add_argument("--subset", default="mp20bat")
     p.add_argument("--K", type=int, default=10, help="Euler integration steps")
+    p.add_argument("--n-perturbations", type=int, default=1,
+                   help="candidates sampled per case; if >1, report best-of-N (oracle: closest to truth)")
+    p.add_argument("--sigma-inf", type=float, default=0.0,
+                   help="inference-time Gaussian spread (A) on x_0 for multimodal sampling")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--num-cases", type=int, default=0,
                    help="If > 0, restrict to N test triplets. "
@@ -238,7 +242,8 @@ def load_model(ckpt_dir: Path, device: str, use_ema: bool = False):
 # ------------------------------------------------------------------- inference
 
 def run_one_case(record: dict, loss_module: FlowMatchingLoss, *, K: int,
-                 device: str, generator: torch.Generator) -> dict:
+                 device: str, generator: torch.Generator,
+                 n_perturbations: int = 1, sigma_inf: float = 0.0) -> dict:
     sample_dict = {
         "start_pos": record["start_pos"],
         "Z": record["Z"],
@@ -253,8 +258,8 @@ def run_one_case(record: dict, loss_module: FlowMatchingLoss, *, K: int,
         loss_module.backbone,
         loss_module.global_attn,
         loss_module.velocity_head,
-        sigma_inf=0.0,
-        n_perturbations=1,
+        sigma_inf=sigma_inf,
+        n_perturbations=n_perturbations,
         K=K,
         device=device,
         generator=generator,
@@ -269,10 +274,14 @@ def run_one_case(record: dict, loss_module: FlowMatchingLoss, *, K: int,
         xt_capture=loss_module._xt_capture,
         endpoint_capture=loss_module._endpoint_capture,
     )
-    pred_np = pred[0].detach().cpu().numpy().astype(np.float64)
 
     saddle_np = record["saddle_un_pos"].numpy().astype(np.float64)
     cell_np = record["cell"].numpy().astype(np.float64)
+    # best-of-N (oracle): score every sampled candidate vs ground truth, keep the
+    # closest. With n_perturbations=1 this is identical to the old single-shot path.
+    _cands = pred.detach().cpu().numpy().astype(np.float64)   # (n_perturbations, N, 3)
+    _cand_rmsd = [rmsd_pbc(_cands[i], saddle_np, cell_np) for i in range(_cands.shape[0])]
+    pred_np = _cands[int(np.argmin(_cand_rmsd))]
     fixed_np = record["fixed"].numpy().astype(bool)
     mobile_np = ~fixed_np
     has_fixed = bool(fixed_np.any())
@@ -484,7 +493,8 @@ def main():
         side = sides[i]
         record = dataset[2 * tid + side]
         gen = torch.Generator(device="cpu").manual_seed(int(args.seed) * 100003 + i)
-        out = run_one_case(record, loss_module, K=args.K, device=device, generator=gen)
+        out = run_one_case(record, loss_module, K=args.K, device=device, generator=gen,
+                           n_perturbations=args.n_perturbations, sigma_inf=args.sigma_inf)
         out.update({
             "case_idx": i,
             "triplet_id": int(tid),
