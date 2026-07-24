@@ -116,10 +116,19 @@ def sample_saddles(
             "velocity_head has force_field_channels>0 (Mode 1 v2) but "
             "force_head was not provided to sample_saddles."
         )
-    if (not head_v2) and force_head is not None:
+    head_uses_energy = getattr(velocity_head, "energy_conditioning", False)
+    if (not head_v2) and (not head_uses_energy) and force_head is not None:
         raise ValueError(
-            "force_head was provided but velocity_head has force_field_channels==0."
+            "force_head was provided but velocity_head has force_field_channels==0 "
+            "and energy_conditioning is off."
         )
+    if head_uses_energy and force_head is None:
+        raise ValueError(
+            "velocity_head.energy_conditioning=True but force_head (UMA energy head) "
+            "was not provided to sample_saddles."
+        )
+    if head_uses_energy and partner_pos is None:
+        raise ValueError("energy_conditioning needs partner_pos (to compute E_P).")
 
     # v7-3 / v7-4 dimer-force wiring:
     #   * v7-3 legacy:  velocity_head.dimer_force_channels > 0  (feature input)
@@ -221,6 +230,38 @@ def sample_saddles(
                 P_feat_inf = backbone.forward_static(P_batch_inf)["node_embedding"]
         endpoint_features_all_inf = torch.cat([R_feat_inf, P_feat_inf], dim=-1).detach()
 
+    # Hammond energy conditioning: endpoint energies are FIXED across the whole
+    # integration (R, P don't move), so compute them ONCE and reuse every step.
+    energy_scalars_all: torch.Tensor | None = None
+    if head_uses_energy:
+        rc = getattr(getattr(force_head, "head", None), "regress_config", None)
+        prev_f = getattr(rc, "forces", None) if rc is not None else None
+        try:
+            if rc is not None and prev_f is not None:
+                rc.forces = False                       # energy only, no force autograd
+            def _energy_per_atom(pos):
+                data = build_atomic_data(wrap_positions(pos, cell), Z, cell,
+                                         task_name, charge, spin, fixed)
+                b = data_list_collater([data], otf_graph=True).to(device)
+                with torch.no_grad():
+                    if frozen_force_backbone is not None:
+                        emb = frozen_force_backbone(b)
+                    elif isinstance(backbone, TimeFiLMBackbone):
+                        emb = backbone.forward_static(b)
+                    else:
+                        emb = backbone(b)
+                    out = force_head(b, emb)
+                key = f"{task_name}_energy"
+                key = key if key in out else next(k for k in out if k.endswith("_energy"))
+                return float(out[key]["energy"].reshape(-1)[0]) / int(Z.shape[0])
+            eR = _energy_per_atom(r_R); eP = _energy_per_atom(partner)
+        finally:
+            if rc is not None and prev_f is not None:
+                rc.forces = prev_f
+        energy_scalars_all = torch.tensor(
+            [[eR, eP, eP - eR]], device=device, dtype=torch.float32,
+        ).repeat(n_perturbations, 1)                    # (n_perturbations, 3), same per system
+
     # Inference loop. We can't use a global @torch.no_grad() decorator like
     # the v0 sampler did — v2's force computation needs autograd through the
     # energy block. Instead, scope no_grad() per-call below when forces
@@ -262,10 +303,17 @@ def sample_saddles(
         )
 
         force_field_all: torch.Tensor | None = None
+        # Only compute forces when the model consumes them. With energy-only
+        # conditioning, force_head is present purely for the endpoint energies
+        # (computed once above), so force_field must stay None here.
+        wants_force = (
+            head_v2 or is_v6_force_film or head_dimer_feature or use_dimer_residual
+            or getattr(velocity_head, "force_residual", False)
+        )
         # ============================================================
         # Step A — REAL forces from FROZEN UMA at x_t (v7-4-redesign)
         # ============================================================
-        if force_head is not None and frozen_force_backbone is not None:
+        if wants_force and force_head is not None and frozen_force_backbone is not None:
             with torch.enable_grad():
                 batch_data["pos"].requires_grad_(True)
                 feat_frozen = frozen_force_backbone(batch_data)
@@ -278,7 +326,7 @@ def sample_saddles(
         # ============================================================
         # Step B — Trainable backbone forward(s)
         # ============================================================
-        if force_head is not None and frozen_force_backbone is None:
+        if wants_force and force_head is not None and frozen_force_backbone is None:
             # Legacy v7-3 path: derive forces from trainable backbone (drifted).
             with torch.enable_grad():
                 batch_data["pos"].requires_grad_(True)
@@ -349,6 +397,7 @@ def sample_saddles(
                 force_field=force_field_all,
                 endpoint_features=endpoint_features_all_inf,
                 dimer_force=(dimer_force_all_inf if head_dimer_feature else None),
+                energy_scalars=energy_scalars_all,
             )
             # v7-4: per-atom α from DimerAlphaMLP applied to per-atom F_dimer.
             if use_dimer_residual and dimer_force_all_inf is not None:

@@ -143,6 +143,8 @@ class VelocityHead(nn.Module):
         dimer_force_channels: int = 0,
         x_input_channel_factor: int = 1,
         endpoint_n_layers_per_side: int = 1,
+        energy_conditioning: bool = False,
+        energy_mlp_hidden: int = 64,
     ):
         super().__init__()
         assert depth >= 1
@@ -261,6 +263,20 @@ class VelocityHead(nn.Module):
         nn.init.zeros_(self.time_mlp[-1].weight)
         nn.init.zeros_(self.time_mlp[-1].bias)
 
+        # Energy-FiLM (Hammond conditioning): per-system reaction-energy scalars
+        # [E_R, E_P, ΔE] -> per-channel bias (l=0) + gate (l>=1), same AdaLN-zero
+        # pattern as time_mlp (zero-init last layer => identity at init, so the
+        # head is numerically unchanged until training lifts it off zero).
+        self.energy_conditioning = energy_conditioning
+        if energy_conditioning:
+            self.energy_mlp = nn.Sequential(
+                nn.Linear(3, energy_mlp_hidden),
+                nn.SiLU(),
+                nn.Linear(energy_mlp_hidden, 2 * sphere_channels),
+            )
+            nn.init.zeros_(self.energy_mlp[-1].weight)
+            nn.init.zeros_(self.energy_mlp[-1].bias)
+
         self.layers = nn.ModuleList()
         for _ in range(depth - 1):
             self.layers.append(SO3_Linear(sphere_channels, sphere_channels, lmax=1))
@@ -354,6 +370,7 @@ class VelocityHead(nn.Module):
         force_field: torch.Tensor | None = None,
         endpoint_features: torch.Tensor | None = None,
         dimer_force: torch.Tensor | None = None,
+        energy_scalars: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -433,6 +450,21 @@ class VelocityHead(nn.Module):
             n = x_l01.shape[0]
             t_bias_per_atom = t_bias.expand(n, -1)
             t_gate_per_atom = t_gate.expand(n, -1)
+
+        # Energy-FiLM: fold reaction-energy [E_R,E_P,ΔE] into the bias/gate the
+        # same way as time. Zero-init energy_mlp => e_bias=0, e_gate=1 at init.
+        if self.energy_conditioning:
+            if energy_scalars is None:
+                raise ValueError("energy_scalars (B,3) required when energy_conditioning=True")
+            e_bias, e_scale = self.energy_mlp(energy_scalars).chunk(2, dim=-1)  # (B, C) each
+            e_gate = 1.0 + e_scale
+            if batch_idx is not None:
+                e_bias_pa, e_gate_pa = e_bias[batch_idx], e_gate[batch_idx]
+            else:
+                n = x_l01.shape[0]
+                e_bias_pa, e_gate_pa = e_bias.expand(n, -1), e_gate.expand(n, -1)
+            t_bias_per_atom = t_bias_per_atom + e_bias_pa
+            t_gate_per_atom = t_gate_per_atom * e_gate_pa
 
         h_l0 = (x_l01[:, 0, :] + t_bias_per_atom).unsqueeze(1)  # (N, 1, C)
         h_l1 = x_l01[:, 1:, :] * t_gate_per_atom.unsqueeze(1)   # (N, 3, C)

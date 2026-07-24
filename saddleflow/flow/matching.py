@@ -78,6 +78,11 @@ class FlowMatchingConfig:
     # Default False preserves the constant-target behaviour.
     xt_target_correction: bool = False
     xt_target_correction_t_floor: float = 0.1
+    # Hammond conditioning: feed endpoint reaction energies [E_R,E_P,ΔE] (per-atom,
+    # from the UMA energy head) to the velocity head's energy-FiLM. Targets the
+    # along-path TS position (early/late), which geometry alone cannot predict.
+    # Requires force_head to be provided and the head built with energy_conditioning.
+    energy_conditioning: bool = False
 
 
 def sample_endpoints(
@@ -358,10 +363,13 @@ class FlowMatchingLoss(nn.Module):
         # Whether ANY F_dimer pathway is active (feature OR output residual).
         self._compute_dimer_force = self._compute_dimer_force_feature or self.use_dimer_residual
 
-        if (force_head is None) != (getattr(velocity_head, "force_field_channels", 0) == 0):
+        # force_head is REQUIRED for force injection (force_field_channels>0); it may
+        # also be supplied purely for energy conditioning (energy-FiLM) with no force
+        # injection — so only error on the missing-required-head case.
+        if force_head is None and getattr(velocity_head, "force_field_channels", 0) > 0:
             raise ValueError(
-                "force_head must be provided iff velocity_head.force_field_channels > 0; "
-                f"got force_head={'set' if force_head is not None else 'None'}, "
+                "force_head must be provided when velocity_head.force_field_channels > 0; "
+                f"got force_head=None, "
                 f"force_field_channels={getattr(velocity_head, 'force_field_channels', 0)}"
             )
 
@@ -455,6 +463,43 @@ class FlowMatchingLoss(nn.Module):
     @property
     def device(self) -> torch.device:
         return next(self.velocity_head.parameters()).device
+
+    def _endpoint_energy_scalars(self, batch: list[dict], device) -> torch.Tensor:
+        """Per-system [E_R, E_P, ΔE] per-atom (eV/atom) from UMA's energy head, for
+        the velocity head's energy-FiLM (Hammond conditioning). Pure no-grad forward
+        with the head's force output disabled, so it adds no autograd graph; MUST be
+        called BEFORE the x_t forward (MoLE-state constraint, like endpoint features)."""
+        if self.force_head is None:
+            raise RuntimeError("config.energy_conditioning=True needs force_head (UMA energy head)")
+        fh = self.force_head
+        prev = getattr(getattr(fh, "head", None), "regress_config", None)
+        prev_forces = getattr(prev, "forces", None) if prev is not None else None
+        try:
+            if prev is not None and prev_forces is not None:
+                prev.forces = False                      # energy only -> no force autograd
+            task = batch[0]["task_name"]
+
+            def _E(poskey):
+                dl = [build_atomic_data(wrap_positions(s[poskey], s["cell"]), s["Z"], s["cell"],
+                                        s["task_name"], s["charge"], s["spin"], s["fixed"]) for s in batch]
+                b = data_list_collater(dl, otf_graph=True).to(device)
+                with torch.no_grad():
+                    if self.frozen_force_backbone is not None:
+                        emb = self.frozen_force_backbone(b)
+                    elif isinstance(self.backbone, TimeFiLMBackbone):
+                        emb = self.backbone.forward_static(b)
+                    else:
+                        emb = self.backbone(b)
+                    out = fh(b, emb)
+                key = f"{task}_energy" if f"{task}_energy" in out else next(k for k in out if k.endswith("_energy"))
+                E = out[key]["energy"].reshape(-1).detach()
+                nat = torch.tensor([int(s["Z"].shape[0]) for s in batch], device=device, dtype=E.dtype)
+                return E / nat
+            ER = _E("start_pos"); EP = _E("partner_un_pos")
+        finally:
+            if prev is not None and prev_forces is not None:
+                prev.forces = prev_forces
+        return torch.stack([ER, EP, EP - ER], dim=1).float()   # (B, 3)
 
     def forward(
         self,
@@ -664,6 +709,12 @@ class FlowMatchingLoss(nn.Module):
                     P_feat = self.backbone.forward_static(P_batch)["node_embedding"]
             endpoint_features_all = torch.cat([R_feat, P_feat], dim=-1).detach()
 
+        # Hammond energy-FiLM conditioning: compute endpoint energies HERE (before
+        # the x_t forward) for the same MoLE-state reason as endpoint features.
+        energy_scalars_all: torch.Tensor | None = None
+        if self.config.energy_conditioning:
+            energy_scalars_all = self._endpoint_energy_scalars(batch, device)
+
         # Backbone forward needs grad-enabled mode if EITHER the backbone has
         # trainable params (v1+ unfreezes blocks[-1]) OR we need to compute
         # forces via autograd through the energy head (v2+).
@@ -692,7 +743,16 @@ class FlowMatchingLoss(nn.Module):
         # No autograd backward into the frozen backbone (its params are
         # requires_grad=False), only through positions.
         force_field_all: torch.Tensor | None = None
-        if self.force_head is not None and self.frozen_force_backbone is not None:
+        # Only compute/inject forces when the model actually consumes them. With
+        # energy-conditioning the force_head is present purely to compute endpoint
+        # energies (done earlier), so force_field must stay None here.
+        wants_force = (
+            getattr(self.velocity_head, "force_field_channels", 0) > 0
+            or is_v6_force_film
+            or self._compute_dimer_force
+            or getattr(self.velocity_head, "force_residual", False)
+        )
+        if wants_force and self.force_head is not None and self.frozen_force_backbone is not None:
             from ..utils.forces import compute_uma_forces
             # Vanilla UMA forward — no time-FiLM, no force-FiLM. The frozen
             # backbone is plain UMA, not TimeFiLMBackbone.
@@ -730,7 +790,7 @@ class FlowMatchingLoss(nn.Module):
         # Legacy path: if we DON'T have a frozen force backbone but DO have
         # a force_head, derive forces from the trainable backbone's features
         # (this matches the v7-3 behaviour). Then run the v6 second pass.
-        if self.force_head is not None and self.frozen_force_backbone is None:
+        if wants_force and self.force_head is not None and self.frozen_force_backbone is None:
             from ..utils.forces import compute_uma_forces
             forces = compute_uma_forces(
                 batch_data, feat, self.force_head, self.force_tasks,
@@ -809,6 +869,7 @@ class FlowMatchingLoss(nn.Module):
             force_field=force_field_all,
             endpoint_features=endpoint_features_all,
             dimer_force=(dimer_force_all if self._compute_dimer_force_feature else None),
+            energy_scalars=energy_scalars_all,
         )
 
         # v7-4: output-side Dimer nudge with per-atom α from DimerAlphaMLP.

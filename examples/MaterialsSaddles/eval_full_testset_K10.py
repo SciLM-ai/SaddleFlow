@@ -142,6 +142,7 @@ def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
     eigenmode_aux_w = float(extras.get("eigenmode_aux_weight", 0.0))
     x_input_factor = int(extras.get("x_input_channel_factor", 1))
     n_ep_layers = int(extras.get("endpoint_n_layers_per_side", 1))
+    energy_cond = bool(extras.get("energy_conditioning", False))
     head = VelocityHead(
         sphere_channels=sc, input_lmax=lmax, depth=head_depth,
         delta_endpoint_channels=delta_C,
@@ -151,8 +152,9 @@ def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
         dimer_force_channels=dimer_force_C,
         x_input_channel_factor=x_input_factor,
         endpoint_n_layers_per_side=n_ep_layers,
+        energy_conditioning=energy_cond,
     ).to(device)
-    if force_C > 0:
+    if force_C > 0 or energy_cond:   # energy conditioning needs the UMA energy head too
         force_head, force_tasks = load_uma_force_head(backbone_name, device=device)
     else:
         force_head, force_tasks = None, None
@@ -197,6 +199,7 @@ def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
         FlowMatchingConfig(
             mode=mode, xt_perturb_sigma=0.0,
             com_symmetric_loss=com_symmetric_loss,
+            energy_conditioning=energy_cond,
         ),
         backbone, attn, head,
         force_head=force_head, force_tasks=force_tasks,
