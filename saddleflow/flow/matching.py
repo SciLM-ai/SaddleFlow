@@ -682,7 +682,7 @@ class FlowMatchingLoss(nn.Module):
         batch_idx = batch_data.batch
 
         delta_partner_all: torch.Tensor | None = None
-        if self.config.mode == 1:
+        if self.config.mode == 1 and delta_partner_list:
             # Shape is (N_total, 2, 3) — [delta_R, delta_P] per atom.
             delta_partner_all = torch.cat(delta_partner_list, dim=0).to(device)
 

@@ -81,6 +81,8 @@ def parse_args():
 
     # Optimization.
     p.add_argument("--num-epochs", type=int, default=20)
+    p.add_argument("--max-steps", type=int, default=0,
+                   help="stop after N optimizer steps (0 = full run); for smoke tests/benchmarks")
     p.add_argument("--batch-size", type=int, default=4,
                    help="Per-process batch size (i.e. per GPU).")
     p.add_argument("--learning-rate", type=float, default=1e-3,
@@ -567,6 +569,7 @@ def main():
     train_cfg = TrainingConfig(
         output_dir=str(out_dir),
         num_epochs=args.num_epochs, batch_size=args.batch_size,
+        max_steps=args.max_steps,
         num_workers=args.num_workers,
         learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay,
