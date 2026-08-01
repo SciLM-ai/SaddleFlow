@@ -21,7 +21,7 @@ from ase.constraints import FixAtoms
 from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 
-from ..data.transforms import mic_displacement, wrap_positions
+from ..data.transforms import gaussian_perturbation, mic_displacement, wrap_positions
 from ..models.time_filmed_backbone import MultiLayerCapture, TimeFiLMBackbone
 
 
@@ -41,6 +41,18 @@ class FlowMatchingConfig:
     # `saddle − x_0` (unchanged). Forces the model to encounter off-line
     # samples where the force at x_t is informative.
     xt_perturb_sigma: float = 0.0
+
+    # TS-DENOISE objective (single-ended). When > 0, training pairs become
+    #     x_0 = saddle + eps,  eps ~ N(0, sigma^2 I) on mobile atoms
+    #     x_1 = saddle,        v_target = -eps
+    # i.e. the model learns to project any nearby structure onto the saddle,
+    # with NO reactant/product conditioning. At inference the (R,P) midpoint
+    # is used only to choose where integration starts. If
+    # `ts_denoise_sigma_max` > 0, sigma is drawn per sample from
+    # U(ts_denoise_sigma, ts_denoise_sigma_max) so the denoiser covers the
+    # whole range of midpoint-to-saddle distances seen at inference.
+    ts_denoise_sigma: float = 0.0
+    ts_denoise_sigma_max: float = 0.0
 
     def __post_init__(self):
         if self.mode != 1:
@@ -106,6 +118,19 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
+    if config.ts_denoise_sigma > 0.0:
+        # Single-ended TS-denoise: x_0 = saddle + eps, x_1 = saddle.
+        sig = config.ts_denoise_sigma
+        if config.ts_denoise_sigma_max > sig:
+            u = torch.rand((), generator=generator).item()
+            sig = sig + u * (config.ts_denoise_sigma_max - sig)
+        eps = gaussian_perturbation(mobile, sig, generator=generator,
+                                    dtype=r_saddle.dtype)
+        x0 = r_saddle + eps
+        x1 = r_saddle
+        t = torch.rand((), generator=generator).item()
+        return x0, x1, t, mobile
+
     x0 = 0.5 * (r_start + partner)
     x1 = r_saddle
     t = torch.rand((), generator=generator).item()
@@ -609,7 +634,7 @@ class FlowMatchingLoss(nn.Module):
             t_values.append(t)
             fixed_list.append(sample["fixed"])
 
-            if self.config.mode == 1:
+            if self.config.mode == 1 and self.config.ts_denoise_sigma <= 0.0:
                 # Pass BOTH (R - x_t) and (P - x_t) as per-atom MIC displacements.
                 # Starting from the midpoint, the head needs to know where both
                 # endpoints sit relative to the current point; passing only the

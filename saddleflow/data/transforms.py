@@ -25,9 +25,15 @@ def wrap_positions(positions: torch.Tensor, cell: torch.Tensor) -> torch.Tensor:
     Returns:
         Wrapped positions, same shape as input.
     """
-    frac = positions @ torch.linalg.inv(cell)
-    frac = frac - torch.floor(frac)
-    return frac @ cell
+    # These are matmuls: torch.autocast would run them in bf16, quantising
+    # ~10 A coordinates to ~0.05 A. Force fp32 regardless of autocast.
+    with torch.autocast(device_type=positions.device.type, enabled=False):
+        p32 = positions.float()
+        c32 = cell.float()
+        frac = p32 @ torch.linalg.inv(c32)
+        frac = frac - torch.floor(frac)
+        out = frac @ c32
+    return out.to(positions.dtype)
 
 
 def mic_displacement(

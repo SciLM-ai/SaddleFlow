@@ -128,6 +128,13 @@ def parse_args():
 
     # Mode (only mode=1 is implemented; reserved for future training modes).
     p.add_argument("--mode", type=int, default=1)
+    p.add_argument("--ts-denoise-sigma", type=float, default=0.0,
+                   help="Single-ended TS-denoise objective: x0 = saddle + N(0, sigma^2) "
+                        "on mobile atoms, x1 = saddle, no R/P conditioning. 0 = off "
+                        "(use the standard midpoint->saddle mode-1 recipe).")
+    p.add_argument("--ts-denoise-sigma-max", type=float, default=0.0,
+                   help="If > --ts-denoise-sigma, draw sigma per sample from "
+                        "U(sigma, sigma_max) to cover the midpoint-distance range.")
     p.add_argument("--delta-endpoint-channels", type=int, default=32)
     p.add_argument("--force-field-channels", type=int, default=32)
     # v7-2a1a: eigenmode auxiliary head (sign-invariant cos² loss against the
@@ -521,6 +528,8 @@ def main():
             com_symmetric_loss=bool(args.com_symmetric_loss),
             xt_target_correction=bool(args.xt_target_correction),
             xt_target_correction_t_floor=float(args.xt_target_correction_t_floor),
+            ts_denoise_sigma=float(args.ts_denoise_sigma),
+            ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
         ),
         backbone, attn, head,
         force_head=force_head, force_tasks=force_tasks,
