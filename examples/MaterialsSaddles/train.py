@@ -134,6 +134,10 @@ def parse_args():
                    help="Single-ended TS-denoise objective: x0 = saddle + N(0, sigma^2) "
                         "on mobile atoms, x1 = saddle, no R/P conditioning. 0 = off "
                         "(use the standard midpoint->saddle mode-1 recipe).")
+    p.add_argument("--ts-denoise-sigma-rel-lo", type=float, default=0.0,
+                   help="adaptive sigma: sigma_i = u*d_i/sqrt(3) with u~U(lo,hi), "
+                        "d_i = this sample's midpoint->saddle RMS distance")
+    p.add_argument("--ts-denoise-sigma-rel-hi", type=float, default=0.0)
     p.add_argument("--ts-denoise-sigma-max", type=float, default=0.0,
                    help="If > --ts-denoise-sigma, draw sigma per sample from "
                         "U(sigma, sigma_max) to cover the midpoint-distance range.")
@@ -532,6 +536,8 @@ def main():
             xt_target_correction_t_floor=float(args.xt_target_correction_t_floor),
             ts_denoise_sigma=float(args.ts_denoise_sigma),
             ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
+            ts_denoise_sigma_rel_lo=float(args.ts_denoise_sigma_rel_lo),
+            ts_denoise_sigma_rel_hi=float(args.ts_denoise_sigma_rel_hi),
         ),
         backbone, attn, head,
         force_head=force_head, force_tasks=force_tasks,

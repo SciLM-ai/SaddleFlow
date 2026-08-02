@@ -54,6 +54,17 @@ class FlowMatchingConfig:
     ts_denoise_sigma: float = 0.0
     ts_denoise_sigma_max: float = 0.0
 
+    # ADAPTIVE sigma: instead of a global scale, set each sample's sigma from
+    # ITS OWN midpoint->saddle distance d_i (RMS over mobile atoms):
+    #     sigma_i = u * d_i / sqrt(3),   u ~ U(rel_lo, rel_hi)
+    # so 3*sigma_i^2 = (u*d_i)^2, i.e. the training displacement matches the
+    # distance that system's inference actually has to travel. u spans the
+    # approach path (the integrator passes through every distance from d_i to
+    # 0), plus a little margin above 1. Overrides the global sigma when
+    # rel_hi > 0.
+    ts_denoise_sigma_rel_lo: float = 0.0
+    ts_denoise_sigma_rel_hi: float = 0.0
+
     def __post_init__(self):
         if self.mode != 1:
             raise ValueError(
@@ -118,8 +129,21 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
-    if config.ts_denoise_sigma > 0.0:
+    if config.ts_denoise_sigma > 0.0 or config.ts_denoise_sigma_rel_hi > 0.0:
         # Single-ended TS-denoise: x_0 = saddle + eps, x_1 = saddle.
+        if config.ts_denoise_sigma_rel_hi > 0.0:
+            # per-sample scale from this system's own midpoint->saddle distance
+            mid = 0.5 * (r_start + partner)
+            d = mic_displacement(r_saddle, mid, sample["cell"])
+            rms = float(torch.sqrt((d[mobile] ** 2).sum(-1).mean()).clamp(min=1e-3))
+            u = torch.rand((), generator=generator).item()
+            lo, hi = config.ts_denoise_sigma_rel_lo, config.ts_denoise_sigma_rel_hi
+            sig = (lo + u * (hi - lo)) * rms / (3 ** 0.5)
+            sig = max(sig, 1e-3)
+            eps = gaussian_perturbation(mobile, sig, generator=generator,
+                                        dtype=r_saddle.dtype)
+            t = torch.rand((), generator=generator).item()
+            return r_saddle + eps, r_saddle, t, mobile
         sig = config.ts_denoise_sigma
         if config.ts_denoise_sigma_max > sig:
             u = torch.rand((), generator=generator).item()
