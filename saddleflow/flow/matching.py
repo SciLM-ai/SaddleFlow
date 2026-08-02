@@ -658,7 +658,9 @@ class FlowMatchingLoss(nn.Module):
             t_values.append(t)
             fixed_list.append(sample["fixed"])
 
-            if self.config.mode == 1 and self.config.ts_denoise_sigma <= 0.0:
+            _denoise = (self.config.ts_denoise_sigma > 0.0
+                        or self.config.ts_denoise_sigma_rel_hi > 0.0)
+            if self.config.mode == 1 and not _denoise:
                 # Pass BOTH (R - x_t) and (P - x_t) as per-atom MIC displacements.
                 # Starting from the midpoint, the head needs to know where both
                 # endpoints sit relative to the current point; passing only the
