@@ -62,6 +62,17 @@ class FlowMatchingConfig:
     # approach path (the integrator passes through every distance from d_i to
     # 0), plus a little margin above 1. Overrides the global sigma when
     # rel_hi > 0.
+    # Loss shape. "mse" is the released objective. "huber" targets the
+    # conditional median rather than the mean (multi-modal saddle targets make
+    # the mean a poor summary); maxd_weight adds a per-system worst-atom term
+    # so the objective sees max atom displacement, not just its average.
+    # With probability `mixed_start_prob` a TS-denoise sample instead starts from
+    # the (R+P)/2 midpoint, so the model sees BOTH generic denoising directions and
+    # the specific reaction-coordinate direction that inference actually supplies.
+    mixed_start_prob: float = 0.0
+    loss_type: str = "mse"
+    huber_delta: float = 0.05
+    maxd_weight: float = 0.0
     ts_denoise_sigma_rel_lo: float = 0.0
     ts_denoise_sigma_rel_hi: float = 0.0
 
@@ -129,7 +140,11 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
-    if config.ts_denoise_sigma > 0.0 or config.ts_denoise_sigma_rel_hi > 0.0:
+    _use_midpoint_start = (
+        config.mixed_start_prob > 0.0
+        and float(torch.rand((), generator=generator)) < config.mixed_start_prob
+    )
+    if (config.ts_denoise_sigma > 0.0 or config.ts_denoise_sigma_rel_hi > 0.0) and not _use_midpoint_start:
         # Single-ended TS-denoise: x_0 = saddle + eps, x_1 = saddle.
         if config.ts_denoise_sigma_rel_hi > 0.0:
             # per-sample scale from this system's own midpoint->saddle distance
@@ -660,7 +675,11 @@ class FlowMatchingLoss(nn.Module):
 
             _denoise = (self.config.ts_denoise_sigma > 0.0
                         or self.config.ts_denoise_sigma_rel_hi > 0.0)
-            if self.config.mode == 1 and not _denoise:
+            # The head only accepts a delta_endpoint when it was built with
+            # delta channels; an unconditioned head (channels == 0) must never
+            # be handed one, whichever objective is active.
+            _wants_delta = getattr(self.velocity_head, "delta_endpoint_channels", 0) > 0
+            if self.config.mode == 1 and not _denoise and _wants_delta:
                 # Pass BOTH (R - x_t) and (P - x_t) as per-atom MIC displacements.
                 # Starting from the midpoint, the head needs to know where both
                 # endpoints sit relative to the current point; passing only the
@@ -950,7 +969,20 @@ class FlowMatchingLoss(nn.Module):
         n_mobile = int(mobile.sum().item())
 
         if n_mobile > 0:
-            velocity_loss = sq_err[mobile].mean()
+            if self.config.loss_type == "huber":
+                # sq_err is |dv|^2; use the norm so delta is in Angstrom units.
+                err = sq_err[mobile].clamp(min=1e-12).sqrt()
+                d = self.config.huber_delta
+                velocity_loss = torch.where(err <= d, 0.5 * err.pow(2) / d,
+                                            err - 0.5 * d).mean()
+            else:
+                velocity_loss = sq_err[mobile].mean()
+            if self.config.maxd_weight > 0.0:
+                # per-system max squared error over mobile atoms
+                big = torch.zeros(B, device=device, dtype=sq_err.dtype)
+                se_m = sq_err.masked_fill(~mobile, 0.0)
+                big = big.index_reduce_(0, batch_idx, se_m, "amax", include_self=False)
+                velocity_loss = velocity_loss + self.config.maxd_weight * big.mean()
         else:
             velocity_loss = sq_err.sum() * 0.0
 

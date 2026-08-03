@@ -42,6 +42,28 @@ from data_prep import (  # noqa: E402
 )
 
 from saddleflow.data import MaterialsSaddlesDataset
+from saddleflow.data.transforms import mic_displacement as _mic_disp
+
+
+class _SaddleOverrideDataset(torch.utils.data.Dataset):
+    """Swap each record's saddle for an externally reconverged one."""
+
+    def __init__(self, base, table):
+        self.base, self.table = base, table
+        self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        r = self.base[i]
+        new = self.table.get(int(r["triplet_id"]))
+        if new is not None:
+            start = r["start_pos"]
+            newt = torch.as_tensor(new, dtype=start.dtype)
+            r["saddle_un_pos"] = start + _mic_disp(newt, start, r["cell"])
+        return r
+
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss
 from saddleflow.models import EigenmodeHead, GlobalAttn, VelocityHead
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
@@ -134,6 +156,16 @@ def parse_args():
                    help="Single-ended TS-denoise objective: x0 = saddle + N(0, sigma^2) "
                         "on mobile atoms, x1 = saddle, no R/P conditioning. 0 = off "
                         "(use the standard midpoint->saddle mode-1 recipe).")
+    p.add_argument("--saddle-override", default=None,
+                   help="npz with tids/offsets/pos: replace each triplet's saddle with a "
+                        "reconverged one (MIC-unwrapped to start_pos); splits are filtered "
+                        "to triplets present in the file.")
+    p.add_argument("--mixed-start-prob", type=float, default=0.0,
+                   help="Probability a TS-denoise sample instead starts from the "
+                        "(R+P)/2 midpoint (mixes training and inference distributions).")
+    p.add_argument("--loss-type", default="mse", choices=["mse", "huber"])
+    p.add_argument("--huber-delta", type=float, default=0.05)
+    p.add_argument("--maxd-weight", type=float, default=0.0)
     p.add_argument("--ts-denoise-sigma-rel-lo", type=float, default=0.0,
                    help="adaptive sigma: sigma_i = u*d_i/sqrt(3) with u~U(lo,hi), "
                         "d_i = this sample's midpoint->saddle RMS distance")
@@ -277,6 +309,16 @@ def main():
     # its own splits (parquet) and its own dataset-wide triplet_id ordering, so
     # we accumulate record indices with the per-subset record offset baked in.
     from torch.utils.data import ConcatDataset, Subset
+    _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
+    if args.saddle_override is not None:
+        import numpy as _np
+        _z = _np.load(args.saddle_override)
+        _t, _o, _p = _z["tids"], _z["offsets"], _z["pos"]
+        for _k, _tid in enumerate(_t.tolist()):
+            _OVERRIDE_TABLE[int(_tid)] = _p[_o[_k]:_o[_k + 1]]
+        _OVERRIDE_TIDS = set(_OVERRIDE_TABLE)
+        print(f"[train] saddle-override: {len(_OVERRIDE_TABLE)} reconverged saddles loaded")
+
     per_subset_datasets: list[MaterialsSaddlesDataset] = []
     per_subset_offsets: list[int] = []
     train_idxs: list[int] = []
@@ -343,6 +385,13 @@ def main():
             print(f"[train] {s}: --limit-triplets {n} → "
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
 
+        if args.saddle_override is not None:
+            _keep = _OVERRIDE_TIDS
+            train_tids = [t for t in train_tids if int(t) in _keep]
+            val_tids   = [t for t in val_tids   if int(t) in _keep]
+            test_tids  = [t for t in test_tids  if int(t) in _keep]
+            print(f"[train] {s}: saddle-override -> train={len(train_tids)} "
+                  f"val={len(val_tids)} test={len(test_tids)}")
         train_idxs += sorted([offset + 2*t for t in train_tids]
                              + [offset + 2*t + 1 for t in train_tids])
         val_idxs   += sorted([offset + 2*t for t in val_tids]
@@ -359,6 +408,9 @@ def main():
     total_weight = sum(w for _, w in delta_norm_means)
     weighted_delta_norm = sum(m * w for m, w in delta_norm_means) / max(1, total_weight)
     setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
+    if args.saddle_override is not None:
+        dataset_full = _SaddleOverrideDataset(dataset_full, _OVERRIDE_TABLE)
+        setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
             "delta_norm_mean": weighted_delta_norm,
@@ -536,6 +588,10 @@ def main():
             xt_target_correction_t_floor=float(args.xt_target_correction_t_floor),
             ts_denoise_sigma=float(args.ts_denoise_sigma),
             ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
+            mixed_start_prob=float(args.mixed_start_prob),
+            loss_type=str(args.loss_type),
+            huber_delta=float(args.huber_delta),
+            maxd_weight=float(args.maxd_weight),
             ts_denoise_sigma_rel_lo=float(args.ts_denoise_sigma_rel_lo),
             ts_denoise_sigma_rel_hi=float(args.ts_denoise_sigma_rel_hi),
         ),
