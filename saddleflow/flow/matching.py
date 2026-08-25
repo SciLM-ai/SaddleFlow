@@ -70,6 +70,10 @@ class FlowMatchingConfig:
     # the (R+P)/2 midpoint, so the model sees BOTH generic denoising directions and
     # the specific reaction-coordinate direction that inference actually supplies.
     mixed_start_prob: float = 0.0
+    # Self-conditioning: with this probability, replace x0 by the model's OWN
+    # one-shot prediction (x0 + v(x0, t=0)) before building the training pair,
+    # so the model learns to correct the error distribution it actually makes.
+    self_cond_prob: float = 0.0
     loss_type: str = "mse"
     huber_delta: float = 0.05
     maxd_weight: float = 0.0
@@ -599,7 +603,44 @@ class FlowMatchingLoss(nn.Module):
         data_list_R: list[AtomicData] = []
         data_list_P: list[AtomicData] = []
 
-        for sample in batch:
+        # --- self-conditioning: precompute the model's own one-shot prediction ---
+        # A cheap no_grad pass at t=0 gives v(x0); x0 + v is where a single flow
+        # application lands. Training from THAT point teaches the model to fix its
+        # own residual, which plain iteration cannot do (the model never sees its
+        # own output distribution otherwise).
+        _selfcond_x0: dict[int, torch.Tensor] = {}
+        if self.config.self_cond_prob > 0.0 and self.training:
+            _sc_idx, _sc_data, _sc_x0 = [], [], []
+            for _i, _sample in enumerate(batch):
+                if float(torch.rand((), generator=generator)) >= self.config.self_cond_prob:
+                    continue
+                _ep0 = sample_endpoints(_sample, self.config, generator=generator)
+                _x0 = _ep0[0]
+                _sc_idx.append(_i); _sc_x0.append(_x0)
+                _sc_data.append(build_atomic_data(
+                    wrap_positions(_x0, _sample["cell"]), _sample["Z"], _sample["cell"],
+                    _sample["task_name"], _sample["charge"], _sample["spin"], _sample["fixed"]))
+            if _sc_data:
+                with torch.no_grad():
+                    _b = data_list_collater(_sc_data, otf_graph=True).to(device)
+                    _t0 = torch.zeros(len(_sc_data), dtype=torch.float32, device=device)
+                    _feat = (self.backbone(_b, _t0, _b.batch)
+                             if "TimeFiLM" in type(self.backbone).__name__ else self.backbone(_b))
+                    _h = _feat["node_embedding"]
+                    if self.global_attn is not None:
+                        _h = self.global_attn(_h, _b.batch)
+                    _v = self.velocity_head(_h, _t0, _b.batch)
+                    _fixed_sc = torch.cat([s_["fixed"] for s_ in
+                                           [batch[j] for j in _sc_idx]], dim=0).to(device)
+                    _v = apply_output_projections(_v, _fixed_sc, _b.batch, len(_sc_data)).cpu()
+                _off = 0
+                for _k, _i in enumerate(_sc_idx):
+                    _n = len(_sc_x0[_k])
+                    _dev0 = _sc_x0[_k].device
+                    _selfcond_x0[_i] = _sc_x0[_k] + _v[_off:_off + _n].float().to(_dev0)
+                    _off += _n
+
+        for _sample_idx, sample in enumerate(batch):
             # The sampler may return a 5th element: a per-sample x_t-perturbation
             # sigma (used by the private x0-recipe hook so different recipes can
             # carry different off-line noise). The public midpoint sampler returns
@@ -610,6 +651,8 @@ class FlowMatchingLoss(nn.Module):
             else:
                 x0, x1, t, _ = _ep
                 xt_sigma = self.config.xt_perturb_sigma
+            if _sample_idx in _selfcond_x0:
+                x0 = _selfcond_x0[_sample_idx]
             x_t_unwrapped = (1.0 - t) * x0 + t * x1
 
             # v7-6 hybrid target schedule (only when --xt-target-correction).

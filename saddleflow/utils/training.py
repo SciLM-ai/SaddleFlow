@@ -66,6 +66,10 @@ class TrainingConfig:
     val_every_steps: int = 0
 
     resume_from: str | None = None
+    # Load ONLY the model weights from a previous run and start a fresh
+    # optimizer/LR schedule at epoch 0 — for fine-tuning a pre-trained model
+    # on a different start distribution (e.g. TS+noise pre-train -> midpoint).
+    init_weights: str | None = None
 
     # --- Benchmark instrumentation (all no-ops at defaults; production unaffected) ---
     # If > 0, stop after this many optimizer steps regardless of num_epochs. Also
@@ -259,6 +263,15 @@ def train(
 
     start_epoch = 0
     global_step = 0
+    if getattr(config, "init_weights", None):
+        from safetensors.torch import load_file as _load_st
+        _p = Path(config.init_weights) / "model.safetensors"
+        _sd = _load_st(str(_p))
+        _missing, _unexpected = accelerator.unwrap_model(loss_module).load_state_dict(_sd, strict=False)
+        if accelerator.is_main_process:
+            print(f"[train] init-weights from {_p}: loaded {len(_sd)} tensors "
+                  f"(missing={len(_missing)}, unexpected={len(_unexpected)}); "
+                  f"fresh optimizer + LR schedule from epoch 0")
     if config.resume_from:
         accelerator.load_state(config.resume_from)
         ema_path = Path(config.resume_from) / "ema.pt"

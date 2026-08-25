@@ -45,6 +45,29 @@ from saddleflow.data import MaterialsSaddlesDataset
 from saddleflow.data.transforms import mic_displacement as _mic_disp
 
 
+class _StartOverrideDataset(torch.utils.data.Dataset):
+    """x0 := a stage-1 prediction. Both endpoints are set to it, so the midpoint
+    (r_start + partner)/2 IS that geometry; the saddle is re-unwrapped to it."""
+
+    def __init__(self, base, table):
+        self.base, self.table = base, table
+        self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        r = self.base[i]
+        new = self.table.get(int(r["triplet_id"]))
+        if new is not None:
+            p = torch.as_tensor(new, dtype=r["start_pos"].dtype)
+            sad = r["saddle_un_pos"]
+            r["saddle_un_pos"] = p + _mic_disp(sad, p, r["cell"])
+            r["start_pos"] = p
+            r["partner_un_pos"] = p.clone()
+        return r
+
+
 class _SaddleOverrideDataset(torch.utils.data.Dataset):
     """Swap each record's saddle for an externally reconverged one."""
 
@@ -156,10 +179,20 @@ def parse_args():
                    help="Single-ended TS-denoise objective: x0 = saddle + N(0, sigma^2) "
                         "on mobile atoms, x1 = saddle, no R/P conditioning. 0 = off "
                         "(use the standard midpoint->saddle mode-1 recipe).")
+    p.add_argument("--start-override", default=None,
+                   help="npz (tids/offsets/pos) of stage-1 PREDICTIONS. Sets both endpoints "
+                        "to that geometry so x0 = the prediction: trains a REFINER on the "
+                        "actual residual-error distribution of the previous stage.")
     p.add_argument("--saddle-override", default=None,
                    help="npz with tids/offsets/pos: replace each triplet's saddle with a "
                         "reconverged one (MIC-unwrapped to start_pos); splits are filtered "
                         "to triplets present in the file.")
+    p.add_argument("--init-weights", default=None,
+                   help="Checkpoint dir to load MODEL WEIGHTS ONLY from (fresh optimizer "
+                        "and LR schedule). For pre-train -> fine-tune on a new start dist.")
+    p.add_argument("--self-cond-prob", type=float, default=0.0,
+                   help="Probability of replacing x0 with the model's own one-shot "
+                        "prediction, so it learns to correct its own residual error.")
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
                    help="Probability a TS-denoise sample instead starts from the "
                         "(R+P)/2 midpoint (mixes training and inference distributions).")
@@ -309,6 +342,14 @@ def main():
     # its own splits (parquet) and its own dataset-wide triplet_id ordering, so
     # we accumulate record indices with the per-subset record offset baked in.
     from torch.utils.data import ConcatDataset, Subset
+    _START_TABLE = {}
+    if args.start_override is not None:
+        import numpy as _np2
+        _z2 = _np2.load(args.start_override)
+        _t2, _o2, _p2 = _z2["tids"], _z2["offsets"], _z2["pos"]
+        for _k2, _tid2 in enumerate(_t2.tolist()):
+            _START_TABLE[int(_tid2)] = _p2[_o2[_k2]:_o2[_k2 + 1]]
+        print(f"[train] start-override: {len(_START_TABLE)} stage-1 predictions loaded")
     _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
     if args.saddle_override is not None:
         import numpy as _np
@@ -410,6 +451,8 @@ def main():
     setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if args.saddle_override is not None:
         dataset_full = _SaddleOverrideDataset(dataset_full, _OVERRIDE_TABLE)
+    if args.start_override is not None:
+        dataset_full = _StartOverrideDataset(dataset_full, _START_TABLE)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
@@ -588,6 +631,7 @@ def main():
             xt_target_correction_t_floor=float(args.xt_target_correction_t_floor),
             ts_denoise_sigma=float(args.ts_denoise_sigma),
             ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
+            self_cond_prob=float(args.self_cond_prob),
             mixed_start_prob=float(args.mixed_start_prob),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
@@ -639,6 +683,7 @@ def main():
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
         save_every_steps=args.save_every_steps,
         val_every_steps=args.val_every_steps,
+        init_weights=args.init_weights,
         resume_from=args.resume_from,
         extras={
             "mode": args.mode,
