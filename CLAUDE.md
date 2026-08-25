@@ -110,14 +110,15 @@ The production architecture is **UMA-S-1.2 with all four backbone blocks unfroze
 - **Huber loss** (`--loss-type huber --huber-delta 0.05`) — the single biggest win: vs the paper recipe maxd median −48%, rmsd median −41%. MSE fits the *mean* of a multi-modal saddle posterior; Huber approximates the median. Applies to conditioned models; for unconditioned it is a wash.
 - **UMA backbone LR**, monotone 1e-4 → 3e-4 → 1e-3 → 3e-3 → 1e-2. The paper's 1e-4 is far too low — it also cannot absorb relabeled data (moves only 12% toward new targets vs 30–42% at 3e-3+).
 - **Refiner / self-conditioning** — training on the model's *own* output distribution. Measured mechanism: the correction is only 0.029 Å against a 0.160 Å error (cosine +0.22, improves 58% of cases), so it mostly moves structures into **cleaner basins** (93% index-1, fewest force calls) rather than reducing error. Stacking decays fast: stage 3 gave 18% of what stage 2 gave.
-- **Sella-verified targets** — retarget training on saddles Sella actually reaches from stage-1 predictions (25,942 of 34,742 kept; median 0.015 Å from the dataset label but **16% are a different saddle**). NEAREST maxd med 0.165 → 0.148 (~10%, against a ~0.013 Å noise floor). Does not beat the cascade. **Untested: cascade on top of it** — the two act at different points (targets vs start distribution) so they should partly compose, though a third cascade stage returned only 18% of what stage 2 gave.
+- **Sella-verified targets** — retarget training on saddles Sella actually reaches from stage-1 predictions. Ran Sella on **29,281 stage-1 (R15) predictions over the TRAIN split** — not on the dataset labels, and not on the whole dataset — keeping only `conv and nneg == 1`: **25,958 kept (88.7%)**. Median 0.015 Å from the dataset label but **16% are a different saddle**. NEAREST maxd med 0.165 → 0.148 (~10%, against a ~0.013 Å noise floor). Does not beat the cascade. **Untested: cascade on top of it** — the two act at different points (targets vs start distribution) so they should partly compose, though a third cascade stage returned only 18% of what stage 2 gave.
 
 **Two relabelings — different anchors, different meanings.**
 | | `reconv_saddles.npz` | `sella_targets.npz` |
 |---|---|---|
 | started from | the **stored label** | the **model's prediction** |
 | optimiser | SaddleMill Dimer, fmax 0.005 | Sella, fmax 0.01, `--check-index` |
-| kept | 32,540 / 34,742 | 25,942 / 34,742 (index-1 only) |
+| ran on | all 34,742 labels | 29,281 stage-1 predictions (train split only) |
+| kept | 32,540 (93.7%, = the 94% convergence) | 25,958 (88.7%, index-1 only) |
 | answers | "where does this label really settle?" | "what saddle is actually *reachable* from where the model goes?" |
 | effect | none in any paired test | +10% for an unconditional stage 1 |
 
