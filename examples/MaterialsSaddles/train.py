@@ -717,6 +717,19 @@ def main():
             "xt_target_correction": bool(args.xt_target_correction),
             "xt_target_correction_t_floor": float(args.xt_target_correction_t_floor),
             "uma_lr": args.uma_lr if args.unfreeze_uma_last else None,
+            # 2026-08 sweep — objective/loss/curriculum knobs. Recorded so a
+            # checkpoint on disk documents how it was trained; without these a
+            # refiner is indistinguishable from a stage-1 model in its config.
+            "loss_type": str(args.loss_type),
+            "huber_delta": float(args.huber_delta),
+            "maxd_weight": float(args.maxd_weight),
+            "ts_denoise_sigma": float(args.ts_denoise_sigma),
+            "ts_denoise_sigma_max": float(args.ts_denoise_sigma_max),
+            "self_cond_prob": float(args.self_cond_prob),
+            "mixed_start_prob": float(args.mixed_start_prob),
+            "saddle_override": args.saddle_override,
+            "start_override": args.start_override,
+            "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
             "shards_dirs": {s: str(staged[s]) for s in subsets},

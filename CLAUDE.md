@@ -8,6 +8,8 @@ The ML method is **flow matching**. The velocity field is a three-stage module: 
 
 ## Production configuration (MP20Bat — what the paper covers)
 
+> **`v7_6_2a` is the *paper* model, not the best model.** A 2026-08 sweep beats it substantially — see "MP20Bat 2026-08 sweep" below. This section documents what the paper covers; keep it accurate for reproduction, don't retrofit later findings into it.
+
 Production model: **`v7_6_2a`** (run `v7_6_2a_20260504_084512`, trained 2026-05-04 on 4 nodes × 3 A100 under the collaborator account `graeme` for queue throughput; invocation in `examples/MP20Bat/run.sh`). **Checkpoint recovered 2026-07-24** — durable copy: `/work/08405/ilgar/vista/SaddleFlow_mp20bat_paper/checkpoint_final/` (Stockyard, visible from all TACC machines; includes `model.safetensors`, `ema.pt`, optimizer state, the recorded `full_testset_K10`/`compare_K10_K50`/`sample_distance_eval` outputs with the paper parity PDFs, and `HANDOFF_v7.md` documenting the v7-line); working copy on Vista scratch at `/scratch/08405/ilgar/SaddleFlow_mp20bat_paper/checkpoint_final/` (purgeable). The original run tree with all per-epoch checkpoints and the v7_0–v7_6/`v7_6_2a_p010` siblings (~1.3 TB) remains on `/scratch/00405/graeme/SaddleFlow_mp20bat/` (Lonestar6 scratch — purge-at-risk; only `checkpoint_final` was salvaged). `v7_6_2a` is **not** the LiC-sweep v6 below; the v7-line extended v6 with force-FiLM, a frozen force backbone, an eigenmode aux head, a Dimer-style output residual, multi-layer feature stacks and endpoint feature injection. `v7_6_2a` simplified the v7-line back down — **keeps** what helped (full backbone unfreeze, 4-block time-FiLM, convergent v_target schedule `t_floor=0.1`, CoM-symmetric MSE, x_t perturbation σ=0.05) and **drops** the rest (force injection, frozen force backbone, eigenmode head, Dimer residual, endpoint features, multi-layer stacks, GlobalAttn).
 
 ### Reproducing the test-set parity figures (the paper figures) — working recipe
@@ -82,6 +84,53 @@ These flags exist in `train.py --help` and the corresponding modules are present
 ### One-line summary for the paper
 
 The production architecture is **UMA-S-1.2 with all four backbone blocks unfrozen at low LR + per-block equivariant time-FiLM + a depth-3 equivariant `VelocityHead` that takes a per-atom (Δ_R, Δ_P) partner-displacement signal**. Training uses **straight-line product-conditional flow matching with midpoint anchoring (x_0 = (R+P)/2), a small Gaussian perturbation on `x_t`, a PBC-correct convergent velocity-target schedule, and a CoM-symmetric MSE loss**. Nothing else listed in `train.py --help` is part of the released method.
+
+## MP20Bat 2026-08 sweep — what beats the paper recipe
+
+~40 runs at 60 epochs, fixed global batch, scored by the Sella protocol below. **The paper recipe `v7_6_2a` is no longer the best model.**
+
+**Best: `CASC_refiner`, a two-stage unconditional cascade.** Stage 1 = unconditioned midpoint→saddle (`--delta-endpoint-channels 0`, head-depth 3, uma-lr 1e-2). Stage 2 = a *refiner* trained with `--start-override` on stage 1's own predictions over the training set, so its input distribution equals what it meets at test time. Inference: integrate stage 1 from the midpoint (K=10), then stage 2 from stage 1's output.
+
+| model | vs DATASET maxd med | vs SELLA maxd med | NEAREST maxd med | Sella fcalls | conv% |
+|---|---|---|---|---|---|
+| **CASC_refiner** | 0.318 | 0.146 | **0.121** | **57** | 97% |
+| S2_selfcond (`--self-cond-prob`, one model) | 0.270 | 0.200 | 0.148 | 75 | 95% |
+| X2 (conditioned, Huber, uma-lr 1e-2) | **0.219** | 0.305 | 0.152 | 88 | 95% |
+| R15 (cascade stage 1 alone) | 0.299 | 0.209 | 0.159 | 79 | 97% |
+| R1 (paper recipe, reconverged labels) | 0.364 | 0.518 | 0.289 | 128 | 93% |
+| midpoint baseline | 0.689 | 0.842 | 0.618 | 202 | 92% |
+
+**Judge each model by its own criterion**: conditioned models win against the *dataset* saddle (they were trained to hit that specific one); unconditioned/cascade models win against the *Sella* saddle (they flow to the nearest saddle, whichever it is). NEAREST takes a per-case min and is optimistic by construction. Full 27-model table: `TABLE_BIG.txt` (see Artifacts).
+
+**Levers that work.**
+- **Huber loss** (`--loss-type huber --huber-delta 0.05`) — the single biggest win: vs the paper recipe maxd median −48%, rmsd median −41%. MSE fits the *mean* of a multi-modal saddle posterior; Huber approximates the median. Applies to conditioned models; for unconditioned it is a wash.
+- **UMA backbone LR**, monotone 1e-4 → 3e-4 → 1e-3 → 3e-3 → 1e-2. The paper's 1e-4 is far too low — it also cannot absorb relabeled data (moves only 12% toward new targets vs 30–42% at 3e-3+).
+- **Refiner / self-conditioning** — training on the model's *own* output distribution. Measured mechanism: the correction is only 0.029 Å against a 0.160 Å error (cosine +0.22, improves 58% of cases), so it mostly moves structures into **cleaner basins** (93% index-1, fewest force calls) rather than reducing error. Stacking decays fast: stage 3 gave 18% of what stage 2 gave.
+- **Sella-verified targets** — retarget training on saddles Sella actually reaches from stage-1 predictions (25,942 of 34,742 kept; median 0.015 Å from the dataset label but **16% are a different saddle**). NEAREST maxd med 0.165 → 0.148. Does not beat the cascade. **Untested: cascade on top of it.**
+
+**Confirmed nulls — do not re-test.** Head depth 3/5/8 · epochs past ~15–20 (saturates) · K = 10→100 Euler steps (0.1686 → 0.1672, so the residual error is *not* integration error) · explicit maxd loss term (`--maxd-weight`, actively hurt) · TS-denoise σ over 0.19–0.75, and uniform/adaptive σ are *worse* than fixed · fp32 vs bf16 on MP20Bat (p=0.44; matters only on exact-symmetry cells — see latent-bug log) · reconverged labels (below).
+
+**Label quality.** 33% of mp20bat saddle labels are **not first-order** (index ≥ 2) and reconverge to different, lower saddles; the rest slide ~0.14 Å along ultra-soft modes (|λ₂| ~ 1e-4 eV/Å²). So RMSD against a single stored saddle is intrinsically ambiguous at the ~0.1–0.3 Å level — the scale at which we rank models. Reconverging all 34,742 (SaddleMill, fmax 0.005, seeding the stored eigenmode: throughput ×2, convergence 76→94%) gives 98% index-1 labels but **never helped in any paired test** — ~16% relocate to a saddle that no longer connects the original (R,P).
+
+**The ceiling is the formulation, not the fit.** The model cannot fit its own training set (train mean 0.218 vs midpoint baseline 0.294) and more training does not help — underfitting a multi-modal target with a conditional mean. An oracle best-of-16 reaches 93.7% beat-baseline vs 82.4% single-shot. Escaping this needs a model that emits a *distribution* plus a selector, or curvature/force terms in the objective — not more capacity.
+
+### Evaluation — use Sella, never Dimer
+
+**Scoring a prediction by RMSD to the stored label conflates "is this near a saddle" with "is it near *that* saddle".** Run a saddle optimiser from the prediction and measure how far it moved.
+
+**Dimer wandering invalidated every Dimer-scored result before 2026-08-04.** ASE Dimer walked to a *different* saddle in ~8% of cases: in the tail decile the prediction sits 0.17 Å from the label but **2.21 Å from where Dimer ended**; Spearman(distance, force calls) = +0.81; the tail costs 1425 vs 329 calls. That produced the immovable maxd means (~1.08 Å across 20+ models) and the bogus "geometric accuracy anti-correlates with convergence" pattern — measurement error, not model error.
+
+**Sella (P-RFO) is the oracle.** Same structures: **44 vs 384 force calls (9×), 100% vs 77% converged, 0% vs 8% wandering, 93% verified index-1** (finite-difference Lanczos). Sanity check: from an already-converged saddle it takes **0 steps, moves 0.0000 Å**. It never builds a Hessian — TS-BFGS updates from gradient differences + iterative diagonalization, so cost scales like an optimizer, not like a Hessian.
+
+Pipeline: `dump_predictions.py` (integrate the flow, one traj per shard; `--ckpt A --ckpt2 B` runs the cascade) → `sella_eval.py --check-index` (optimise + verify index-1) → filter to `nneg == 1`. Both in `examples/MaterialsSaddles/`. Sella is the `eval` extra: `CC=gcc CXX=g++ pip install 'saddleflow[eval]'` (default `nvc` rejects `-fno-strict-overflow`).
+
+### CLI flags added by this sweep
+
+`--loss-type {mse,huber} --huber-delta` · `--maxd-weight` (null) · `--saddle-override <npz>` (swap in reconverged saddles) · `--start-override <npz>` (x₀ := stage-1 predictions → trains a refiner) · `--init-weights <ckpt>` (weights only, fresh optimizer/schedule) · `--self-cond-prob` (x₀ := the model's own one-shot prediction) · `--mixed-start-prob`. All no-ops at defaults; all recorded in the checkpoint's `config.json` `extras`.
+
+### Artifacts
+
+`/work/08405/ilgar/vista/saddleflow_2026-08-04/` (Stockyard, durable): `TABLE_BIG.txt` (27 models × 3 references), `TABLE_SELLATGT.txt`, `FINAL_TABLE.txt` (the superseded Dimer table — kept only as the record of the wandering artefact), `reconv_saddles.npz`, `sella_targets.npz`, and `checkpoints/` with six curated models (live + EMA weights, no optimizer state; `<model>/config.json` + `<model>/checkpoint_final/`). Everything else from the sweep was on purgeable scratch.
 
 ## Architecture
 
@@ -285,6 +334,8 @@ Fairchem's stack is designed for multi-task MLIP training (energy/force/stress, 
 
 ## Evaluation
 
+**Two protocols, different datasets.** LiC uses per-site Hungarian matching against known saddles (below). **MP20Bat uses the Sella protocol** — see "Evaluation — use Sella, never Dimer" above; that is the protocol for any new work, and Dimer-based scoring is a known trap.
+
 **Site-based (not R-only) grouping.** Test triplets are grouped by their **R ∪ P** Li adsorption sites — both endpoints of every triplet are legitimate "reactants" by microscopic reversibility, and counting saddles per site must include both for the numbers to match the physics (see §"First test case" for concrete counts). Implemented as `saddleflow.utils.group_triplets_by_site(endpoints="RP")`; the legacy R-only variant is available via `endpoints="R"` but should not be the default for reaction-discovery eval.
 
 **Per-site Hungarian matching, threshold-safe.** Cluster candidates per site (medoid centroids), run `scipy.optimize.linear_sum_assignment` against the site's known saddles. LSA minimises total cost without per-pair threshold; one far-off centroid can cascade into a pathological assignment. Fix: mask above-threshold cost-matrix entries to `1e9` before LSA so sub-threshold pairings win, then filter above-threshold pairings post-LSA. Implemented in `saddleflow.utils.hungarian_match`.
@@ -310,6 +361,8 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Latent-bug log — pitfalls already caught; re-check if behaviour looks wrong
 
+- **Scoring predictions with the ASE Dimer silently fabricates a tail** (2026-08-04). The Dimer walks to a *different* saddle in ~8% of cases, so the reported error is the distance to a saddle the prediction was never near — 0.17 Å from the label but 2.21 Å from the Dimer endpoint in the tail decile. It made maxd means immovable at ~1.08 Å across 20+ models and produced a spurious "accuracy anti-correlates with convergence" result. Use `sella_eval.py`; verify index-1 with `--check-index` and filter on `nneg == 1`.
+- **`K` (Euler steps) is not the bottleneck.** K=10→100 moves maxd 0.1686 → 0.1672. If predictions fall short, it is the objective, not the integrator.
 - **bf16 autocast breaks SO(3) equivariance by ~17%** (measured 2026-08-01). Same weights, Li rotated 60° about a C6 site: fp32 gives `|R·v(x) − v(Rx)|/|v|` = **0.00%**, `torch.autocast(bf16)` gives **16.9%**. The architecture is exactly equivariant in exact arithmetic; the violation is numerical and follows the cartesian rounding grid, not the crystal. On LiC_simpler this let one-saddle training reach a bf16-only optimum (loss 0.03 in bf16, 1.03 in fp32) whose flower sits 30° off, on the atop sites — fp32 training fixes it. Also pin `wrap_positions` to fp32 (commit c92d13b): its cart↔frac matmuls ran in bf16 and quantised coordinates by ~0.05 Å. **On MP20Bat the accuracy effect is NOT significant** (2026-08-03, single-variable test at the paper recipe, n=1628: fp32 better in 55% of cases, p=0.44) — presumably because those cells have no exact point symmetry for the asymmetry to exploit. So: fp32 matters for symmetric-cell studies, not measurably for MP20Bat production.
 - **UMA production dropouts leak into training.** `uma-s-1p2` ships with `composition_dropout=0.10` and `mole_dropout=Dropout(p=0.05)`; PyTorch's recursive `.train()` activates them on the (frozen) backbone → stochastic training features vs deterministic inference. Fix: `FlowMatchingLoss.train()` re-calls `self.backbone.eval()`. Symptom: train-loss floor stuck at noise, |v_pred| mismatches train vs inference probes.
 - **Sinusoidal time-embedding base wrong for t ∈ [0,1].** Transformer's base-10000 puts `sin(freq·t)` at ~0 on 31 of 32 dims for flow-time in [0,1]. `velocity_head.sinusoidal_time_embedding` now uses geometric frequencies from 1 to `half` cycles per unit flow-time. Symptom: time-FiLM scale ~0, velocity field nearly time-invariant, nominal `time_embed_dim=64` is effectively ~4 useful dims.
@@ -368,7 +421,7 @@ When results disappoint, investigate roughly in this order — cheapest to most 
 
 **Tier 1 — hyperparameter sweeps (no code change, hours of GPU time):**
 - `σ_inf` (inference-time perturbation around the start, decoupled from training) — default 0.15 Å on LiC; sweep 0.10–0.30 if saddle diversity is low or trajectories land off-region.
-- `K` (inference Euler steps) — default 50; sweep 30–200 if trajectories stop short of saddles.
+- `K` (inference Euler steps) — default 50. **Settled on MP20Bat: a null** (K=10→100 flat). Only worth a sweep on a genuinely different dataset.
 - `xt_perturb_sigma` (training-time x_t perturbation; pairs with `xt_target_correction`) — default 0.05 Å on MP20Bat; sweep 0.02–0.10 to widen / narrow the off-line training coverage.
 
 **Tier 2 — architectural (hours of dev, no UMA retraining):**
@@ -385,5 +438,5 @@ When results disappoint, investigate roughly in this order — cheapest to most 
 ## Open questions
 
 - **`σ_inf`** — inference-time Gaussian spread around the start. Default 0.15 Å on LiC; sweep `{0.10, 0.15, 0.20, 0.30}` once full-dataset training lands.
-- **`K` (Euler steps)** — default 10 in production; probe higher if trajectories stop short.
+- **`K` (Euler steps)** — settled on MP20Bat (null, see above); still open on other datasets.
 - **Richer `x_t` coverage** — the released scheme trains on a narrow subset of the configurations the inference integrator visits (7-ring failure mode). Future direction: extend training-point sampling without re-introducing the equivariance-collapse pathology that killed isotropic Gaussian.

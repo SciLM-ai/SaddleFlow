@@ -32,6 +32,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pre-commit", "pytest", "pytest-cov", "ruff==0.5.1"]
 extras = ["pymatgen>=2025.1.9"]
+# Saddle-search oracle used by examples/MaterialsSaddles/sella_eval.py to score
+# predictions against the saddle they actually reach. Not needed to train or
+# sample. Sella pulls in jax/jaxlib, hence the separate extra.
+# NOTE: on NVIDIA HPC SDK toolchains build with `CC=gcc CXX=g++ pip install ...`
+# — the default `nvc` rejects Sella's -fno-strict-overflow.
+eval = ["sella>=2.5"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["saddleflow"]

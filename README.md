@@ -9,6 +9,7 @@ Given a reactant–product pair `(R, P)`, SaddleFlow uses flow matching to propo
 - Working end-to-end on the MaterialsSaddles `mp20bat` subset (~34,742 NEB-CI saddles from Materials Project battery structures).
 - Two smaller worked examples on Li-on-graphene, useful for quick experimentation: defective sheet (`examples/LiC/`) and pristine sheet (`examples/LiC_simpler/`).
 - Core training scheme is product-conditional flow matching: `x_0 = (R + P)/2` (PBC-correct midpoint), `x_1 = saddle`, with the velocity head reading a per-atom Δ_partner = MIC(partner − x_t) at every flow step.
+- A later sweep improves substantially on that recipe — a two-stage *unconditional* cascade reaches a max-atom-displacement median of 0.12 Å in 57 force calls, against 0.29 Å / 128 for the paper recipe and 0.62 Å / 202 for the `(R + P)/2` baseline. Details and the full model table are in [`CLAUDE.md`](CLAUDE.md), "MP20Bat 2026-08 sweep".
 
 See [`CLAUDE.md`](CLAUDE.md) for the full methods specification, and [`examples/MP20Bat/`](examples/MP20Bat/) for the production training + evaluation pipeline.
 
@@ -25,6 +26,16 @@ That pulls `fairchem-core`, `torch~=2.8`, `ase`, `e3nn`, `accelerate`, `lmdb`, e
 Use **Python 3.12** — fairchem-core 2.19 builds cleanly on 3.12 but has had wheel issues on 3.11/3.13 on some platforms.
 
 First UMA load downloads the `uma-s-1p2` checkpoint from HuggingFace and requires a valid `HF_TOKEN` (or a `huggingface-cli login`).
+
+To run the saddle-search evaluation (below) you also need [Sella](https://github.com/zadorlab/sella):
+
+```bash
+pip install -e '.[eval]'
+# On NVIDIA HPC SDK toolchains the default `nvc` rejects Sella's build flags:
+#   CC=gcc CXX=g++ pip install -e '.[eval]'
+```
+
+It is not needed to train or to sample.
 
 ## Quickstart — sample a saddle from a trained checkpoint
 
@@ -85,6 +96,26 @@ For a quick sanity-check on small data:
 - **Velocity field** = pretrained **UMA-S-1.2** (fairchem, 6.6M active params) as the equivariant backbone, equivariant time-FiLM injected at each backbone block, and a small `VelocityHead` on top. Selectively-unfrozen UMA blocks at low LR (1e-5) let the backbone adapt its layer-N l ≥ 1 outputs to the velocity-prediction task.
 - **R↔P doubling.** Each triplet contributes both `(start=R, partner=P)` and `(start=P, partner=R)` training pairs, so the head sees the saddle from both directions and the parity isn't a learned bias.
 - **Inference perturbation.** A small Gaussian `ε_inf` on the start position at `t=0` lets multiple integrations from the same `(R, P)` pair land in different angular wedges of the local environment, producing a small ensemble of saddle candidates that can be clustered downstream.
+
+## Evaluation — score against the saddle the prediction actually reaches
+
+RMSD to a stored label answers "is this near *that* saddle", which is not the question. Run a saddle optimiser from the prediction and measure how far it had to move:
+
+```bash
+# 1. Integrate the flow and dump candidates (--ckpt2 runs the two-stage cascade).
+python examples/MaterialsSaddles/dump_predictions.py \
+    --data-glob '<MaterialsSaddles>/mp20bat/*.aselmdb' \
+    --ckpt <stage1>/checkpoint_final --ckpt2 <stage2>/checkpoint_final \
+    --tag cascade --outdir preds --shard $i --nshards $N
+
+# 2. Optimise each candidate to a saddle and verify it is genuinely first-order.
+python examples/MaterialsSaddles/sella_eval.py \
+    --src preds/cascade_00.traj --out sella_00.json --check-index
+```
+
+Then keep records with `nneg == 1`. Reported per model: distance moved (rmsd/maxd), convergence rate, and force calls — a prediction that is close to a saddle *and* cheap to converge is the useful one.
+
+**Use Sella, not the ASE Dimer.** On identical structures the Dimer walked to a different saddle in ~8% of cases, which silently inflates the error tail (in the worst decile, predictions sat 0.17 Å from the label but 2.21 Å from where the Dimer stopped). Sella converged 100% vs 77%, in 44 vs 384 force calls, with 93% of results verified index-1.
 
 ## Built on
 
