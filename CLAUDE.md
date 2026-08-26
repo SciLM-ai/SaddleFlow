@@ -99,6 +99,7 @@ The production architecture is **UMA-S-1.2 with all four backbone blocks unfroze
 |---|---|---|---|---|---|
 | SELCASC (SEL1 + refiner — ties CASC_refiner, see below) | 0.311 | 0.140 | 0.109 | 53 | 96% |
 | **CASC_refiner** | 0.318 | 0.146 | **0.121** | **57** | 97% |
+| SELCASC (cascade on Sella targets) | 0.311 | 0.140 | 0.109 | 53 | 96% |
 | S2_selfcond (`--self-cond-prob`, one model) | 0.270 | 0.200 | 0.148 | 75 | 95% |
 | X2 (conditioned, Huber, uma-lr 1e-2) | **0.219** | 0.305 | 0.152 | 88 | 95% |
 | R15 (cascade stage 1 alone) | 0.299 | 0.209 | 0.159 | 79 | 97% |
