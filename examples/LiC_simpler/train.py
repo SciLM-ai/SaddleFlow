@@ -9,8 +9,23 @@ them and rely on Mode 1 (product-conditional, midpoint-of-(R,P) start)
 plus UMA's SO(3) equivariance to propagate the learned field to all 6
 wedges at inference.
 
+Two objectives are available:
+
+  mode 1 (default) — product-conditional, x_0 = (R+P)/2 -> x_1 = saddle.
+
+  TS-denoise (--ts-denoise-sigma S) — x_0 = saddle + N(0, S^2) -> x_1 = saddle,
+    with no R/P conditioning. This is the "flower" setup: integrate from a ring
+    of perturbed starts and the trajectories should fan out into the six
+    symmetry-equivalent saddles of the C6 orbit. Pair it with
+    --delta-endpoint-channels 0, since the head must not see the endpoints.
+
 Launch:
     CUDA_VISIBLE_DEVICES=0 python examples/LiC_simpler/train.py
+
+    # flower reproduction (single GPU)
+    CUDA_VISIBLE_DEVICES=0 python examples/LiC_simpler/train.py \
+        --ts-denoise-sigma 0.5 --delta-endpoint-channels 0 \
+        --attn-layers 1 --num-epochs 15000 --ema-decay 0.99
 """
 
 import argparse
@@ -39,7 +54,12 @@ def parse_args():
     p.add_argument("--grad-clip-norm", type=float, default=1.0)
     # ~10k steps falls into the small-scale EMA rule; 0.99 ≈ 100-step window.
     p.add_argument("--ema-decay", type=float, default=0.99)
-    p.add_argument("--mixed-precision", default="bf16")
+    # fp32 by default: under bf16 autocast the SO(3) equivariance of this stack
+    # breaks by ~17% on an exactly-C6 cell (measured), and one-saddle training
+    # then converges to a bf16-only optimum whose six-fold pattern sits 30 deg
+    # off, on the atop sites. See CLAUDE.md, latent-bug log.
+    p.add_argument("--mixed-precision", default="no",
+                   choices=["no", "fp16", "bf16"])
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log-every", type=int, default=200)
@@ -55,6 +75,11 @@ def parse_args():
 
     # Training mode (only mode=1 is implemented; reserved for future modes).
     p.add_argument("--mode", type=int, default=1)
+    p.add_argument("--ts-denoise-sigma", type=float, default=0.0,
+                   help="Single-ended TS-denoise objective: x_0 = saddle + "
+                        "N(0, sigma^2) on mobile atoms, x_1 = saddle, no R/P "
+                        "conditioning. 0 = off (use mode-1 midpoint start). "
+                        "0.5 A reproduces the flower run.")
     p.add_argument("--delta-endpoint-channels", type=int, default=32,
                    help="Channel count for the partner-displacement feature in "
                         "VelocityHead. Default 32 — analogue of time_embed_dim.")
@@ -76,7 +101,11 @@ def main():
           f"<||Δ||> = {dataset.delta_norm_mean:.4f} Å")
 
     M = int((~dataset[0]["fixed"]).sum().item())
-    print(f"[train] mode 1 — product-conditional (no noise on x_0)")
+    if args.ts_denoise_sigma > 0:
+        print(f"[train] TS-denoise — x_0 = saddle + N(0, {args.ts_denoise_sigma}^2), "
+              f"x_1 = saddle (unconditioned)")
+    else:
+        print(f"[train] mode 1 — product-conditional (no noise on x_0)")
     print(f"[train] delta_endpoint_channels={args.delta_endpoint_channels}  (M={M})")
 
     print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
@@ -84,7 +113,10 @@ def main():
     sc, lmax = backbone.sphere_channels, backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=args.attn_heads, num_layers=args.attn_layers).to(args.device)
-    head_delta_C = args.delta_endpoint_channels if args.mode == 1 else 0
+    # The TS-denoise objective never supplies endpoint deltas, so the head must
+    # be built without them or the forward will be handed an input it rejects.
+    head_delta_C = (0 if args.ts_denoise_sigma > 0
+                    else (args.delta_endpoint_channels if args.mode == 1 else 0))
     head = VelocityHead(
         sphere_channels=sc, input_lmax=lmax, depth=args.head_depth,
         delta_endpoint_channels=head_delta_C,
@@ -97,6 +129,7 @@ def main():
     loss_module = FlowMatchingLoss(
         FlowMatchingConfig(
             mode=args.mode,
+            ts_denoise_sigma=args.ts_denoise_sigma,
         ),
         backbone, attn, head,
     )
@@ -115,6 +148,8 @@ def main():
             "backbone": args.backbone,
             "attn_layers": args.attn_layers, "attn_heads": args.attn_heads,
             "head_depth": args.head_depth,
+            "ts_denoise_sigma": args.ts_denoise_sigma,
+            "mixed_precision": args.mixed_precision,
         },
     )
     train(loss_module, dataset, train_cfg)
