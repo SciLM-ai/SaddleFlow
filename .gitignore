@@ -21,10 +21,15 @@ logs/
 wandb/
 lightning_logs/
 
-# Example-run artifacts: we keep light files (*.json, *.png, *.npz) committed as
-# reference experiments, but exclude per-checkpoint heavy tensors (model weights,
-# optimizer state, EMA shadow, RNG state, LR-scheduler state) and intermediate
-# epoch checkpoints entirely.
+# Example-run output directories. Nothing under runs/ is tracked, so a user's
+# first training leaves a clean `git status`. To commit a reference figure
+# anyway, force it: `git add -f examples/<case>/runs/<run>/viz/foo.png`.
+**/runs/
+
+# Belt-and-braces for checkpoints written outside a runs/ directory: keep light
+# files (*.json, *.png, *.npz) but never per-checkpoint heavy tensors (model
+# weights, optimizer state, EMA shadow, RNG state, LR-scheduler state) or
+# intermediate epoch checkpoints.
 **/checkpoint_epoch_*/
 **/checkpoint_final/model.safetensors
 **/checkpoint_final/optimizer.bin
