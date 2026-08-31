@@ -80,7 +80,17 @@ def parse_args():
                         "Mode 1's partner direction already breaks the symmetry that "
                         "GlobalAttn was originally introduced to handle.")
     p.add_argument("--attn-heads", type=int, default=8)
-    p.add_argument("--head-depth", type=int, default=1)
+    p.add_argument("--head-depth", type=int, default=1,
+                   help="VelocityHead depth. 1 = a linear SO3 read-out of frozen "
+                        "UMA features; >=2 inserts (depth-1) SO3_Linear+UMAGate "
+                        "blocks, i.e. real head capacity. MP20Bat production uses 3.")
+    p.add_argument("--unfreeze-uma-all", action="store_true",
+                   help="Train all 4 UMA backbone blocks at --uma-lr, in a separate "
+                        "AdamW param group from the head/attn (which stay at "
+                        "--learning-rate). This is the MP20Bat production setting.")
+    p.add_argument("--uma-lr", type=float, default=1e-2,
+                   help="LR for the unfrozen UMA blocks. Only used with "
+                        "--unfreeze-uma-all. MP20Bat's best models use 1e-2.")
 
     # Training mode (only mode=1 is implemented; reserved for future modes).
     p.add_argument("--mode", type=int, default=1)
@@ -97,6 +107,10 @@ def parse_args():
     args = p.parse_args()
     if args.output_dir is None:
         name = ("tsdenoise_sigma%g" % args.ts_denoise_sigma) if args.ts_denoise_sigma > 0 else "mode1"
+        if args.unfreeze_uma_all:
+            name += "_umaunfrozen"
+        if args.head_depth != 1:
+            name += f"_depth{args.head_depth}"
         args.output_dir = str(here / "runs" / name)
     return args
 
@@ -123,6 +137,15 @@ def main():
 
     print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
     backbone = load_uma_backbone(args.backbone, device=args.device, freeze=True, eval_mode=True)
+    if args.unfreeze_uma_all:
+        # Same convention as examples/MaterialsSaddles/train.py: the loader only
+        # exposes unfreeze_last_block, so an all-blocks run unfreezes here.
+        for blk in backbone.blocks:
+            for prm in blk.parameters():
+                prm.requires_grad_(True)
+        n_uma = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+        print(f"[train] UMA UNFROZEN: all {len(backbone.blocks)} blocks "
+              f"({n_uma:,} params) at uma_lr={args.uma_lr:g}")
     sc, lmax = backbone.sphere_channels, backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=args.attn_heads, num_layers=args.attn_layers).to(args.device)
@@ -140,8 +163,20 @@ def main():
     print(f"[train] delta_endpoint_channels={head_delta_C} (effective)")
     print(f"[train] backbone K{backbone.num_layers}L{lmax} (sphere_channels={sc}), frozen")
     print(f"[train] attn_layers={args.attn_layers}  head_depth={args.head_depth}")
-    print(f"[train] trainable params: "
-          f"{sum(p.numel() for p in list(attn.parameters()) + list(head.parameters())):,}")
+    head_attn_params = list(attn.parameters()) + list(head.parameters())
+    print(f"[train] trainable head+attn params: "
+          f"{sum(p.numel() for p in head_attn_params):,}")
+
+    # Discriminative LR: the pretrained backbone must not be dragged at the
+    # head's learning rate.
+    param_groups = None
+    if args.unfreeze_uma_all:
+        param_groups = [
+            {"name": "head_attn", "params": [p for p in head_attn_params if p.requires_grad],
+             "lr": args.learning_rate},
+            {"name": "uma_unfrozen", "params": [p for p in backbone.parameters() if p.requires_grad],
+             "lr": args.uma_lr},
+        ]
 
     loss_module = FlowMatchingLoss(
         FlowMatchingConfig(
@@ -167,9 +202,11 @@ def main():
             "head_depth": args.head_depth,
             "ts_denoise_sigma": args.ts_denoise_sigma,
             "mixed_precision": args.mixed_precision,
+            "unfreeze_uma_all": bool(args.unfreeze_uma_all),
+            "uma_lr": args.uma_lr if args.unfreeze_uma_all else None,
         },
     )
-    train(loss_module, dataset, train_cfg)
+    train(loss_module, dataset, train_cfg, param_groups=param_groups)
 
 
 if __name__ == "__main__":
