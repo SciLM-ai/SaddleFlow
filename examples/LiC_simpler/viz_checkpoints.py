@@ -49,9 +49,13 @@ def parse_args():
     p.add_argument("--n-perturbations", type=int, default=48)
     p.add_argument("--K", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--attn-layers", type=int, default=1)
-    p.add_argument("--attn-heads", type=int, default=8)
-    p.add_argument("--head-depth", type=int, default=1)
+    # Architecture is read from <run-dir>/config.json by default -- a mismatch
+    # here loads the EMA shadow into the wrong parameter slots SILENTLY, so it
+    # must not be something the user has to remember. These override it.
+    p.add_argument("--attn-layers", type=int, default=None)
+    p.add_argument("--attn-heads", type=int, default=None)
+    p.add_argument("--head-depth", type=int, default=None)
+    p.add_argument("--delta-endpoint-channels", type=int, default=None)
     p.add_argument("--unfreeze-last-block", action="store_true",
                    help="match a run trained with unfrozen blocks[-1] (EMA param order)")
     p.add_argument("--unfreeze-all-blocks", action="store_true")
@@ -130,6 +134,23 @@ def main():
     li_s = li_r + mic(rec["saddle_un_pos"].numpy()[li_idx] - li_r, cell)
     orbit = orbit_positions(li_r, li_s, cell)
 
+    # --- architecture from the run's own config, overridable on the CLI ------
+    cfg_path = run_dir / "config.json"
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    ex = cfg.get("extras", {})
+    def pick(cli, key, fallback):
+        return cli if cli is not None else ex.get(key, fallback)
+    attn_layers = pick(args.attn_layers, "attn_layers", 1)
+    attn_heads  = pick(args.attn_heads,  "attn_heads",  8)
+    head_depth  = pick(args.head_depth,  "head_depth",  1)
+    delta_C     = int(pick(args.delta_endpoint_channels, "delta_endpoint_channels", 0) or 0)
+    if cfg_path.exists():
+        print(f"[viz] architecture from {cfg_path.name}: attn_layers={attn_layers} "
+              f"attn_heads={attn_heads} head_depth={head_depth} delta_C={delta_C}")
+    else:
+        print(f"[viz] no config.json under {run_dir} -- using defaults/CLI; "
+              f"a mismatch will load the EMA weights into the wrong slots.")
+
     device = args.device
     backbone = load_uma_backbone("uma-s-1p2", device=device, freeze=True, eval_mode=True,
                                  unfreeze_last_block=args.unfreeze_last_block)
@@ -144,8 +165,9 @@ def main():
                 prm.requires_grad_(True)
     sc, lmax = backbone.sphere_channels, backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
-                      num_heads=args.attn_heads, num_layers=args.attn_layers).to(device)
-    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=args.head_depth).to(device)
+                      num_heads=attn_heads, num_layers=attn_layers).to(device)
+    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth,
+                        delta_endpoint_channels=delta_C).to(device)
 
     ckpts = sorted(run_dir.glob("checkpoint_epoch_*"))[:: args.every]
     final = run_dir / "checkpoint_final"
@@ -166,13 +188,13 @@ def main():
         attn.eval(); head.eval()
         gen = torch.Generator().manual_seed(args.seed)   # identical draws per checkpoint
         with torch.no_grad():
+            # An unconditioned head (delta_C == 0) must NOT be given partner_pos;
+            # the sampler then starts each trajectory at the REACTANT plus the
+            # sigma_inf perturbation -- the flower setup. A conditioned head
+            # requires it, and starts from the (R, P) midpoint instead.
             _, traj = sample_saddles(
-                # Unconditioned head -> partner_pos must be omitted, and the
-                # sampler then starts each trajectory at the REACTANT plus the
-                # sigma_inf perturbation (not the (R,P) midpoint). That is the
-                # flower setup: a ring of starts around R fanning into the six
-                # symmetry-equivalent saddles.
                 rec, backbone, attn, head,
+                partner_pos=(rec["partner_un_pos"] if delta_C > 0 else None),
                 sigma_inf=args.sigma_inf,
                 n_perturbations=args.n_perturbations, K=args.K,
                 device=device, generator=gen, return_trajectory=True,

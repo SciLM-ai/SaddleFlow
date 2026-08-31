@@ -19,13 +19,20 @@ Two objectives are available:
     symmetry-equivalent saddles of the C6 orbit. Pair it with
     --delta-endpoint-channels 0, since the head must not see the endpoints.
 
-Launch:
-    CUDA_VISIBLE_DEVICES=0 python examples/LiC_simpler/train.py
+Launch (~20 min on one GPU either way), then visualise:
 
-    # flower reproduction (single GPU)
-    CUDA_VISIBLE_DEVICES=0 python examples/LiC_simpler/train.py \
-        --ts-denoise-sigma 0.5 --delta-endpoint-channels 0 \
-        --attn-layers 1 --num-epochs 15000 --ema-decay 0.99
+    # (a) default: mode-1, product-conditional
+    python examples/LiC_simpler/train.py
+    python examples/LiC_simpler/viz_checkpoints.py --run-dir examples/LiC_simpler/runs/mode1
+
+    # (b) the "flower": unconditioned TS-denoise
+    python examples/LiC_simpler/train.py --ts-denoise-sigma 0.5 \
+        --delta-endpoint-channels 0 --attn-layers 1 --ema-decay 0.99
+    python examples/LiC_simpler/viz_checkpoints.py \
+        --run-dir examples/LiC_simpler/runs/tsdenoise_sigma0.5
+
+The visualiser reads the architecture from the run's config.json, so you never
+pass matching --attn-layers/--head-depth by hand. See README.md in this folder.
 """
 
 import argparse
@@ -43,7 +50,9 @@ def parse_args():
     here = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--train-traj", default=str(here / "one_saddle.traj"))
-    p.add_argument("--output-dir", default=str(here / "runs" / "mode1_v0"))
+    # Note: the default depends on the objective (set after parsing) so a
+    # TS-denoise run does not silently overwrite a mode-1 run's checkpoints.
+    p.add_argument("--output-dir", default=None)
 
     # 1 triplet → 2 records after R/P doubling; with batch_size=2, 1 step/epoch.
     # 10k steps gives a comfortable convergence margin.
@@ -54,10 +63,10 @@ def parse_args():
     p.add_argument("--grad-clip-norm", type=float, default=1.0)
     # ~10k steps falls into the small-scale EMA rule; 0.99 ≈ 100-step window.
     p.add_argument("--ema-decay", type=float, default=0.99)
-    # fp32 by default: under bf16 autocast the SO(3) equivariance of this stack
-    # breaks by ~17% on an exactly-C6 cell (measured), and one-saddle training
-    # then converges to a bf16-only optimum whose six-fold pattern sits 30 deg
-    # off, on the atop sites. See CLAUDE.md, latent-bug log.
+    # fp32 by default. bf16 is safe as of the autocast fix (the coordinate
+    # round trip in data/transforms.py is now pinned to fp32), but this example
+    # is the one where that bug showed up, so it stays on the conservative
+    # setting. See CLAUDE.md latent-bug log for the measurement.
     p.add_argument("--mixed-precision", default="no",
                    choices=["no", "fp16", "bf16"])
     p.add_argument("--num-workers", type=int, default=0)
@@ -85,7 +94,11 @@ def parse_args():
                         "VelocityHead. Default 32 — analogue of time_embed_dim.")
 
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.output_dir is None:
+        name = ("tsdenoise_sigma%g" % args.ts_denoise_sigma) if args.ts_denoise_sigma > 0 else "mode1"
+        args.output_dir = str(here / "runs" / name)
+    return args
 
 
 def main():
@@ -106,7 +119,7 @@ def main():
               f"x_1 = saddle (unconditioned)")
     else:
         print(f"[train] mode 1 — product-conditional (no noise on x_0)")
-    print(f"[train] delta_endpoint_channels={args.delta_endpoint_channels}  (M={M})")
+    print(f"[train] mobile atoms M={M}")
 
     print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
     backbone = load_uma_backbone(args.backbone, device=args.device, freeze=True, eval_mode=True)
@@ -121,6 +134,10 @@ def main():
         sphere_channels=sc, input_lmax=lmax, depth=args.head_depth,
         delta_endpoint_channels=head_delta_C,
     ).to(args.device)
+    if head_delta_C != args.delta_endpoint_channels:
+        print(f"[train] delta_endpoint_channels forced {args.delta_endpoint_channels} -> "
+              f"{head_delta_C} (the TS-denoise objective supplies no endpoints)")
+    print(f"[train] delta_endpoint_channels={head_delta_C} (effective)")
     print(f"[train] backbone K{backbone.num_layers}L{lmax} (sphere_channels={sc}), frozen")
     print(f"[train] attn_layers={args.attn_layers}  head_depth={args.head_depth}")
     print(f"[train] trainable params: "
