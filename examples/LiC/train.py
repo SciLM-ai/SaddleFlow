@@ -66,6 +66,16 @@ def parse_args():
                    help="Unfreeze UMA's last message-passing block (blocks[-1]). "
                         "Trainable params on the backbone get a separate, much lower "
                         "LR (--uma-lr). v1+.")
+    p.add_argument("--unfreeze-uma-all", action="store_true",
+                   help="Unfreeze ALL 4 UMA blocks at --uma-lr (MP20Bat production "
+                        "setting). Pair with --early-time-film so the backbone can "
+                        "also condition on flow time; unfreezing alone leaves its "
+                        "features t-independent.")
+    p.add_argument("--ts-denoise-sigma", type=float, default=0.0,
+                   help="Single-ended TS-denoise objective: x_0 = saddle + "
+                        "N(0, sigma^2) on mobile atoms, x_1 = saddle, with no R/P "
+                        "conditioning. 0 = off (mode-1 midpoint start). Use this "
+                        "for 'flow any structure to its nearest saddle'.")
     p.add_argument("--unfreeze-uma-last2", action=argparse.BooleanOptionalAction,
                    default=True,
                    help="In addition to --unfreeze-uma-last, also unfreeze "
@@ -124,7 +134,11 @@ def main():
           f"<||Δ||> = {dataset.delta_norm_mean:.4f} Å")
 
     M = int((~dataset[0]["fixed"]).sum().item())
-    print(f"[train] mode 1 — product-conditional (no noise on x_0)")
+    if args.ts_denoise_sigma > 0:
+        print(f"[train] TS-denoise — x_0 = saddle + N(0, {args.ts_denoise_sigma}^2), "
+              f"x_1 = saddle (unconditioned)")
+    else:
+        print(f"[train] mode 1 — product-conditional (no noise on x_0)")
     print(f"[train] delta_endpoint_channels={args.delta_endpoint_channels}  (M={M})")
 
     print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
@@ -135,6 +149,13 @@ def main():
     if args.unfreeze_uma_last2:
         for p in raw_backbone.blocks[-2].parameters():
             p.requires_grad_(True)
+    if args.unfreeze_uma_all:
+        for blk in raw_backbone.blocks:
+            for p in blk.parameters():
+                p.requires_grad_(True)
+        print(f"[train] UMA UNFROZEN: all {len(raw_backbone.blocks)} blocks "
+              f"({sum(p.numel() for p in raw_backbone.parameters() if p.requires_grad):,} "
+              f"params) at uma_lr={args.uma_lr:g}")
     sc, lmax = raw_backbone.sphere_channels, raw_backbone.lmax
 
     # Optionally wrap the backbone with the early time-FiLM (Mode 1 v1+).
@@ -153,7 +174,9 @@ def main():
 
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                        num_heads=args.attn_heads, num_layers=args.attn_layers).to(args.device)
-    head_delta_C = args.delta_endpoint_channels if args.mode == 1 else 0
+    # TS-denoise supplies no endpoints, so the head must be built without them.
+    head_delta_C = (0 if args.ts_denoise_sigma > 0
+                    else (args.delta_endpoint_channels if args.mode == 1 else 0))
     head_force_C = args.force_field_channels if (args.mode == 1 and args.inject_force) else 0
     head = VelocityHead(
         sphere_channels=sc, input_lmax=lmax, depth=args.head_depth,
@@ -191,6 +214,7 @@ def main():
         FlowMatchingConfig(
             mode=args.mode,
             xt_perturb_sigma=args.xt_perturb_sigma,
+            ts_denoise_sigma=args.ts_denoise_sigma,
         ),
         backbone, attn, head,
         force_head=force_head, force_tasks=force_tasks,
@@ -198,7 +222,7 @@ def main():
 
     # Discriminative LR via parameter groups when UMA is partially unfrozen.
     param_groups = None
-    if args.unfreeze_uma_last:
+    if args.unfreeze_uma_last or args.unfreeze_uma_all:
         param_groups = [
             {
                 "name": "head_attn_film",
@@ -223,6 +247,8 @@ def main():
         extras={
             "mode": args.mode,
             "delta_endpoint_channels": head_delta_C,
+            "ts_denoise_sigma": args.ts_denoise_sigma,
+            "unfreeze_uma_all": bool(args.unfreeze_uma_all),
             "force_field_channels": head_force_C,
             "backbone": args.backbone,
             "attn_layers": args.attn_layers, "attn_heads": args.attn_heads,
