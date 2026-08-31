@@ -3,8 +3,8 @@
 Combine per-config benchmark JSONs (written by train.py --bench-output) into:
   * a markdown summary (per-GPU throughput, scaling table, parallel efficiency,
     projected full-mp20bat-training wall-clock, and a Grace-Blackwell projection),
-  * scaling.png (samples/s vs GPUs + parallel efficiency),
-  * per_gpu_throughput.png (single-GPU throughput + memory headroom).
+  * scaling.pdf (samples/s vs GPUs + parallel efficiency),
+  * per_gpu_throughput.pdf (single-GPU throughput + memory headroom).
 
 Robust to having only one machine's results present (run Perlmutter now; drop in
 Vista JSONs later and re-run). Group key is the machine label parsed from each
@@ -253,7 +253,7 @@ def main():
     # ---- Plots --------------------------------------------------------------
     _plot_scaling(by_machine, out)
     _plot_per_gpu(by_machine, per_gpu_best, out)
-    print(f"[analyze] wrote {out/'scaling.png'} and {out/'per_gpu_throughput.png'}")
+    print(f"[analyze] wrote {out/'scaling.pdf'} and {out/'per_gpu_throughput.pdf'}")
 
 
 def _plot_scaling(by_machine, out):
@@ -283,7 +283,7 @@ def _plot_scaling(by_machine, out):
     ax2.set_title("Parallel efficiency (vs single GPU)")
     ax2.set_ylim(0, 115); ax2.grid(True, which="both", alpha=0.3); ax2.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(out / "scaling.png", dpi=150)
+    fig.savefig(out / "scaling.pdf", dpi=150)
     plt.close(fig)
 
 
@@ -304,7 +304,7 @@ def _plot_per_gpu(by_machine, per_gpu_best, out):
     ax.set_title("Single-GPU training throughput (peak mem annotated)")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    fig.savefig(out / "per_gpu_throughput.png", dpi=150)
+    fig.savefig(out / "per_gpu_throughput.pdf", dpi=150)
     plt.close(fig)
 
 

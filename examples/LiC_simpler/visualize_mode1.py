@@ -280,7 +280,7 @@ def main():
     )
     print(f"[viz] cached arrays → {cache_path}")
 
-    out_png = out_dir / "trajectories_orbit_mode1.png"
+    out_png = out_dir / "trajectories_orbit_mode1.pdf"
     plot(
         per_partner,
         c_xy=R_pos[:LI_INDEX, :2],

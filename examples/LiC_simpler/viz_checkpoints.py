@@ -6,7 +6,7 @@ load the EMA shadow into a fresh attn+head, Euler-integrate
 `--n-perturbations` trajectories from the perturbed reactant with the
 SAME seed (so the perturbation draws are identical across checkpoints),
 and plot the Li atom's xy path over the carbon sheet. Also emits a
-montage figure (`flower_evolution.png`) with one panel per checkpoint so
+montage figure (`flower_evolution.pdf`) with one panel per checkpoint so
 the flower → sunburst transition is visible at a glance.
 
 Run:
@@ -229,7 +229,7 @@ def main():
         plot_panel(ax, C_xy, li_r, li_s, orbit, li_paths,
                    f"epoch {epoch} — σ_inf={args.sigma_inf}, n={args.n_perturbations}, K={args.K}")
         fig.tight_layout()
-        fig.savefig(out_dir / f"trajectories_epoch_{epoch}.png", dpi=160)
+        fig.savefig(out_dir / f"trajectories_epoch_{epoch}.pdf", dpi=160)
         plt.close(fig)
         panels.append((epoch, li_paths))
         print(f"[viz] epoch {epoch}: saved")
@@ -246,9 +246,9 @@ def main():
             ax.axis("off")
     fig.suptitle("Flower → sunburst evolution (EMA, identical perturbation draws)", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(out_dir / "flower_evolution.png", dpi=150)
+    fig.savefig(out_dir / "flower_evolution.pdf", dpi=150)
     plt.close(fig)
-    print(f"[viz] montage → {out_dir / 'flower_evolution.png'}")
+    print(f"[viz] montage → {out_dir / 'flower_evolution.pdf'}")
 
 
 if __name__ == "__main__":

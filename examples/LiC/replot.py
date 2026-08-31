@@ -164,13 +164,13 @@ def main():
         if args.site_idx is not None:
             plot_single_site(per_site[args.site_idx], c_xy, unique_sites_xy,
                               all_saddle_xy, cell_plot,
-                              out=out_dir / f"site_{args.site_idx:03d}.png",
+                              out=out_dir / f"site_{args.site_idx:03d}.pdf",
                               pad=args.site_pad, title_extra=title)
         else:
             suffix = (f"_cut{args.cluster_cutoff:.3f}" if args.cluster_cutoff is not None
                       else "")
             plot_trajectories(per_site, c_xy, unique_sites_xy, all_saddle_xy,
-                               cell_plot, out=out_dir / f"trajectories{suffix}.png",
+                               cell_plot, out=out_dir / f"trajectories{suffix}.pdf",
                                title_extra=title)
 
     if field_npz.exists():
@@ -182,7 +182,7 @@ def main():
             plot_velocity_field(d["field_xy"], d["vfield"],
                                  d["c_xy"], d["unique_sites_xy"],
                                  cell_plot, d["t_values"].tolist(),
-                                 out=out_dir / "velocity_field.png",
+                                 out=out_dir / "velocity_field.pdf",
                                  title_extra=args.title_extra)
         else:
             # Single-site zoom — crop the field to a square around the site.
@@ -216,7 +216,7 @@ def _plot_velocity_field_zoom(field_xy, vfield, mask, c_xy, unique_sites_xy,
                                 cell, t_values, site_xy, pad, out_stem, title_extra):
     """One PNG per t, cropped to a square window around `site_xy` (±`pad` Å).
     Same arrow-style as `plot_velocity_field`: variable length by |v|, fixed
-    small head, color = |v|. Writes `<out_stem>_t<...>.png`.
+    small head, color = |v|. Writes `<out_stem>_t<...>.pdf`.
     """
     out_stem = Path(out_stem)
     T = vfield.shape[0]
@@ -259,7 +259,7 @@ def _plot_velocity_field_zoom(field_xy, vfield, mask, c_xy, unique_sites_xy,
         ax.set_xlabel("x (Å)")
         ax.set_ylabel("y (Å)")
         fig.tight_layout()
-        path = Path(f"{out_stem}_t{t_val:.2f}.png")
+        path = Path(f"{out_stem}_t{t_val:.2f}.pdf")
         fig.savefig(path, dpi=200)
         plt.close(fig)
         print(f"[replot] wrote {path}")

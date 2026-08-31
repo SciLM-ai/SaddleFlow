@@ -38,7 +38,7 @@ not overwrite each other.
 
 The visualiser reads the architecture from the run's own `config.json`, so you
 never have to pass matching `--attn-layers` / `--head-depth` by hand. It writes
-one figure per checkpoint plus a `flower_evolution.png` montage.
+one figure per checkpoint plus a `flower_evolution.pdf` montage.
 
 ## The two objectives, and when to use which
 

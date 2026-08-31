@@ -125,10 +125,9 @@ def parity_log(x: np.ndarray, y: np.ndarray, *, x_label: str, y_label: str,
     ax_right.grid(True, alpha=0.25)
 
     out_stem = Path(out_stem)
-    fig.savefig(f"{out_stem}.png", dpi=180, bbox_inches="tight")
-    fig.savefig(f"{out_stem}.pdf",            bbox_inches="tight")
+    fig.savefig(f"{out_stem}.pdf", bbox_inches="tight")
     plt.close(fig)
-    print(f"wrote {out_stem}.png and {out_stem}.pdf")
+    print(f"wrote {out_stem}.pdf")
 
 
 def main():

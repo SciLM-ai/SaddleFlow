@@ -3,7 +3,7 @@ Diagnostic visualization for the Li-on-C SaddleFlow example.
 
 Two figures are produced (per `--plot`):
 
-1. `trajectories.png` — top-down xy view of the full carbon sheet:
+1. `trajectories.pdf` — top-down xy view of the full carbon sheet:
      - C atoms as grey dots (vacancies appear as gaps in the hex pattern).
      - All unique Li adsorption sites in train+test as red dots.
      - All known NEB reference saddles as black stars.
@@ -11,7 +11,7 @@ Two figures are produced (per `--plot`):
        overlaid as faint lines, color-cycled per cluster so trajectories
        ending at the same generated saddle share a color.
 
-2. `velocity_field.png` — 2x3 panels, one per `t` value. For each panel,
+2. `velocity_field.pdf` — 2x3 panels, one per `t` value. For each panel,
      the Li atom is swept over a fine xy grid at fixed z (the typical Li
      adsorption height from the template reactant), and the model's
      velocity v(Li_xy, t) is drawn as a quiver. Reveals where the flow
@@ -291,7 +291,7 @@ def plot_trajectories(per_site_data, c_xy, unique_sites_xy, all_saddle_xy,
 
 def plot_velocity_field(field_xy, vfield, c_xy, unique_sites_xy, cell,
                           t_values, out: Path, title_extra: str = ""):
-    """Produce one PNG per `t` (named `<stem>_t0.10.png` etc). `out` is the
+    """Produce one PNG per `t` (named `<stem>_t0.10.pdf` etc). `out` is the
     reference path; its stem is reused and the parent directory is respected.
     """
     T, G, _, _ = vfield.shape
@@ -358,7 +358,7 @@ def plot_velocity_field(field_xy, vfield, c_xy, unique_sites_xy, cell,
         axR.set_ylabel("y (Å)")
 
         fig.tight_layout()
-        path = out_dir / f"{stem}_t{t_val:.2f}.png"
+        path = out_dir / f"{stem}_t{t_val:.2f}.pdf"
         fig.savefig(path, dpi=200)
         plt.close(fig)
         written.append(str(path))
@@ -429,7 +429,7 @@ def main():
 
         plot_trajectories(
             per_site_data, c_xy, unique_sites_xy, all_saddle_xy, cell_plot,
-            out=out_dir / "trajectories.png", title_extra=config_str,
+            out=out_dir / "trajectories.pdf", title_extra=config_str,
         )
         # Cache raw trajectory tensors so we can re-plot without re-running GPU work.
         mobile_mask_np = (~atoms_to_sample_dict(test_triplets[0][0])["fixed"]).numpy()
@@ -468,7 +468,7 @@ def main():
         )
         plot_velocity_field(
             field_xy, vfield, c_xy, unique_sites_xy, cell_plot,
-            t_values, out=out_dir / "velocity_field.png", title_extra=config_str,
+            t_values, out=out_dir / "velocity_field.pdf", title_extra=config_str,
         )
         np.savez(
             out_dir / "velocity_field_data.npz",

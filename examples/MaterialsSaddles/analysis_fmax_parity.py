@@ -8,7 +8,7 @@ fmax is LOW have probably converged to a different saddle / minimum / TS
 Those would show as off-diagonal-large dots with cool colors on the plot.
 
 Inputs:  <ckpt>/sample_distance_eval/cases.pkl  (per-case dict with `pred`)
-Outputs: parity_fmax.png + fmax.npz next to it
+Outputs: parity_fmax.pdf + fmax.npz next to it
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def main():
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
     ax.grid(True, alpha=0.3, zorder=0)
     plt.tight_layout()
-    out_png = eval_dir / "parity_fmax.png"
+    out_png = eval_dir / "parity_fmax.pdf"
     plt.savefig(out_png, dpi=130, bbox_inches="tight")
     print(f"[main] wrote {out_png}")
 

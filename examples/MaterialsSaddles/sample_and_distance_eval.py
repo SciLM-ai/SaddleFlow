@@ -126,7 +126,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=0,
                    help="seed for triplet selection / direction coin (default 0)")
     p.add_argument("--output-dir", default=None,
-                   help="where to write results.npz / cases.pkl / *.png "
+                   help="where to write results.npz / cases.pkl / *.pdf "
                         "(default: <ckpt-dir>/sample_distance_eval)")
     p.add_argument("--shards-dir", default=None,
                    help="override $SCRATCH/MaterialsSaddles/<subset> location")
@@ -504,7 +504,7 @@ def make_plots(npz_path: Path, out_dir: Path) -> None:
         suffix = "_log" if log else ""
         joint_plot(
             rmsd_b, rmsd_p, log=log,
-            out_path=out_dir / f"parity_all_atoms{suffix}.png",
+            out_path=out_dir / f"parity_all_atoms{suffix}.pdf",
             title=f"Saddle prediction RMSD (all atoms) — {summary}",
             x_label="(R+P)/2 baseline RMSD (Å)",
             y_label="SaddleFlow prediction RMSD (Å)",
@@ -519,7 +519,7 @@ def make_plots(npz_path: Path, out_dir: Path) -> None:
             suffix = "_log" if log else ""
             joint_plot(
                 rmsd_bm, rmsd_pm, log=log,
-                out_path=out_dir / f"parity_mobile_only{suffix}.png",
+                out_path=out_dir / f"parity_mobile_only{suffix}.pdf",
                 title=f"Saddle prediction RMSD (mobile atoms only)\n{summary}",
                 x_label="(R+P)/2 baseline RMSD (Å)",
                 y_label="SaddleFlow prediction RMSD (Å)",

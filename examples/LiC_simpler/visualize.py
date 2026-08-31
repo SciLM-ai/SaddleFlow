@@ -329,7 +329,7 @@ def plot_velocity_field(field_xy, vfield, c_xy, li_xy, known_saddle_xy, orbit_xy
         axR.set_xlabel("x (Å)"); axR.set_ylabel("y (Å)")
 
         fig.tight_layout()
-        path = out_dir / f"{stem}_t{t_val:.2f}.png"
+        path = out_dir / f"{stem}_t{t_val:.2f}.pdf"
         fig.savefig(path, dpi=200); plt.close(fig)
         written.append(str(path))
         print(f"[viz] wrote {path}")
@@ -381,7 +381,7 @@ def main():
         labels, _, _ = cluster_by_rmsd(final, cell, cutoff=args.cluster_cutoff,
                                        mobile_mask=mobile_mask_np)
         plot_trajectories(traj, labels, c_xy, li_xy, saddle_xy, orbit_xy,
-                          cell, out=out_dir / "trajectories.png",
+                          cell, out=out_dir / "trajectories.pdf",
                           title_extra=config_str)
         np.savez(
             out_dir / "trajectories_data.npz",
@@ -405,7 +405,7 @@ def main():
                                dtype=torch.float32),
         )
         plot_velocity_field(field_xy, vfield, c_xy, li_xy, saddle_xy, orbit_xy,
-                            cell, t_values, out=out_dir / "velocity_field.png",
+                            cell, t_values, out=out_dir / "velocity_field.pdf",
                             title_extra=config_str)
         np.savez(
             out_dir / "velocity_field_data.npz",

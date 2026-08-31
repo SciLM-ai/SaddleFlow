@@ -384,7 +384,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K: int, n_bins: int = 100) ->
         xlabel="PBC-RMSD vs ground-truth saddle (Å)",
         title_l=f"TSGenerator — K={K}, full test set  N={n}",
         title_r="same data, log-y",
-        out_path=out_dir / f"hist_rmsd_K{K}_vs_truth.png",
+        out_path=out_dir / f"hist_rmsd_K{K}_vs_truth.pdf",
     )
 
     # 2) RMSD overlay vs (R+P)/2 baseline.
@@ -393,7 +393,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K: int, n_bins: int = 100) ->
         rmsd_p, rmsd_b, bins=bins,
         xlabel="PBC-RMSD vs ground-truth saddle (Å)",
         title=f"TSGenerator — full test set  N={n}  K={K}",
-        out_path=out_dir / f"hist_rmsd_K{K}_vs_baseline.png",
+        out_path=out_dir / f"hist_rmsd_K{K}_vs_baseline.pdf",
         label_p=f"SaddleFlow K={K}  mean={rmsd_p.mean():.4f}, med={np.median(rmsd_p):.4f}",
         label_b=f"(R+P)/2  mean={rmsd_b.mean():.4f}, med={np.median(rmsd_b):.4f}",
     )
@@ -406,7 +406,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K: int, n_bins: int = 100) ->
             xlabel="Max atom displacement (PBC, L∞ over atoms) vs truth (Å)",
             title_l=f"TSGenerator — K={K}, full test set  N={n}  (max-atom-disp)",
             title_r="same data, log-y",
-            out_path=out_dir / f"hist_maxdisp_K{K}_vs_truth.png",
+            out_path=out_dir / f"hist_maxdisp_K{K}_vs_truth.pdf",
         )
 
         # 4) Max-disp overlay vs baseline.
@@ -415,7 +415,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K: int, n_bins: int = 100) ->
             maxd_p, maxd_b, bins=bins,
             xlabel="Max atom displacement (PBC, L∞ over atoms) vs truth (Å)",
             title=f"TSGenerator — full test set  N={n}  K={K}  (max-atom-disp)",
-            out_path=out_dir / f"hist_maxdisp_K{K}_vs_baseline.png",
+            out_path=out_dir / f"hist_maxdisp_K{K}_vs_baseline.pdf",
             label_p=f"SaddleFlow K={K}  mean={maxd_p.mean():.4f}, med={np.median(maxd_p):.4f}",
             label_b=f"(R+P)/2  mean={maxd_b.mean():.4f}, med={np.median(maxd_b):.4f}",
         )

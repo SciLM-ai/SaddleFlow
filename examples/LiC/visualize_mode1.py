@@ -326,7 +326,7 @@ def main():
     )
     print(f"[viz] cached arrays → {cache_path}")
 
-    out_png = out_dir / f"trajectories_site{site_idx}_mode1.png"
+    out_png = out_dir / f"trajectories_site{site_idx}_mode1.pdf"
     plot(
         per_partner,
         c_xy=rep_start_pos[:LI_INDEX, :2],

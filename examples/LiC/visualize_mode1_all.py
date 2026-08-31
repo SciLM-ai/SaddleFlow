@@ -15,7 +15,7 @@ For each checkpoint discovered in `--run-dir`:
     - load the EMA shadow into a fresh head + attn,
     - run all M trajectories,
     - save `trajectories_all_<ckpt_name>.npz` (raw arrays) and
-      `trajectories_all_<ckpt_name>.png` (overview plot),
+      `trajectories_all_<ckpt_name>.pdf` (overview plot),
     - print wall-clock time taken for that checkpoint.
 
 Run while training is still going:
@@ -478,7 +478,7 @@ def main():
                 d_li=d_li,
             )
 
-            out_png = cdir / f"{stem}.png"
+            out_png = cdir / f"{stem}.pdf"
             c_xy = starts[0, :LI_INDEX, :2]   # carbon positions are constant
             plot_all(
                 traj, finals, saddles_un, starts, c_xy, cell, out_png,

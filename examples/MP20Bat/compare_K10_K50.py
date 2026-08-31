@@ -313,7 +313,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K_low: int, K_high: int) -> N
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    out_path = out_dir / f"hist_rmsd_K{K_low}_vs_K{K_high}.png"
+    out_path = out_dir / f"hist_rmsd_K{K_low}_vs_K{K_high}.pdf"
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
     print(f"[plot] wrote {out_path}")
@@ -334,7 +334,7 @@ def plot_histograms(npz_path: Path, out_dir: Path, K_low: int, K_high: int) -> N
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    out_path = out_dir / f"hist_rmsd_vs_truth_K{K_low}_K{K_high}.png"
+    out_path = out_dir / f"hist_rmsd_vs_truth_K{K_low}_K{K_high}.pdf"
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
     print(f"[plot] wrote {out_path}")
