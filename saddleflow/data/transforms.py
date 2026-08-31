@@ -52,10 +52,21 @@ def mic_displacement(
     delta = frac @ cell` gives the unique image whose fractional coordinates
     lie in [-½, ½]^3 — i.e., the closest one. Returns the same shape as input.
     """
-    delta = target - current
-    frac = delta @ torch.linalg.inv(cell)
-    frac = frac - torch.round(frac)
-    return frac @ cell
+    # Same autocast hazard as `wrap_positions`: these are matmuls, so
+    # torch.autocast silently runs them in bf16/fp16. The error here is much
+    # smaller than in `wrap_positions` (measured 0.0001 A mean / 0.008 A max vs
+    # 0.027 / 0.094) because this operates on DIFFERENCES of order 1 A rather
+    # than absolute coordinates of order 10 A, and bf16's representable-value
+    # spacing grows with magnitude. It is still the training target and the
+    # delta_R/delta_P conditioning signal, so pin it too.
+    dev = target.device.type
+    with torch.autocast(device_type=dev, enabled=False):
+        delta = target.float() - current.float()
+        c32 = cell.float()
+        frac = delta @ torch.linalg.inv(c32)
+        frac = frac - torch.round(frac)
+        out = frac @ c32
+    return out.to(target.dtype)
 
 
 def gaussian_perturbation(
