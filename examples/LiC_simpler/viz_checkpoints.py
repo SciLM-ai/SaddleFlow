@@ -158,7 +158,10 @@ def main():
     device = args.device
     backbone = load_uma_backbone("uma-s-1p2", device=device, freeze=True, eval_mode=True,
                                  unfreeze_last_block=args.unfreeze_last_block)
-    if args.unfreeze_all_blocks:
+    if args.unfreeze_all_blocks or uma_unfrozen:
+        # Triggered by the CLI flag OR by extras["unfreeze_uma_all"] in the run's
+        # config: EMA stores every trainable parameter, so if training unfroze the
+        # backbone the same params must be trainable here or the counts disagree.
         # Match the trainer's convention (examples/MaterialsSaddles/train.py):
         # the loader exposes only unfreeze_last_block, so an all-blocks run
         # unfreezes in the caller. This must mirror training exactly -- the EMA
