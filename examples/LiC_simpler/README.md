@@ -71,10 +71,21 @@ Useful numbers to compute from the saved `li_paths_*.npz`:
 
 ## Other files
 
-- `viz_checkpoints.py` — the visualiser above. Use this one.
-- `visualize.py`, `visualize_mode1.py` — older single-checkpoint diagnostics
-  (velocity-field maps, per-partner trajectories). Still useful for debugging a
-  single model; not needed for the workflow above.
+Three visualisers, three genuinely different questions — none is redundant:
+
+| script | answers | works on |
+|---|---|---|
+| `viz_checkpoints.py` | *How did the field evolve over training?* One panel per checkpoint plus a montage, same perturbation seed throughout. | both objectives |
+| `visualize.py` | *What does the velocity field look like everywhere?* Evaluates the field on a 2D grid around the Li at several flow times — including regions no trajectory visits. `--plot {trajectories,field,both}`. | both objectives |
+| `visualize_mode1.py` | *Does conditioning actually steer it?* Synthesises the five missing partners by rotating (P−R) by k·60°, samples each separately, and checks you get six different saddles. | conditioned (mode 1) only |
+
+Start with `viz_checkpoints.py`. Reach for the field map when trajectories look
+wrong and you want to see *why* — it is what revealed that a broken model's field
+points at the atop directions at every radius. Reach for `visualize_mode1.py` when
+you want to test the conditioning mechanism itself rather than one trajectory set.
+
+All three read the architecture from the run's `config.json`.
+
 - `make_small_cell.py` — builds `small_n5_one_saddle.traj` / `small_n5_six_saddles.traj`,
   hexagonal cells that are **exactly** C6-symmetric about the Li site (the stock
   113-atom cell is rectangular and only symmetric to ~0.001 Å). Smaller and

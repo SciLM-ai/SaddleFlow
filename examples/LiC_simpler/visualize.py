@@ -36,6 +36,7 @@ from ase.io import Trajectory
 from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 
 from saddleflow.data import atoms_to_sample_dict, mic_unwrap
+from saddleflow.data.transforms import mic_displacement
 from saddleflow.flow.matching import apply_output_projections, build_atomic_data
 from saddleflow.flow.sampler import sample_saddles
 from saddleflow.models import GlobalAttn, VelocityHead
@@ -81,11 +82,31 @@ def parse_args():
 
 
 def load_model(ckpt_dir, device, attn_layers, attn_heads, head_depth, use_ema):
+    """Build attn+head matching the checkpoint and load its EMA shadow.
+
+    The architecture comes from the run's own config.json when present (same
+    convention as visualize_mode1.py). Passing mismatched --attn-layers /
+    --head-depth by hand used to raise a confusing tensor-count error from
+    load_ema_weights; reading the config removes that class of mistake.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    cfg_path = _Path(ckpt_dir).parent / "config.json"
+    delta_C = 0
+    if cfg_path.is_file():
+        ex = _json.loads(cfg_path.read_text()).get("extras", {})
+        attn_layers = int(ex.get("attn_layers", attn_layers))
+        attn_heads = int(ex.get("attn_heads", attn_heads))
+        head_depth = int(ex.get("head_depth", head_depth))
+        delta_C = int(ex.get("delta_endpoint_channels", 0) or 0)
+        print(f"[viz] cfg: attn_layers={attn_layers} head_depth={head_depth} "
+              f"delta_endpoint_channels={delta_C}")
     backbone = load_uma_backbone("uma-s-1p2", device=device, freeze=True, eval_mode=True)
     sc, lmax = backbone.sphere_channels, backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=attn_heads, num_layers=attn_layers).to(device)
-    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth).to(device)
+    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth,
+                        delta_endpoint_channels=delta_C).to(device)
     load_ema_weights(ckpt_dir, [attn, head], device=device, use_ema=use_ema)
     print(f"[viz] loaded {'EMA' if use_ema else 'raw'} weights from {ckpt_dir}")
     for m in (attn, head):
@@ -105,20 +126,31 @@ def sixfold_saddle_orbit(li_xy, saddle_xy):
     return li_xy[None, :] + rot_deltas
 
 
-def sample_reactant(reactant_atoms, backbone, attn, head, sigma, n_pert, K, device, seed):
+def sample_reactant(reactant_atoms, backbone, attn, head, sigma, n_pert, K, device, seed,
+                    partner_pos=None):
+    """Integrate n_pert trajectories from the reactant.
+
+    A conditioned head (delta_endpoint_channels > 0) requires partner_pos and
+    then starts from the (R, P) midpoint; an unconditioned one must not be given
+    it and starts from the reactant itself. Passing the wrong one raises inside
+    sample_saddles rather than failing quietly.
+    """
     gen = torch.Generator(device="cpu").manual_seed(seed)
+    conditioned = getattr(head, "delta_endpoint_channels", 0) > 0
     final, traj = sample_saddles(
         atoms_to_sample_dict(reactant_atoms),
         backbone, attn, head,
         sigma_inf=sigma, n_perturbations=n_pert, K=K,
         device=device, generator=gen,
+        partner_pos=(partner_pos if conditioned else None),
         return_trajectory=True,
     )
     return final.cpu().numpy(), traj.cpu().numpy()
 
 
 def compute_velocity_field(template_atoms, backbone, attn, head, *, grid_resolution,
-                           t_values, device, batch_size, region_center, region_pad):
+                           t_values, device, batch_size, region_center, region_pad,
+                           R_pos=None, P_pos=None):
     cell = np.asarray(template_atoms.cell[:], dtype=np.float64)
     template_pos = template_atoms.get_positions().copy()
     li_z = float(template_pos[LI_INDEX, 2])
@@ -141,10 +173,12 @@ def compute_velocity_field(template_atoms, backbone, attn, head, *, grid_resolut
             stop = min(start + batch_size, G * G)
             chunk_xy = flat_xy[start:stop]
             data_list = []
+            chunk_pos = []
             for xy in chunk_xy:
                 pos = template_pos.copy()
                 pos[LI_INDEX, :2] = xy
                 pos[LI_INDEX, 2] = li_z
+                chunk_pos.append(pos.astype(np.float32))
                 data_list.append(build_atomic_data(
                     torch.tensor(pos, dtype=torch.float32),
                     sample["Z"], sample["cell"],
@@ -158,7 +192,20 @@ def compute_velocity_field(template_atoms, backbone, attn, head, *, grid_resolut
                 h = attn(feat["node_embedding"], batch_idx)
                 t_tensor = torch.full((stop - start,), float(t_val),
                                        dtype=torch.float32, device=device)
-                v = head(h, t_tensor, batch_idx)
+                if getattr(head, "delta_endpoint_channels", 0) > 0:
+                    # Conditioned head: it expects (R - x) and (P - x) per atom
+                    # at THIS grid point, exactly as the sampler supplies them.
+                    de = torch.cat([
+                        torch.stack([
+                            mic_displacement(R_pos, torch.tensor(p_, dtype=torch.float32),
+                                             sample["cell"]),
+                            mic_displacement(P_pos, torch.tensor(p_, dtype=torch.float32),
+                                             sample["cell"]),
+                        ], dim=1) for p_ in chunk_pos
+                    ], dim=0).to(device)
+                    v = head(h, t_tensor, batch_idx, delta_endpoint=de)
+                else:
+                    v = head(h, t_tensor, batch_idx)
                 fixed_all = fixed.repeat(stop - start)
                 v = apply_output_projections(v, fixed_all, batch_idx, stop - start)
                 v = v.view(stop - start, sample["Z"].shape[0], 3)
@@ -322,9 +369,13 @@ def main():
                    f"K={args.K}, ckpt={ckpt_dir.parent.name}")
 
     if args.plot in {"trajectories", "both"}:
+        _P_un = torch.tensor(
+            mic_unwrap(_product.get_positions(), reactant.get_positions(),
+                       np.asarray(reactant.cell[:])), dtype=torch.float32)
         final, traj = sample_reactant(
             reactant, backbone, attn, head,
             args.sigma_inf, args.n_perturbations, args.K, args.device, args.seed,
+            partner_pos=_P_un,
         )
         mobile_mask_np = (~atoms_to_sample_dict(reactant)["fixed"]).numpy()
         labels, _, _ = cluster_by_rmsd(final, cell, cutoff=args.cluster_cutoff,
@@ -346,6 +397,12 @@ def main():
             grid_resolution=args.grid_resolution, t_values=t_values,
             device=args.device, batch_size=args.field_batch_size,
             region_center=li_xy, region_pad=args.field_pad,
+            # A conditioned head needs (R - x) and (P - x) at each grid point.
+            R_pos=torch.tensor(reactant.get_positions(), dtype=torch.float32),
+            P_pos=torch.tensor(mic_unwrap(_product.get_positions(),
+                                          reactant.get_positions(),
+                                          np.asarray(reactant.cell[:])),
+                               dtype=torch.float32),
         )
         plot_velocity_field(field_xy, vfield, c_xy, li_xy, saddle_xy, orbit_xy,
                             cell, t_values, out=out_dir / "velocity_field.png",
