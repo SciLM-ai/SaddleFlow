@@ -43,6 +43,7 @@ import torch
 from saddleflow.data import TrajTripletDataset
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss
 from saddleflow.models import GlobalAttn, VelocityHead
+from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
 from saddleflow.utils import TrainingConfig, load_uma_backbone, train
 
 
@@ -88,6 +89,14 @@ def parse_args():
                    help="Train all 4 UMA backbone blocks at --uma-lr, in a separate "
                         "AdamW param group from the head/attn (which stay at "
                         "--learning-rate). This is the MP20Bat production setting.")
+    p.add_argument("--early-time-film", action="store_true",
+                   help="Wrap the backbone so flow-time t modulates its INTERNAL "
+                        "blocks (equivariant FiLM). Without this the backbone sees "
+                        "only positions, so its features are t-independent and only "
+                        "the head is time-conditioned. MP20Bat production uses this "
+                        "at all 4 blocks; pair it with --unfreeze-uma-all.")
+    p.add_argument("--early-time-film-blocks", default="0,1,2,3",
+                   help="Which backbone blocks get time-FiLM (comma-separated).")
     p.add_argument("--uma-lr", type=float, default=1e-2,
                    help="LR for the unfrozen UMA blocks. Only used with "
                         "--unfreeze-uma-all. MP20Bat's best models use 1e-2.")
@@ -109,6 +118,8 @@ def parse_args():
         name = ("tsdenoise_sigma%g" % args.ts_denoise_sigma) if args.ts_denoise_sigma > 0 else "mode1"
         if args.unfreeze_uma_all:
             name += "_umaunfrozen"
+        if args.early_time_film:
+            name += "_tfilm"
         if args.head_depth != 1:
             name += f"_depth{args.head_depth}"
         args.output_dir = str(here / "runs" / name)
@@ -146,7 +157,13 @@ def main():
         n_uma = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
         print(f"[train] UMA UNFROZEN: all {len(backbone.blocks)} blocks "
               f"({n_uma:,} params) at uma_lr={args.uma_lr:g}")
-    sc, lmax = backbone.sphere_channels, backbone.lmax
+    raw_backbone = backbone
+    if args.early_time_film:
+        inject_idx = [int(x) for x in args.early_time_film_blocks.split(",")]
+        backbone = TimeFiLMBackbone(raw_backbone, inject_block_indices=inject_idx,
+                                    inject_force=False).to(args.device)
+        print(f"[train] time-FiLM inside the backbone at blocks {inject_idx}")
+    sc, lmax = raw_backbone.sphere_channels, raw_backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=args.attn_heads, num_layers=args.attn_layers).to(args.device)
     # The TS-denoise objective never supplies endpoint deltas, so the head must
@@ -164,6 +181,11 @@ def main():
     print(f"[train] backbone K{backbone.num_layers}L{lmax} (sphere_channels={sc}), frozen")
     print(f"[train] attn_layers={args.attn_layers}  head_depth={args.head_depth}")
     head_attn_params = list(attn.parameters()) + list(head.parameters())
+    if args.early_time_film:
+        # FiLM params ride in the head LR group, not the UMA group (they are new,
+        # not pretrained) -- same convention as examples/MaterialsSaddles.
+        for film in backbone.films:
+            head_attn_params += list(film.parameters())
     print(f"[train] trainable head+attn params: "
           f"{sum(p.numel() for p in head_attn_params):,}")
 
@@ -174,7 +196,9 @@ def main():
         param_groups = [
             {"name": "head_attn", "params": [p for p in head_attn_params if p.requires_grad],
              "lr": args.learning_rate},
-            {"name": "uma_unfrozen", "params": [p for p in backbone.parameters() if p.requires_grad],
+            # raw_backbone, NOT the wrapper: with --early-time-film the wrapper
+            # also owns the FiLM params, which already sit in the head group.
+            {"name": "uma_unfrozen", "params": [p for p in raw_backbone.parameters() if p.requires_grad],
              "lr": args.uma_lr},
         ]
 
@@ -203,6 +227,8 @@ def main():
             "ts_denoise_sigma": args.ts_denoise_sigma,
             "mixed_precision": args.mixed_precision,
             "unfreeze_uma_all": bool(args.unfreeze_uma_all),
+            "early_time_film": bool(args.early_time_film),
+            "early_time_film_blocks": args.early_time_film_blocks,
             "uma_lr": args.uma_lr if args.unfreeze_uma_all else None,
         },
     )

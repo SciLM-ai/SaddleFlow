@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 from saddleflow.data import TrajTripletDataset
 from saddleflow.flow.sampler import sample_saddles
 from saddleflow.models import GlobalAttn, VelocityHead
+from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
 from saddleflow.utils import load_ema_weights, load_uma_backbone
 
 
@@ -144,6 +145,9 @@ def main():
     attn_heads  = pick(args.attn_heads,  "attn_heads",  8)
     head_depth  = pick(args.head_depth,  "head_depth",  1)
     delta_C     = int(pick(args.delta_endpoint_channels, "delta_endpoint_channels", 0) or 0)
+    tfilm       = bool(ex.get("early_time_film", False))
+    tfilm_blocks = str(ex.get("early_time_film_blocks", "0,1,2,3"))
+    uma_unfrozen = bool(ex.get("unfreeze_uma_all", False))
     if cfg_path.exists():
         print(f"[viz] architecture from {cfg_path.name}: attn_layers={attn_layers} "
               f"attn_heads={attn_heads} head_depth={head_depth} delta_C={delta_C}")
@@ -164,6 +168,14 @@ def main():
             for prm in blk.parameters():
                 prm.requires_grad_(True)
     sc, lmax = backbone.sphere_channels, backbone.lmax
+    if tfilm:
+        # The run trained with time-FiLM inside the backbone; the EMA shadow
+        # contains those parameters, so the wrapper must be rebuilt here or the
+        # trainable-parameter order will not match.
+        idx = [int(x) for x in tfilm_blocks.split(",")]
+        backbone = TimeFiLMBackbone(backbone, inject_block_indices=idx,
+                                    inject_force=False).to(device)
+        print(f"[viz] time-FiLM backbone rebuilt at blocks {idx}")
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=attn_heads, num_layers=attn_layers).to(device)
     head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth,
@@ -182,7 +194,11 @@ def main():
     for ckpt in ckpts:
         meta = json.loads((ckpt / "meta.json").read_text()) if (ckpt / "meta.json").exists() else {}
         epoch = meta.get("epoch", ckpt.name)
-        ema_modules = ([backbone, attn, head] if (args.unfreeze_last_block or args.unfreeze_all_blocks)
+        # EMA holds every trainable parameter in order: backbone (if it was
+        # unfrozen), then FiLM, then attn/head. Mirror training exactly.
+        ema_modules = ([backbone, attn, head]
+                       if (args.unfreeze_last_block or args.unfreeze_all_blocks
+                           or uma_unfrozen or tfilm)
                        else [attn, head])
         load_ema_weights(str(ckpt), ema_modules, device=device)
         attn.eval(); head.eval()
