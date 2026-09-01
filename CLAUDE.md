@@ -323,6 +323,27 @@ Both backends expose the same per-sample dict (one sample = one `(start, saddle)
 
 **No precomputed neighbour lists.** Graphs are rebuilt by `AtomicData.from_ase` at every forward pass — required anyway since `r(t)` changes with flow time and bond-breaking reactions can cross UMA's cutoff. Neighbour-list cost is ~1–10 ms CPU per system, dominated by the UMA forward.
 
+### LiC saddle set — reverified 2026-09-01 (Sella, fmax 0.005, all index-1)
+
+`examples/LiC/{train,test}_set.traj` hold **12 train + 167 test = 179** triplets, each saddle reconverged with **Sella at fmax 0.005** and **verified index-1** by finite-difference Lanczos. 183/183 converged; the Li moved a median **0.0120 Å** (p90 0.029), so the CI-NEB labels were already good. Untouched CI-NEB originals archived at `/work/08405/ilgar/vista/LiC_original_CINEB/`.
+
+**Four test triplets were removed** — CI-NEB had stopped them on a *shoulder*, not a stationary point. Their Li force was **0.00996 eV/Å**, i.e. just under NEB's 0.01 cutoff, and Sella moved each ~0.95 Å to a genuine saddle (final force 0.0005–0.0018). Every one landed on a saddle **already in the set**, so removing them loses nothing — and one of them (tid 135) had collapsed onto **train** tid 7, a train/test leak. Removed global tids and their original Li positions:
+
+| tid | original Li (x, y, z) | moved | collapsed onto |
+|---|---|---|---|
+| 109 | 7.3259, 12.6946, −5.3717 | 0.920 Å | tid 112 (test), 0.0009 Å |
+| 135 | 10.1457, 7.6873, −5.4028 | 0.971 Å | **tid 7 (train)**, 0.0088 Å |
+| 145 | 10.0770, 14.3389, −5.3795 | 0.974 Å | tid 144 (test), 0.0072 Å |
+| 164 | 12.9155, 9.3046, −5.3891 | 0.926 Å | tid 139 (test), 0.0028 Å |
+
+After cleaning: no two saddles within 0.97 Å, train/test disjoint at 1.05 Å.
+
+**10 of the 189 C–C bond midpoints are verified NON-saddles.** Every real saddle sits at a bond midpoint (the other 179 midpoints are within 0.219 Å of one), so these 10 are geometrically indistinguishable from saddles — which is why an unconditioned model flows into them. They are not stationary: `|F_Li|` = **0.060–0.284 eV/Å**, and a 0.02 Å grid scan over ±0.5 Å finds a minimum of only **0.0071**, never reaching the 0.005 threshold.
+
+**Why they look like saddles but aren't.** The Li Hessian there is genuinely index-1, with the *same* axis structure as a real saddle: negative curvature perpendicular to the C–C bond (the hop coordinate), soft positive along the bond, stiff out-of-plane (λ ≈ +4.8). But along the bond the energy is **monotonically downhill** — the positive curvature is a *shoulder*, not a well. `F·bond` dips to ~0.0055 at 0.27 Å and turns back up **without crossing zero**, so no stationary point exists. Positive curvature survives only ~0.3 Å, then inverts; past that the force grows and any optimiser taking steps >0.3 Å escapes. Sella (90/90 converged) and Dimer (68/90; the 22 failures are eigenmode *delocalisation*, itself a no-saddle signature) both leave from all 90 starts — clean and 0.1 Å-noised alike — moving ≥0.90 Å. Control: from a real saddle, Sella stays (97.8% within 0.2 Å, median 0.012 Å). The two populations do not overlap: largest "stayed" move 0.039 Å, smallest "left" move 0.904 Å.
+
+**Consequence for modelling.** Only the *gradient magnitude* distinguishes these sites, and a purely geometric unconditioned flow never sees it. So a tail of predictions landing on saddle-less midpoints is expected, not a bug — and it is not fixable by more training, a different σ, or more integration steps.
+
 ### First test case: Li on defective C-sheet
 
 Frozen C-sheet with 2 C-vacancy defects, `FixAtoms` on indices 0–125; **Li is atom index 126**, the only mobile atom. Cell diag `[17.09, 19.56, −15.00]` (negative `z` = vacuum, left-handed; MIC and fairchem neighbour-list handle it fine). `atoms.info` carries `task_name='omat'`, `charge=0`, `spin=0`, plus search-pipeline keys; no `side` key, so `validate_triplet` uses positional `[R, S, P, …]`. Sizes: train 12 triplets, test 171.
