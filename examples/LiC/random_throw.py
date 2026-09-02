@@ -88,7 +88,8 @@ def main():
     attn_layers = int(ex.get("attn_layers", 0)); attn_heads = int(ex.get("attn_heads", 8))
     head_depth = int(ex.get("head_depth", 1)); delta_C = int(ex.get("delta_endpoint_channels", 0) or 0)
     tfilm = bool(ex.get("early_time_film", False))
-    uma_unfrozen = bool(ex.get("unfreeze_uma_all", False) or ex.get("unfreeze_uma_last", False))
+    uma_unfrozen = bool(ex.get("unfreeze_uma_all", False) or ex.get("unfreeze_uma_last", False)
+                        or ex.get("unfreeze_uma_blocks"))
     print(f"[throw] cfg: attn={attn_layers} depth={head_depth} delta_C={delta_C} "
           f"tfilm={tfilm} uma_unfrozen={uma_unfrozen}")
     if delta_C:
@@ -105,7 +106,15 @@ def main():
           f"Li adsorption height z = {z0:.3f} A")
 
     backbone = load_uma_backbone("uma-s-1p2", device=dev, freeze=True, eval_mode=True)
-    if uma_unfrozen:
+    # The EMA loader matches trainable params by count AND order, so the
+    # unfreeze pattern here must reproduce training exactly.
+    unfreeze_blocks = ex.get("unfreeze_uma_blocks")
+    if unfreeze_blocks:
+        for i in unfreeze_blocks:
+            for p_ in backbone.blocks[i].parameters():
+                p_.requires_grad_(True)
+        print(f"[throw] UMA blocks {sorted(unfreeze_blocks)} unfrozen (from config)")
+    elif uma_unfrozen:
         for blk in backbone.blocks:
             for p_ in blk.parameters():
                 p_.requires_grad_(True)

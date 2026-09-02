@@ -66,6 +66,13 @@ def parse_args():
                    help="Unfreeze UMA's last message-passing block (blocks[-1]). "
                         "Trainable params on the backbone get a separate, much lower "
                         "LR (--uma-lr). v1+.")
+    p.add_argument("--unfreeze-uma-blocks", default="",
+                   help="Comma-separated UMA block indices to unfreeze, e.g. "
+                        "'1,2,3' to keep block 0 frozen and train the last three. "
+                        "Negative indices allowed. Overrides the other unfreeze "
+                        "flags; recorded in config extras so inference can "
+                        "reproduce the exact trainable-parameter ordering that "
+                        "load_ema_weights matches against.")
     p.add_argument("--unfreeze-uma-all", action="store_true",
                    help="Unfreeze ALL 4 UMA blocks at --uma-lr (MP20Bat production "
                         "setting). Pair with --early-time-film so the backbone can "
@@ -156,6 +163,18 @@ def main():
         print(f"[train] UMA UNFROZEN: all {len(raw_backbone.blocks)} blocks "
               f"({sum(p.numel() for p in raw_backbone.parameters() if p.requires_grad):,} "
               f"params) at uma_lr={args.uma_lr:g}")
+    unfreeze_idx = None
+    if args.unfreeze_uma_blocks.strip():
+        nblk = len(raw_backbone.blocks)
+        unfreeze_idx = [int(x) % nblk for x in args.unfreeze_uma_blocks.split(",")]
+        for p_ in raw_backbone.parameters():
+            p_.requires_grad_(False)
+        for i in unfreeze_idx:
+            for p_ in raw_backbone.blocks[i].parameters():
+                p_.requires_grad_(True)
+        print(f"[train] UMA UNFROZEN: blocks {sorted(unfreeze_idx)} of {nblk} "
+              f"({sum(p.numel() for p in raw_backbone.parameters() if p.requires_grad):,} "
+              f"params) at uma_lr={args.uma_lr:g}")
     sc, lmax = raw_backbone.sphere_channels, raw_backbone.lmax
 
     # Optionally wrap the backbone with the early time-FiLM (Mode 1 v1+).
@@ -222,7 +241,7 @@ def main():
 
     # Discriminative LR via parameter groups when UMA is partially unfrozen.
     param_groups = None
-    if args.unfreeze_uma_last or args.unfreeze_uma_all:
+    if args.unfreeze_uma_last or args.unfreeze_uma_all or unfreeze_idx:
         param_groups = [
             {
                 "name": "head_attn_film",
@@ -249,6 +268,7 @@ def main():
             "delta_endpoint_channels": head_delta_C,
             "ts_denoise_sigma": args.ts_denoise_sigma,
             "unfreeze_uma_all": bool(args.unfreeze_uma_all),
+            "unfreeze_uma_blocks": (sorted(unfreeze_idx) if unfreeze_idx else None),
             "force_field_channels": head_force_C,
             "backbone": args.backbone,
             "attn_layers": args.attn_layers, "attn_heads": args.attn_heads,
@@ -261,7 +281,8 @@ def main():
             "force_residual": bool(args.force_residual),
             "xt_perturb_sigma": args.xt_perturb_sigma,
             "force_film": bool(args.force_film),
-            "uma_lr": args.uma_lr if (args.unfreeze_uma_last or args.unfreeze_uma_last2) else None,
+            "uma_lr": args.uma_lr if (args.unfreeze_uma_last or args.unfreeze_uma_last2
+                                      or args.unfreeze_uma_all or unfreeze_idx) else None,
         },
     )
     train(loss_module, dataset, train_cfg, param_groups=param_groups)
