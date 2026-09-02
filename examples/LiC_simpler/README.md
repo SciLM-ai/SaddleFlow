@@ -27,11 +27,46 @@ python examples/LiC_simpler/train.py
 python examples/LiC_simpler/viz_checkpoints.py --run-dir examples/LiC_simpler/runs/mode1
 
 # (b) TS-denoise — unconditioned. Given any structure, flow to the nearest saddle.
+#     This is the recipe that actually solves the example — see "Expected result".
 python examples/LiC_simpler/train.py --ts-denoise-sigma 0.5 \
-    --delta-endpoint-channels 0 --attn-layers 1 --ema-decay 0.99
+    --delta-endpoint-channels 0 --attn-layers 1 --ema-decay 0.99 \
+    --unfreeze-uma-all --uma-lr 1e-2 \
+    --early-time-film --early-time-film-blocks 0,1,2,3
 python examples/LiC_simpler/viz_checkpoints.py \
     --run-dir examples/LiC_simpler/runs/tsdenoise_sigma0.5
 ```
+
+**Do not drop the last two lines.** With the backbone frozen (the head-only
+default) this example plateaus at hexatic order ~0.91 and never closes the last
+~0.06 Å. Unfreezing all four UMA blocks at `--uma-lr 1e-2` *together with*
+equivariant time-FiLM at every block is what takes it to a perfect orbit.
+Capacity is not the missing ingredient: `--head-depth 3` on top of this is
+slightly **worse** (hexatic 0.944), and dropping attention costs a little
+(0.933).
+
+## Expected result
+
+At 10000 epochs, fp32, with the command above (48 perturbed starts, σ_inf 0.15,
+K = 50, EMA weights), measured against the six symmetry-equivalent saddles:
+
+| quantity | value |
+|---|---|
+| hexatic order \|⟨e^{6iθ}⟩\| | **1.000** |
+| endpoints on the saddle orbit | **100 %** |
+| median distance to the nearest true saddle | **0.005 Å** |
+| p90 distance | **0.006 Å** |
+| within the 0.05 Å hit radius | **100 %** |
+
+All six saddles are recovered from the **one** that appears in the training
+data — which is the whole point of the example. Ablations at the same budget:
+
+| variant | hexatic | on-orbit | median dist |
+|---|---|---|---|
+| unfrozen + time-FiLM (above) | 1.000 | 100 % | 0.005 Å |
+| + head depth 3 | 0.944 | 96 % | 0.005 Å |
+| unfrozen, no attention | 0.933 | 98 % | 0.005 Å |
+| frozen backbone (head only) | 0.912 | 98 % | 0.056 Å |
+| frozen + head depth 3 | 0.763 | 90 % | 0.070 Å |
 
 Each is ~20 min on one GPU. Runs land in `runs/<objective>/`, so (a) and (b) do
 not overwrite each other.
@@ -55,19 +90,21 @@ for working correctly.
 
 ## Reading the figures
 
-Per panel: the red dot is the reactant Li, open stars are the six symmetry-
-equivalent saddles, the black star is the one actually in the training data, and
-grey lines mark the "atop" directions (30° off the saddles — where a broken model
-tends to point).
+Panels are styled to match the defective-sheet example (`examples/LiC`) so the
+two can be read side by side: dark grey carbon sheet with bonds, blue
+trajectories from blue start markers to black endpoints, and the red dot is the
+reactant Li. Saddles are drawn as **circles of the hit radius itself**, so a
+trajectory has hit one exactly when its endpoint falls inside the circle:
 
-Useful numbers to compute from the saved `li_paths_*.npz`:
+- **green** — the saddle that is in the training data (1 of them)
+- **orange** — the five symmetry-equivalent saddles, never trained on
 
-- **hexatic order** `|mean(exp(6i·θ))|` over endpoint angles — 1.0 is six sharp
-  petals, ~0.1 is angle-uniform.
-- **on-orbit fraction** — endpoints landing within 0.35 Å of a true saddle.
-- **balance** — entropy of the per-saddle counts. **Only meaningful when the
-  on-orbit fraction is high**: if few endpoints land near any saddle, balance
-  describes a handful of points and reads deceptively well.
+Two deliberate differences from `examples/LiC`. The view is **zoomed to ±2.6 Å**
+around the reactant rather than showing the whole sheet, because the cell is
+pristine and every hexagon is equivalent. And the hit radius is **0.05 Å**
+rather than 0.30 Å — this example is clean enough that 0.30 Å would call
+everything a hit and hide the difference between the variants above. The radius
+is printed in every panel title.
 
 ## Other files
 

@@ -86,8 +86,8 @@ This trains on the full `mp20bat` subset (~34,742 triplets) for 60 epochs with 4
 
 For a quick sanity-check on small data:
 
-- [`examples/LiC_simpler/`](examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. See its [README](examples/LiC_simpler/README.md).
-- [`examples/LiC/`](examples/LiC/) — defective-graphene case with 12 train + 171 test triplets; ~3 h on one A100.
+- [`examples/LiC_simpler/`](examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. **It passes:** with the backbone unfrozen and per-block time-FiLM, all 48 sampled trajectories land within **0.006 Å** of a true saddle and the hexatic order of the endpoints is **1.000** — a perfect six-fold orbit from one training saddle. The frozen-backbone default reaches only 0.91, so use the full command in its [README](examples/LiC_simpler/README.md).
+- [`examples/LiC/`](examples/LiC/) — defective-graphene case with 12 train + 167 test triplets (179 saddles, each Sella-reconverged at fmax 0.005 and verified index-1); ~3 h on one A100.
 
 ## Method (in brief)
 
