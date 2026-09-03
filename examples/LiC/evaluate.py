@@ -48,7 +48,7 @@ def parse_args():
     p.add_argument("--ckpt-dir", default=str(here / "runs" / "mode1_v6" / "checkpoint_final"))
 
     p.add_argument("--n-perturbations", type=int, default=32)
-    p.add_argument("--K", type=int, default=50)
+    p.add_argument("--K", type=int, default=20)
     p.add_argument("--sigma-inf", type=float, default=0.15,
                    help="Å. Inference-time perturbation around r_R that spreads initial "
                         "conditions before Euler integration. Decoupled from training; "

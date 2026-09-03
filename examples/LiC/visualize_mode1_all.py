@@ -66,7 +66,7 @@ def parse_args():
     p.add_argument("--train-traj", default=str(here / "train_set.traj"))
     p.add_argument("--test-traj", default=str(here / "test_set.traj"))
 
-    p.add_argument("--K", type=int, default=50, help="Euler steps")
+    p.add_argument("--K", type=int, default=20, help="Euler steps")
     p.add_argument("--chunk-size", type=int, default=32,
                    help="Systems per UMA forward (memory knob; bigger = fewer forwards "
                         "per Euler step but more GPU memory). 32 is conservative.")

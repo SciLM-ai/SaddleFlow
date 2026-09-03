@@ -66,7 +66,7 @@ def parse_args():
                    help="Å. Inference-time Gaussian perturbation around r_R. "
                         "Decoupled from training; 0.15 is the value we verified on LiC.")
     p.add_argument("--n-perturbations", type=int, default=32)
-    p.add_argument("--K", type=int, default=50)
+    p.add_argument("--K", type=int, default=20)
     p.add_argument("--cluster-cutoff", type=float, default=0.10)
     p.add_argument("--site-group-threshold", type=float, default=0.02)
 

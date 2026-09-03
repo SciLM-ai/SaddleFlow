@@ -77,7 +77,7 @@ def parse_args():
                         "the starts; one trajectory per perturbation per partner.")
     p.add_argument("--n-perturbations", type=int, default=1,
                    help="How many ε draws per partner. 1 with sigma_inf=0 is deterministic.")
-    p.add_argument("--K", type=int, default=50, help="Euler steps")
+    p.add_argument("--K", type=int, default=20, help="Euler steps")
 
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

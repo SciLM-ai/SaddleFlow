@@ -64,7 +64,7 @@ def parse_args():
     p.add_argument("--sigma-inf", type=float, default=0.15,
                    help="Å. Inference-time Gaussian perturbation around r_R.")
     p.add_argument("--n-perturbations", type=int, default=64)
-    p.add_argument("--K", type=int, default=50)
+    p.add_argument("--K", type=int, default=20)
     p.add_argument("--cluster-cutoff", type=float, default=0.10)
 
     p.add_argument("--grid-resolution", type=int, default=60)

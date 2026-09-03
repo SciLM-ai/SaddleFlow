@@ -47,14 +47,14 @@ slightly **worse** (hexatic 0.944), and dropping attention costs a little
 ## Expected result
 
 At 10000 epochs, fp32, with the command above (48 perturbed starts, σ_inf 0.15,
-K = 50, EMA weights), measured against the six symmetry-equivalent saddles:
+K = 20, EMA weights), measured against the six symmetry-equivalent saddles:
 
 | quantity | value |
 |---|---|
 | hexatic order \|⟨e^{6iθ}⟩\| | **1.000** |
 | endpoints on the saddle orbit | **100 %** |
-| median distance to the nearest true saddle | **0.005 Å** |
-| p90 distance | **0.006 Å** |
+| median distance to the nearest true saddle | **0.002 Å** |
+| p90 distance | **0.004 Å** |
 | within the 0.05 Å hit radius | **100 %** |
 
 All six saddles are recovered from the **one** that appears in the training

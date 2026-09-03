@@ -61,7 +61,7 @@ def parse_args():
                         "0 = fully deterministic Mode-1 (recommended).")
     p.add_argument("--n-perturbations", type=int, default=1,
                    help="How many ε draws per partner.")
-    p.add_argument("--K", type=int, default=50, help="Euler steps")
+    p.add_argument("--K", type=int, default=20, help="Euler steps")
 
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

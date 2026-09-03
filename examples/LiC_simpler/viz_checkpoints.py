@@ -50,7 +50,7 @@ def parse_args():
     p.add_argument("--sigma-inf", type=float, default=0.15,
                    help="Å. Inference-time Gaussian perturbation around r_R.")
     p.add_argument("--n-perturbations", type=int, default=48)
-    p.add_argument("--K", type=int, default=50)
+    p.add_argument("--K", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
     # Architecture is read from <run-dir>/config.json by default -- a mismatch
     # here loads the EMA shadow into the wrong parameter slots SILENTLY, so it
