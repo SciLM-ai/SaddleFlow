@@ -42,6 +42,9 @@ lightning_logs/
 data/
 !saddleflow/data/
 !saddleflow/data/**
+# ...and for the recorded SaddleMill NEB input of the LiC_simpler example (10 KB).
+!examples/LiC_simpler/neb/data/
+!examples/LiC_simpler/neb/data/**
 # Re-exclude cache/build artifacts that the negation above would otherwise un-ignore.
 saddleflow/data/**/__pycache__/
 saddleflow/data/**/*.pyc

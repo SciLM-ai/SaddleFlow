@@ -1,0 +1,137 @@
+host: c639-071.vista.tacc.utexas.edu  gpu: NVIDIA GH200 120GB  start: Thu Sep  3 01:14:18 PM CDT 2026
+{
+    "Main": {
+        "executorlib": false,
+        "method": "NEB",
+        "dir_path": "data",
+        "Optimizer": "MDMin",
+        "fmax": 0.01,
+        "steps": 3000,
+        "Calculator": "FAIRChemCalculator",
+        "device": "cuda",
+        "jobs_per_node": 1,
+        "jobs_per_gpu": 1,
+        "run_jobs": "remaining",
+        "input_statuses": "all",
+        "continue_from_result": true,
+        "zip": true,
+        "max_consecutive_errors": 5,
+        "restart_limit": 3,
+        "input_format": "traj"
+    },
+    "ourMinimization": {
+        "relax_cell": false,
+        "vasp_command": null,
+        "vasp_ncore": null
+    },
+    "ourSinglePoint": {
+        "compute_hessian": false,
+        "hessian_nev_store": 8,
+        "hessian_tol": 0.01,
+        "hessian_chunk": 1,
+        "frames_per_job": 1,
+        "vasp_command": null,
+        "vasp_ncore": null
+    },
+    "ourDoubleMinimization": {
+        "relax_cell": false,
+        "pre_dimer_refine": false,
+        "resume_partial": false,
+        "vasp_command": null,
+        "vasp_ncore": null
+    },
+    "ourNEB": {
+        "only_endpoints_in_input_traj": true,
+        "images_location_in_input_traj": 0,
+        "relax_endpoints": true,
+        "endpoint_relax_Optimizer": "LBFGS",
+        "endpoint_relax_fmax": 0.01,
+        "endpoint_relax_steps": 1000,
+        "interpolate_method": "ase_linear",
+        "num_frames": 7,
+        "max_num_frames": null,
+        "batch_size": 8,
+        "DNEB": false,
+        "intermediate_minima_check_step": 0,
+        "intermediate_minima_min_depth": 0.05,
+        "add_images_step": 0,
+        "dimer_refine_ci": false,
+        "dimer_refine_steps": 300,
+        "refine_band_steps": 0,
+        "vasp_command_endpoints": null,
+        "vasp_ncore_endpoints": null,
+        "vasp_command_intermediates": null,
+        "vasp_ncore_intermediates": null
+    },
+    "ourDimer": {
+        "dataset_type": null,
+        "reaction_types": null,
+        "num_attempts_per_type": 1,
+        "gaussian_swap_prob": 0.1,
+        "ring_sizes": "3 4",
+        "supercell": true,
+        "delocalization_threshold": 0.8,
+        "extension_check_fmax": 0.4,
+        "extension_check_curvature": -0.2,
+        "engine": "ase",
+        "kappa_beta": 2.0,
+        "kappa_recover_fmax": 0.3,
+        "check_index": false,
+        "index_nev": 4,
+        "index_eps": 0.002,
+        "index_tol": 0.01,
+        "vasp_command": null,
+        "vasp_ncore": null
+    },
+    "ourSella": {
+        "dataset_type": null,
+        "reaction_types": null,
+        "num_attempts_per_type": 1,
+        "gaussian_swap_prob": 0.1,
+        "ring_sizes": "3 4",
+        "supercell": true,
+        "delocalization_threshold": 0.8,
+        "extension_check_fmax": 0.4,
+        "extension_check_curvature": -0.2,
+        "check_index": false,
+        "index_nev": 4,
+        "index_eps": 0.002,
+        "index_tol": 0.01,
+        "vasp_command": null,
+        "vasp_ncore": null
+    },
+    "ourVasp": {
+        "input_generator": null,
+        "extra_input_files": null,
+        "extra_outputs": null
+    },
+    "FAIRChemCalculator": {
+        "device": "cuda",
+        "name_or_path": "uma-s-1p2",
+        "task_name": "omat"
+    },
+    "MDMin": {
+        "dt": 0.05,
+        "maxstep": 0.1
+    },
+    "LBFGS": {
+        "memory": 10,
+        "damping": 0.99,
+        "alpha": 200,
+        "maxstep": 0.1,
+        "use_line_search": false
+    },
+    "BaseNEB": {
+        "k": 5,
+        "method": "improvedtangent",
+        "climb": true,
+        "allow_shared_calculator": true
+    }
+} 
+
+Worker None started on node c639-071.vista.tacc.utexas.edu
+  CPUs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71]
+  CUDA_VISIBLE_DEVICES: not set  MPS: off
+WARNING:root:The 'seed' argument is deprecated and will be removed in future versions. Please set the seed in the MLIPPredictUnit configuration instead.
+Scanned 1 input frame(s); submitted 1 (skipped 0 by input_statuses).
+end: Thu Sep  3 01:14:39 PM CDT 2026

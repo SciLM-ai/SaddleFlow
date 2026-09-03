@@ -127,6 +127,11 @@ All three read the architecture from the run's `config.json`.
   hexagonal cells that are **exactly** C6-symmetric about the Li site (the stock
   113-atom cell is rectangular and only symmetric to ~0.001 Å). Smaller and
   faster, and the sharpest test of symmetry behaviour.
+- `neb/` — the SaddleMill climbing-image NEB that regenerates the saddle in
+  `one_saddle.traj` from its own reactant and product (7 images, `fmax` 0.01 eV/Å,
+  serial on one GPU), together with the recorded run's outputs: it lands on the
+  training saddle to 0.0000 Å with a 0.3084 eV barrier. `bash neb/run.sh fresh`
+  reproduces it in ~20 s; see `neb/README.md`.
 
 ## One trap worth knowing
 
