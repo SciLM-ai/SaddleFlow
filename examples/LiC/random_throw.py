@@ -40,6 +40,9 @@ def parse_args():
     p.add_argument("--train-traj", default=str(here / "train_set.traj"))
     p.add_argument("--test-traj", default=str(here / "test_set.traj"))
     p.add_argument("--n", type=int, default=2000, help="number of random starts")
+    p.add_argument("--grid", type=int, default=0,
+                   help="If >0, ignore --n/--z-jitter and start from a regular GRIDxGRID "
+                        "of cell-centred xy positions at the mean adsorption height.")
     p.add_argument("--K", type=int, default=20, help="Euler steps per trajectory")
     p.add_argument("--z-jitter", type=float, default=0.3, help="Gaussian sigma on z (A)")
     p.add_argument("--batch-size", type=int, default=64)
@@ -136,9 +139,17 @@ def main():
 
     rng = np.random.default_rng(args.seed)
     base = ref.get_positions().copy()
-    frac = rng.random((args.n, 2))
+    if args.grid > 0:
+        g = (np.arange(args.grid) + 0.5) / args.grid          # cell-centred fractions
+        gx, gy = np.meshgrid(g, g, indexing="ij")
+        frac = np.stack([gx.ravel(), gy.ravel()], 1)
+        args.n = len(frac)
+        z = np.full(args.n, z0)                                # no z variation
+        print(f"[throw] regular {args.grid}x{args.grid} grid: {args.n} starts at z={z0:.3f}")
+    else:
+        frac = rng.random((args.n, 2))
+        z = z0 + args.z_jitter * rng.standard_normal(args.n)
     xy = frac @ np.asarray(cell)[:2, :2]
-    z = z0 + args.z_jitter * rng.standard_normal(args.n)
     starts = np.repeat(base[None], args.n, axis=0)
     starts[:, LI, :2] = xy
     starts[:, LI, 2] = z

@@ -42,6 +42,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log-every", type=int, default=200)
     p.add_argument("--save-every-epochs", type=int, default=1000)
+    p.add_argument("--save-every-steps", type=int, default=0,
+                   help="Also checkpoint every N optimizer steps (0 = off).")
 
     p.add_argument("--backbone", default="uma-s-1p2")
     p.add_argument("--attn-layers", type=int, default=0,
@@ -124,6 +126,10 @@ def parse_args():
                         "TimeFiLMBackbone injection point alongside time-FiLM. "
                         "Requires --early-time-film and --inject-force.")
 
+    p.add_argument("--init-weights", default=None,
+                   help="Checkpoint dir to initialise weights from (model.safetensors "
+                        "or the EMA shadow). Optimizer and LR schedule start fresh, "
+                        "so this is a fine-tune, not a resume.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -262,7 +268,9 @@ def main():
         learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay,
         mixed_precision=args.mixed_precision, seed=args.seed,
+        init_weights=args.init_weights,
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
+        save_every_steps=args.save_every_steps,
         extras={
             "mode": args.mode,
             "delta_endpoint_channels": head_delta_C,
