@@ -20,28 +20,38 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--traj", required=True); p.add_argument("--sella", required=True); p.add_argument("--out", required=True)
     p.add_argument("--moved-thr", type=float, default=0.5); p.add_argument("--moved-weight", type=int, default=5)
+    p.add_argument("--x0", default="endpoint", choices=["endpoint", "start"], help="what becomes x0 of the pair: the flow endpoint (refiner) or the noisy START stored in arrays['x0'] (LiC recipe)")
     p.add_argument("--keep-sigma", default=None, help="comma list: keep only endpoints whose start sigma is in this set (e.g. '0')")
     a = p.parse_args()
     keep = None if a.keep_sigma is None else {float(x) for x in a.keep_sigma.split(",")}
+    starts = {}
+    if a.x0 == "start":
+        import os
+        for f in sorted(glob.glob(os.path.join(os.path.dirname(a.traj), "*_x0.npz"))):
+            z = np.load(f)
+            for k, (t, sd) in enumerate(zip(z["tids"].tolist(), z["sides"].tolist())):
+                starts[(int(t), int(sd))] = z["x0"][z["offsets"][k]:z["offsets"][k + 1]]
+        print(f"loaded {len(starts)} start geometries from *_x0.npz")
     ends = {}
     for f in sorted(glob.glob(a.traj)):
         for at in Trajectory(f):
             if keep is not None and float(at.info.get("sigma", -1)) not in keep: continue
-            ends[(int(at.info["tid"]), str(at.info["src"]))] = (at.get_positions(), np.array(at.get_cell()), float(at.info.get("sigma", -1)))
+            x0 = starts[(int(at.info["tid"]), int(at.info.get("side", 0)))] if a.x0 == "start" else at.get_positions()
+            ends[(int(at.info["tid"]), str(at.info["src"]))] = (x0, np.array(at.get_cell()), float(at.info.get("sigma", -1)), at.get_positions())
     sel = {}
     for f in sorted(glob.glob(a.sella)):
         try: rs = json.load(open(f))
         except Exception: continue
         for r in rs: sel[(int(r["tid"]), str(r["src"]))] = r
     T, X, S, W = [], [], [], []; n_conv = n_idx1 = n_moved = 0; per_sigma = {}
-    for key, (x0, cell, sig) in ends.items():
+    for key, (x0, cell, sig, endp) in ends.items():
         r = sel.get(key)
         if r is None: continue
         if not r.get("conv"): continue
         n_conv += 1
         if r.get("nneg") != 1 or r.get("pos") is None: continue
         n_idx1 += 1
-        tgt = np.array(r["pos"]); moved = mic_maxd(x0, tgt, cell)
+        tgt = np.array(r["pos"]); moved = mic_maxd(endp, tgt, cell)   # correction size = how far Sella moved the ENDPOINT
         w = a.moved_weight if moved > a.moved_thr else 1; n_moved += moved > a.moved_thr
         st = per_sigma.setdefault(sig, []); st.append(moved)
         T.append(key[0]); X.append(x0.astype(np.float32)); S.append(tgt.astype(np.float32)); W.append(w)
