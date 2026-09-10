@@ -87,6 +87,34 @@ class _SaddleOverrideDataset(torch.utils.data.Dataset):
             r["saddle_un_pos"] = start + _mic_disp(newt, start, r["cell"])
         return r
 
+class _PairOverrideDataset(torch.utils.data.Dataset):
+    """Round-2 retargeting (LiC recipe on MP20Bat): each triplet carries SEVERAL
+    (x0, target) pairs — x0 = an endpoint the model reached from a (perturbed) start,
+    target = the saddle Sella converged to FROM that endpoint. One pair is drawn per
+    access (torch RNG, so it varies across workers and epochs); repeated entries act
+    as weights. Both endpoints are set to x0, so the midpoint IS x0; the target is
+    MIC-unwrapped to it."""
+
+    def __init__(self, base, table):
+        self.base, self.table = base, table
+        self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        r = self.base[i]
+        pairs = self.table.get(int(r["triplet_id"]))
+        if pairs is not None:
+            x0, tgt = pairs[int(torch.randint(len(pairs), (1,)))]
+            p = torch.as_tensor(x0, dtype=r["start_pos"].dtype)
+            t = torch.as_tensor(tgt, dtype=r["start_pos"].dtype)
+            r["saddle_un_pos"] = p + _mic_disp(t, p, r["cell"])
+            r["start_pos"] = p
+            r["partner_un_pos"] = p.clone()
+        return r
+
+
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss
 from saddleflow.models import EigenmodeHead, GlobalAttn, VelocityHead
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
@@ -187,6 +215,11 @@ def parse_args():
                    help="npz with tids/offsets/pos: replace each triplet's saddle with a "
                         "reconverged one (MIC-unwrapped to start_pos); splits are filtered "
                         "to triplets present in the file.")
+    p.add_argument("--pair-override", default=None,
+                   help="npz (tids/offsets/x0/target[/weight]) of (endpoint, Sella-saddle) "
+                        "pairs, several per triplet: round-2 retargeting on the model's own "
+                        "output distribution. x0 := endpoint, saddle := its Sella target; "
+                        "splits are filtered to triplets present in the file.")
     p.add_argument("--init-weights", default=None,
                    help="Checkpoint dir to load MODEL WEIGHTS ONLY from (fresh optimizer "
                         "and LR schedule). For pre-train -> fine-tune on a new start dist.")
@@ -350,6 +383,17 @@ def main():
         for _k2, _tid2 in enumerate(_t2.tolist()):
             _START_TABLE[int(_tid2)] = _p2[_o2[_k2]:_o2[_k2 + 1]]
         print(f"[train] start-override: {len(_START_TABLE)} stage-1 predictions loaded")
+    _PAIR_TABLE = {}
+    if args.pair_override is not None:
+        import numpy as _np3
+        _z3 = _np3.load(args.pair_override)
+        _t3, _o3, _x3, _s3 = _z3["tids"], _z3["offsets"], _z3["x0"], _z3["target"]
+        _w3 = _z3["weight"] if "weight" in _z3.files else _np3.ones(len(_t3), int)
+        for _k3, _tid3 in enumerate(_t3.tolist()):
+            _pair = (_x3[_o3[_k3]:_o3[_k3 + 1]], _s3[_o3[_k3]:_o3[_k3 + 1]])
+            _PAIR_TABLE.setdefault(int(_tid3), []).extend([_pair] * int(max(1, _w3[_k3])))
+        print(f"[train] pair-override: {len(_t3)} (endpoint, Sella-target) pairs over "
+              f"{len(_PAIR_TABLE)} triplets ({sum(len(v) for v in _PAIR_TABLE.values())} weighted entries)")
     _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
     if args.saddle_override is not None:
         import numpy as _np
@@ -426,8 +470,8 @@ def main():
             print(f"[train] {s}: --limit-triplets {n} → "
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
 
-        if args.saddle_override is not None:
-            _keep = _OVERRIDE_TIDS
+        if args.saddle_override is not None or args.pair_override is not None:
+            _keep = _OVERRIDE_TIDS if args.saddle_override is not None else set(_PAIR_TABLE)
             train_tids = [t for t in train_tids if int(t) in _keep]
             val_tids   = [t for t in val_tids   if int(t) in _keep]
             test_tids  = [t for t in test_tids  if int(t) in _keep]
@@ -453,6 +497,9 @@ def main():
         dataset_full = _SaddleOverrideDataset(dataset_full, _OVERRIDE_TABLE)
     if args.start_override is not None:
         dataset_full = _StartOverrideDataset(dataset_full, _START_TABLE)
+        setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
+    if args.pair_override is not None:
+        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
@@ -729,6 +776,7 @@ def main():
             "mixed_start_prob": float(args.mixed_start_prob),
             "saddle_override": args.saddle_override,
             "start_override": args.start_override,
+            "pair_override": args.pair_override,
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
