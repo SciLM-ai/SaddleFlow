@@ -38,17 +38,25 @@ def main():
             recs.append({"tid": int(tid), "src": str(src), "conv": bool(i.get("converged", 0)), "nneg": (int(i["nneg"]) if i.get("nneg") is not None else None),
                          "pos": at.get_positions().tolist(), "nfc": int(i.get("n_force_calls", -1)), "nsteps": int(i.get("n_steps", -1)), "status": str(i.get("status", ""))})
     json.dump(recs, open(a.out_json, "w"))
+    # Strict protocol: a case counts as converged only if Sella actually ran to fmax (status 'converged' or
+    # 'converged_after_extension'; SaddleMill's 'converged_to_desorption' fires at step 0 on some bulk cells and
+    # stamps converged=1 with a zero displacement), and as index-1 only if the Hessian check ran and found nneg == 1.
+    # Throws with no record (Sella raised inside its own step -- systematically the largest cells) are failures,
+    # so every percentage is over the number of THROWS, not over the records that happened to survive.
     d, dok, nfc = [], [], []
-    n_conv = n_idx1 = 0
+    n_conv = n_idx1 = n_desorb = n_unverified = 0
     for r in recs:
         key = (r["tid"], r["src"]); e = ends.get(key)
         if e is None: continue
-        if r["conv"]: n_conv += 1; nfc.append(r["nfc"])
-        ok = r["conv"] and (r["nneg"] == 1 or r["nneg"] is None)
-        if r["conv"] and r["nneg"] == 1: n_idx1 += 1
-        if ok: dok.append(mic_maxd(e[0], np.array(r["pos"]), e[1]))
-    n = len(recs); dok = np.array(dok)
-    print(f"{a.label}: throws {len(ends)}, Sella records {n}, converged {100*n_conv/max(1,n):.1f}%, index-1 {100*n_idx1/max(1,n):.1f}%, force calls med {np.median(nfc) if nfc else float('nan'):.0f}")
+        conv = r["status"] in ("converged", "converged_after_extension")
+        if r["status"] == "converged_to_desorption": n_desorb += 1
+        if conv: n_conv += 1; nfc.append(r["nfc"])
+        if conv and r["nneg"] is None: n_unverified += 1
+        ok = conv and r["nneg"] == 1
+        if ok: n_idx1 += 1; dok.append(mic_maxd(e[0], np.array(r["pos"]), e[1]))
+    n = len(recs); nt = max(1, len(ends)); dok = np.array(dok)
+    print(f"{a.label}: throws {len(ends)}, Sella records {n} (no record {len(ends)-n}, desorption-flagged {n_desorb}, index unverified {n_unverified}), "
+          f"converged {100*n_conv/nt:.1f}% of throws, index-1 {100*n_idx1/nt:.1f}% of throws, force calls med {np.median(nfc) if nfc else float('nan'):.0f}")
     if len(dok):
         q = np.percentile(dok, [50, 75, 90, 95])
         print(f"{a.label}: maxd endpoint->Sella saddle (converged index-1, n={len(dok)}): mean {dok.mean():.3f}  median {q[0]:.3f}  p75 {q[1]:.3f}  p90 {q[2]:.3f}  p95 {q[3]:.3f}  >0.5A {100*np.mean(dok>0.5):.0f}%  >1A {100*np.mean(dok>1):.0f}%")
