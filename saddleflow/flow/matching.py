@@ -70,6 +70,13 @@ class FlowMatchingConfig:
     # the (R+P)/2 midpoint, so the model sees BOTH generic denoising directions and
     # the specific reaction-coordinate direction that inference actually supplies.
     mixed_start_prob: float = 0.0
+    # Path start (2026-09-11): with probability `path_start_prob` a sample starts from a point drawn uniformly
+    # on the straight (MIC-unwrapped) line start -> saddle -- R -> S or P -> S, since the dataset doubles every
+    # triplet -- plus isotropic N(0, path_noise_sigma^2) on the mobile atoms; x_1 = saddle.  u = 1 is TS-denoise,
+    # u = 0 is the "reactant + noise" start used for Dimer-like search, so the whole climb along the reaction
+    # coordinate is covered, which TS + isotropic noise never does in a high-dimensional cell.
+    path_start_prob: float = 0.0
+    path_noise_sigma: float = 0.3
     # Self-conditioning: with this probability, replace x0 by the model's OWN
     # one-shot prediction (x0 + v(x0, t=0)) before building the training pair,
     # so the model learns to correct the error distribution it actually makes.
@@ -144,6 +151,12 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
+    if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
+        u = float(torch.rand((), generator=generator))
+        eps = gaussian_perturbation(mobile, config.path_noise_sigma, generator=generator, dtype=r_saddle.dtype)
+        x0 = r_start + u * (r_saddle - r_start) + eps      # r_saddle is MIC-unwrapped to r_start: the line is the short path
+        t = torch.rand((), generator=generator).item()
+        return x0, r_saddle, t, mobile
     _use_midpoint_start = (
         config.mixed_start_prob > 0.0
         and float(torch.rand((), generator=generator)) < config.mixed_start_prob

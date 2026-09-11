@@ -237,6 +237,10 @@ def parse_args():
     p.add_argument("--self-cond-prob", type=float, default=0.0,
                    help="Probability of replacing x0 with the model's own one-shot "
                         "prediction, so it learns to correct its own residual error.")
+    p.add_argument("--path-start-prob", type=float, default=0.0,
+                   help="Probability that a sample starts from a uniform point on the start->saddle line plus "
+                        "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
+    p.add_argument("--path-noise-sigma", type=float, default=0.3)
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
                    help="Probability a TS-denoise sample instead starts from the "
                         "(R+P)/2 midpoint (mixes training and inference distributions).")
@@ -699,6 +703,8 @@ def main():
             ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
             self_cond_prob=float(args.self_cond_prob),
             mixed_start_prob=float(args.mixed_start_prob),
+            path_start_prob=float(args.path_start_prob),
+            path_noise_sigma=float(args.path_noise_sigma),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -796,6 +802,8 @@ def main():
             "saddle_override": args.saddle_override,
             "start_override": args.start_override,
             "pair_override": args.pair_override,
+            "path_start_prob": args.path_start_prob,
+            "path_noise_sigma": args.path_noise_sigma,
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
