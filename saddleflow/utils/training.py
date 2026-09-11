@@ -272,6 +272,9 @@ def train(
             print(f"[train] init-weights from {_p}: loaded {len(_sd)} tensors "
                   f"(missing={len(_missing)}, unexpected={len(_unexpected)}); "
                   f"fresh optimizer + LR schedule from epoch 0")
+        # The EMA shadow was cloned from the pre-load parameters above; re-snapshot it from the loaded weights,
+        # otherwise a short fine-tune's ema.pt is mostly the untrained init (0.9999^740 = 93 % of it for D2).
+        ema = EMA(trainable, decay=config.ema_decay)
     if config.resume_from:
         accelerator.load_state(config.resume_from)
         ema_path = Path(config.resume_from) / "ema.pt"

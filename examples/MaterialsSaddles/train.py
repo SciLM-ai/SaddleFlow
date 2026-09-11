@@ -90,28 +90,39 @@ class _SaddleOverrideDataset(torch.utils.data.Dataset):
 class _PairOverrideDataset(torch.utils.data.Dataset):
     """Round-2 retargeting (LiC recipe on MP20Bat): each triplet carries SEVERAL
     (x0, target) pairs — x0 = an endpoint the model reached from a (perturbed) start,
-    target = the saddle Sella converged to FROM that endpoint. One pair is drawn per
-    access (torch RNG, so it varies across workers and epochs); repeated entries act
-    as weights. Both endpoints are set to x0, so the midpoint IS x0; the target is
-    MIC-unwrapped to it."""
+    target = the saddle Sella converged to FROM that endpoint. Both endpoints are set
+    to x0, so the midpoint IS x0; the target is MIC-unwrapped to it.
 
-    def __init__(self, base, table):
+    Two index spaces. Indices < len(base) behave as before: the base record with one
+    pair drawn at random from the triplet's (weighted) pool — which means a repeated
+    entry only changes the draw probability WITHIN its triplet, never how often the
+    triplet is visited. Indices >= len(base) address `entries` = one slot per weighted
+    pair (base record index, tid, pair index), so a pair repeated 5 times is trained on
+    5 times per epoch, exactly as the duplicated triplets of the LiC round-2 recipe.
+    `train.py` builds the train split from those entry slots when they are given."""
+
+    def __init__(self, base, table, entries=None):
         self.base, self.table = base, table
+        self.entries = list(entries) if entries else []
         self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
 
     def __len__(self):
-        return len(self.base)
+        return len(self.base) + len(self.entries)
 
     def __getitem__(self, i):
-        r = self.base[i]
-        pairs = self.table.get(int(r["triplet_id"]))
-        if pairs is not None:
+        if i >= len(self.base):
+            rec_idx, tid, k = self.entries[i - len(self.base)]
+            r = self.base[rec_idx]; x0, tgt = self.table[int(tid)][k]
+        else:
+            r = self.base[i]
+            pairs = self.table.get(int(r["triplet_id"]))
+            if pairs is None: return r
             x0, tgt = pairs[int(torch.randint(len(pairs), (1,)))]
-            p = torch.as_tensor(x0, dtype=r["start_pos"].dtype)
-            t = torch.as_tensor(tgt, dtype=r["start_pos"].dtype)
-            r["saddle_un_pos"] = p + _mic_disp(t, p, r["cell"])
-            r["start_pos"] = p
-            r["partner_un_pos"] = p.clone()
+        p = torch.as_tensor(x0, dtype=r["start_pos"].dtype)
+        t = torch.as_tensor(tgt, dtype=r["start_pos"].dtype)
+        r["saddle_un_pos"] = p + _mic_disp(t, p, r["cell"])
+        r["start_pos"] = p
+        r["partner_un_pos"] = p.clone()
         return r
 
 
@@ -383,7 +394,7 @@ def main():
         for _k2, _tid2 in enumerate(_t2.tolist()):
             _START_TABLE[int(_tid2)] = _p2[_o2[_k2]:_o2[_k2 + 1]]
         print(f"[train] start-override: {len(_START_TABLE)} stage-1 predictions loaded")
-    _PAIR_TABLE = {}
+    _PAIR_TABLE = {}; _PAIR_ENTRIES = []
     if args.pair_override is not None:
         import numpy as _np3
         _z3 = _np3.load(args.pair_override)
@@ -479,6 +490,10 @@ def main():
                   f"val={len(val_tids)} test={len(test_tids)}")
         train_idxs += sorted([offset + 2*t for t in train_tids]
                              + [offset + 2*t + 1 for t in train_tids])
+        if args.pair_override is not None:   # one training slot per weighted pair (see _PairOverrideDataset)
+            for t in train_tids:
+                for k in range(len(_PAIR_TABLE[int(t)])):
+                    _PAIR_ENTRIES.append((offset + 2 * int(t) + (k % 2), int(t), k))
         val_idxs   += sorted([offset + 2*t for t in val_tids]
                              + [offset + 2*t + 1 for t in val_tids])
         test_idxs  += sorted([offset + 2*t for t in test_tids]
@@ -499,8 +514,12 @@ def main():
         dataset_full = _StartOverrideDataset(dataset_full, _START_TABLE)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if args.pair_override is not None:
-        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE)
+        _n_base = len(dataset_full)
+        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE, _PAIR_ENTRIES)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
+        train_idxs = [_n_base + j for j in range(len(_PAIR_ENTRIES))]
+        print(f"[train] pair-override: train split expanded to {len(train_idxs)} slots = one per weighted pair "
+              f"(was {2 * len(_PAIR_TABLE)} record visits with a random within-triplet draw)")
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
             "delta_norm_mean": weighted_delta_norm,

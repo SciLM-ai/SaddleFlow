@@ -21,6 +21,7 @@ def main():
     p.add_argument("--traj", required=True); p.add_argument("--sella", required=True); p.add_argument("--out", required=True)
     p.add_argument("--moved-thr", type=float, default=0.5); p.add_argument("--moved-weight", type=int, default=5)
     p.add_argument("--x0", default="endpoint", choices=["endpoint", "start"], help="what becomes x0 of the pair: the flow endpoint (refiner) or the noisy START stored in arrays['x0'] (LiC recipe)")
+    p.add_argument("--max-target-dist", type=float, default=0.0, help="drop pairs whose target is farther than this (max-atom MIC, A) from x0; 0 = keep all")
     p.add_argument("--keep-sigma", default=None, help="comma list: keep only endpoints whose start sigma is in this set (e.g. '0')")
     a = p.parse_args()
     keep = None if a.keep_sigma is None else {float(x) for x in a.keep_sigma.split(",")}
@@ -43,15 +44,18 @@ def main():
         try: rs = json.load(open(f))
         except Exception: continue
         for r in rs: sel[(int(r["tid"]), str(r["src"]))] = r
-    T, X, S, W = [], [], [], []; n_conv = n_idx1 = n_moved = 0; per_sigma = {}
+    T, X, S, W = [], [], [], []; n_conv = n_idx1 = n_moved = n_far = 0; per_sigma = {}
     for key, (x0, cell, sig, endp) in ends.items():
         r = sel.get(key)
         if r is None: continue
-        if not r.get("conv"): continue
+        # Only real Sella convergences: SaddleMill's 'converged_to_desorption' fires at step 0 on some bulk cells and
+        # stamps converged=1 on the UNOPTIMISED input, which must never become a training target.
+        if r.get("status", "converged" if r.get("conv") else "") not in ("converged", "converged_after_extension"): continue
         n_conv += 1
         if r.get("nneg") != 1 or r.get("pos") is None: continue
         n_idx1 += 1
         tgt = np.array(r["pos"]); moved = mic_maxd(endp, tgt, cell)   # correction size = how far Sella moved the ENDPOINT
+        if a.max_target_dist > 0 and mic_maxd(x0, tgt, cell) > a.max_target_dist: n_far += 1; continue
         w = a.moved_weight if moved > a.moved_thr else 1; n_moved += moved > a.moved_thr
         st = per_sigma.setdefault(sig, []); st.append(moved)
         T.append(key[0]); X.append(x0.astype(np.float32)); S.append(tgt.astype(np.float32)); W.append(w)
@@ -59,7 +63,7 @@ def main():
     np.savez(a.out, tids=np.array(T), offsets=off, x0=np.concatenate(X, 0), target=np.concatenate(S, 0), weight=np.array(W))
     print(f"endpoints {len(ends)}, with Sella result {sum(1 for k in ends if k in sel)}, converged {n_conv}, index-1 kept {n_idx1} "
           f"({100*n_idx1/max(1,len(ends)):.1f}%), corrections (moved > {a.moved_thr} A) {n_moved} ({100*n_moved/max(1,n_idx1):.1f}%) x{a.moved_weight}; "
-          f"triplets {len(set(T))}; wrote {a.out}")
+          f"dropped as farther than {a.max_target_dist} A from x0: {n_far}; triplets {len(set(T))}; wrote {a.out}")
     for sig in sorted(per_sigma):
         m = np.array(per_sigma[sig]); print(f"  sigma {sig:.2f}: n={len(m)} moved med {np.median(m):.3f} mean {m.mean():.3f} >0.5A {100*np.mean(m>0.5):.1f}%")
 
