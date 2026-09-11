@@ -23,8 +23,12 @@ def main():
         for at in Trajectory(f):
             ends[(int(at.info["tid"]), str(at.info["src"]))] = (at.get_positions(), np.array(at.get_cell()))
     recs = []
-    for f in sorted(glob.glob(f"{a.sm_run}/**/*.traj", recursive=True)):
-        if "/data/" in f: continue
+    # Read only SaddleMill's per-rank result files.  The run dir also holds the input copy under data/ and, for
+    # any job that was still running when the pass was ended, a live per-step `sella_*.traj` with thousands of
+    # unconverged frames -- sweeping those in dilutes the converged / index-1 percentages.
+    files = sorted(glob.glob(f"{a.sm_run}/Sella_trajes/collected_ts_rank_*.traj"))
+    if not files: files = [f for f in sorted(glob.glob(f"{a.sm_run}/**/*.traj", recursive=True)) if "/data/" not in f]
+    for f in files:
         try: frames = list(Trajectory(f))
         except Exception as e: print(f"  skipping {f}: {type(e).__name__}"); continue
         for at in frames:
