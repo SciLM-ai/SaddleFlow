@@ -77,6 +77,9 @@ class FlowMatchingConfig:
     # coordinate is covered, which TS + isotropic noise never does in a high-dimensional cell.
     path_start_prob: float = 0.0
     path_noise_sigma: float = 0.3
+    # u is drawn as U(0,1)**path_u_power: 1.0 is uniform along the path, > 1 biases the start toward the
+    # ENDPOINT (u -> 0), which is where the Dimer-like use case actually starts; < 1 biases toward the saddle.
+    path_u_power: float = 1.0
     # Self-conditioning: with this probability, replace x0 by the model's OWN
     # one-shot prediction (x0 + v(x0, t=0)) before building the training pair,
     # so the model learns to correct the error distribution it actually makes.
@@ -152,7 +155,7 @@ def sample_endpoints(
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
     if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
-        u = float(torch.rand((), generator=generator))
+        u = float(torch.rand((), generator=generator)) ** config.path_u_power
         eps = gaussian_perturbation(mobile, config.path_noise_sigma, generator=generator, dtype=r_saddle.dtype)
         x0 = r_start + u * (r_saddle - r_start) + eps      # r_saddle is MIC-unwrapped to r_start: the line is the short path
         t = torch.rand((), generator=generator).item()

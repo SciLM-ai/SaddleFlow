@@ -241,6 +241,8 @@ def parse_args():
                    help="Probability that a sample starts from a uniform point on the start->saddle line plus "
                         "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
     p.add_argument("--path-noise-sigma", type=float, default=0.3)
+    p.add_argument("--path-u-power", type=float, default=1.0,
+                   help="u = U(0,1)**power along the start->saddle line; >1 biases starts toward the endpoint.")
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
                    help="Probability a TS-denoise sample instead starts from the "
                         "(R+P)/2 midpoint (mixes training and inference distributions).")
@@ -705,6 +707,7 @@ def main():
             mixed_start_prob=float(args.mixed_start_prob),
             path_start_prob=float(args.path_start_prob),
             path_noise_sigma=float(args.path_noise_sigma),
+            path_u_power=float(args.path_u_power),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -804,6 +807,7 @@ def main():
             "pair_override": args.pair_override,
             "path_start_prob": args.path_start_prob,
             "path_noise_sigma": args.path_noise_sigma,
+            "path_u_power": args.path_u_power,
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
