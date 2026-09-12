@@ -497,8 +497,12 @@ def main():
         train_idxs += sorted([offset + 2*t for t in train_tids]
                              + [offset + 2*t + 1 for t in train_tids])
         if args.pair_override is not None:   # one training slot per weighted pair (see _PairOverrideDataset)
+            # A tid can be in the split without being in the pair table when --saddle-override is also given
+            # (the split filter then keeps the override's tids, which are a much larger set): skip those.
             for t in train_tids:
-                for k in range(len(_PAIR_TABLE[int(t)])):
+                _pl = _PAIR_TABLE.get(int(t))
+                if not _pl: continue
+                for k in range(len(_pl)):
                     _PAIR_ENTRIES.append((offset + 2 * int(t) + (k % 2), int(t), k))
         val_idxs   += sorted([offset + 2*t for t in val_tids]
                              + [offset + 2*t + 1 for t in val_tids])
