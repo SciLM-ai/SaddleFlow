@@ -55,6 +55,12 @@ def main():
         ok = conv and r["nneg"] == 1
         if ok: n_idx1 += 1; dok.append(mic_maxd(e[0], np.array(r["pos"]), e[1]))
     n = len(recs); nt = max(1, len(ends)); dok = np.array(dok)
+    # A SaddleMill pass that was killed part-way leaves the jobs that finished FIRST, i.e. the easy ones, so its
+    # median looks good and is not comparable with a complete row.  Say so loudly rather than emit a normal row.
+    if n < 0.9 * nt:
+        print(f"{a.label}: *** TRUNCATED PASS: only {n} records for {nt} throws ({100*n/nt:.0f}%). "
+              f"The survivors are the cases that finished first, so these statistics are biased optimistic "
+              f"and must NOT be compared with complete rows -- re-run the Sella pass. ***")
     print(f"{a.label}: throws {len(ends)}, Sella records {n} (no record {len(ends)-n}, desorption-flagged {n_desorb}, index unverified {n_unverified}), "
           f"converged {100*n_conv/nt:.1f}% of throws, index-1 {100*n_idx1/nt:.1f}% of throws, force calls med {np.median(nfc) if nfc else float('nan'):.0f}")
     if len(dok):
