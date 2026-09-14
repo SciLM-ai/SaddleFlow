@@ -130,7 +130,13 @@ class MaterialsSaddlesDataset(Dataset):
         index_cache_dir: str | None = None,
         validate: bool = False,
         rebuild_index: bool = False,
+        task_name_map: dict | None = None,
     ):
+        # Remap UMA task names at read time. Needed because the backbones do not all carry the same MoE
+        # task set: uma-s-1p2 has {omat, oc20, oc22, oc25, omol, odac, omc} but uma-m-1p1 has only
+        # {omat, oc20, omol, odac, omc} and raises KeyError('oc22'). Applied in __getitem__ so training and
+        # inference cannot disagree. Example: {"oc22": "oc20"}.
+        self.task_name_map = dict(task_name_map or {})
         self.shards = self._resolve_shards(shards)
         self.default_task_name = default_task_name
         self.default_charge = default_charge
@@ -374,7 +380,7 @@ class MaterialsSaddlesDataset(Dataset):
             "Z": torch.from_numpy(r["Z"]).long(),
             "cell": torch.from_numpy(r["cell"]),
             "fixed": torch.from_numpy(r["fixed"]),
-            "task_name": r["task_name"],
+            "task_name": self.task_name_map.get(r["task_name"], r["task_name"]),
             "charge": r["charge"],
             "spin": r["spin"],
             "delta_norm": torch.tensor(float(r["delta_norm"])),

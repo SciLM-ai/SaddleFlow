@@ -20,6 +20,20 @@ from data_prep import load_official_splits                       # noqa: E402
 from dump_predictions import run_flow                             # noqa: E402
 from eval_full_testset_K10 import load_model                      # noqa: E402
 from saddleflow.data.materials_saddles_dataset import MaterialsSaddlesDataset  # noqa: E402
+
+
+def _parse_task_map(spec):
+    """'oc22=oc20,oc25=oc20' -> {'oc22': 'oc20', 'oc25': 'oc20'}.  Needed because uma-m-1p1 carries only
+    {omat, oc20, omol, odac, omc} and raises KeyError('oc22'), while uma-s-1p2 also has oc22/oc25."""
+    if not spec: return {}
+    out = {}
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part: continue
+        k, _, v = part.partition("=")
+        if not k or not v: raise ValueError(f"bad --task-name-map entry {part!r}, expected SRC=DST")
+        out[k.strip()] = v.strip()
+    return out
 from saddleflow.data.transforms import wrap_positions             # noqa: E402
 
 
@@ -32,6 +46,8 @@ def main():
     p.add_argument("--sigma", type=float, default=0.3, help="Gaussian sigma (A) on every mobile-atom coordinate of the start")
     p.add_argument("--seed", type=int, default=0); p.add_argument("--num-cases", type=int, default=0)
     p.add_argument("--restrict-tids", default=None); p.add_argument("--shard", type=int, default=0); p.add_argument("--nshards", type=int, default=1)
+    p.add_argument("--task-name-map", default=None,
+                   help="Remap UMA task names, e.g. 'oc22=oc20' (uma-m-1p1 has no oc22 expert).")
     p.add_argument("--use-ema", action="store_true")
     a = p.parse_args(); device = "cuda"; sides = [int(s) for s in a.sides.split(",")]
 
@@ -41,7 +57,8 @@ def main():
     if a.num_cases and a.num_cases < len(tids):
         rng = np.random.default_rng(a.seed); tids = sorted(rng.choice(tids, a.num_cases, replace=False).tolist())
     tids = tids[a.shard::a.nshards]
-    ds = MaterialsSaddlesDataset(sorted(glob.glob(a.data_glob)))
+    ds = MaterialsSaddlesDataset(sorted(glob.glob(a.data_glob)),
+                                 task_name_map=_parse_task_map(getattr(a, 'task_name_map', None)))
     m1, cfg = load_model(Path(a.ckpt), device, use_ema=a.use_ema); dc = int(cfg["extras"].get("delta_endpoint_channels") or 0)
     m2 = load_model(Path(a.ckpt2), device, use_ema=a.use_ema)[0] if a.ckpt2 else None
     Path(a.outdir).mkdir(parents=True, exist_ok=True)

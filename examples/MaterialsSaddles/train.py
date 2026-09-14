@@ -68,6 +68,20 @@ class _StartOverrideDataset(torch.utils.data.Dataset):
         return r
 
 
+def _parse_task_map(spec):
+    """'oc22=oc20,oc25=oc20' -> {'oc22': 'oc20', 'oc25': 'oc20'}.  Needed because uma-m-1p1 carries only
+    {omat, oc20, omol, odac, omc} and raises KeyError('oc22'), while uma-s-1p2 also has oc22/oc25."""
+    if not spec: return {}
+    out = {}
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part: continue
+        k, _, v = part.partition("=")
+        if not k or not v: raise ValueError(f"bad --task-name-map entry {part!r}, expected SRC=DST")
+        out[k.strip()] = v.strip()
+    return out
+
+
 class _SaddleOverrideDataset(torch.utils.data.Dataset):
     """Swap each record's saddle for an externally reconverged one."""
 
@@ -248,7 +262,18 @@ def parse_args():
     p.add_argument("--path-start-prob", type=float, default=0.0,
                    help="Probability that a sample starts from a uniform point on the start->saddle line plus "
                         "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
+    p.add_argument("--task-name-map", default=None,
+                   help="Remap UMA task names, e.g. 'oc22=oc20'. uma-m-1p1 has no oc22/oc25 expert and will "
+                        "raise KeyError without this; uma-s-1p2 does not need it.")
     p.add_argument("--path-noise-sigma", type=float, default=0.3)
+    p.add_argument("--path-noise-sigma-endpoint", type=float, default=None,
+                   help="Noise width at the ENDPOINT end of the path (u=0, the reactant/product the Dimer-like "
+                        "use case starts from). Defaults to --path-noise-sigma.")
+    p.add_argument("--path-noise-sigma-saddle", type=float, default=None,
+                   help="Noise width at the SADDLE end of the path (u=1). Defaults to --path-noise-sigma. "
+                        "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
+                        "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
+                        "direction predicts which saddle is the target instead of being averaged away.")
     p.add_argument("--path-u-power", type=float, default=1.0,
                    help="u = U(0,1)**power along the start->saddle line; >1 biases starts toward the endpoint.")
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
@@ -462,6 +487,7 @@ def main():
             sdir,
             default_task_name=args.default_task_name,
             stats_cache=stats_path_for_ds,
+            task_name_map=_parse_task_map(args.task_name_map),
         )
         print(f"[train] {s}: {len(ds)} records ({ds.num_triplets} triplets × 2 sides), "
               f"across {len(ds.shards)} shards  ⟨‖Δ‖⟩={ds.delta_norm_mean:.3f} Å"
@@ -728,6 +754,10 @@ def main():
             mixed_start_prob=float(args.mixed_start_prob),
             path_start_prob=float(args.path_start_prob),
             path_noise_sigma=float(args.path_noise_sigma),
+            path_noise_sigma_endpoint=(None if args.path_noise_sigma_endpoint is None
+                                       else float(args.path_noise_sigma_endpoint)),
+            path_noise_sigma_saddle=(None if args.path_noise_sigma_saddle is None
+                                     else float(args.path_noise_sigma_saddle)),
             path_u_power=float(args.path_u_power),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
@@ -826,6 +856,9 @@ def main():
             "saddle_override": args.saddle_override,
             "start_override": args.start_override,
             "pair_override": args.pair_override,
+            "task_name_map": args.task_name_map,
+            "path_noise_sigma_endpoint": args.path_noise_sigma_endpoint,
+            "path_noise_sigma_saddle": args.path_noise_sigma_saddle,
             "path_start_prob": args.path_start_prob,
             "path_noise_sigma": args.path_noise_sigma,
             "path_u_power": args.path_u_power,
