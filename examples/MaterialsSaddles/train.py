@@ -101,8 +101,12 @@ class _PairOverrideDataset(torch.utils.data.Dataset):
     5 times per epoch, exactly as the duplicated triplets of the LiC round-2 recipe.
     `train.py` builds the train split from those entry slots when they are given."""
 
-    def __init__(self, base, table, entries=None):
+    def __init__(self, base, table, entries=None, mix=False):
         self.base, self.table = base, table
+        # mix=True: base indices are left ALONE (normal path-start sampling over the whole training set) and
+        # only the `entries` slots serve relabelled pairs, so one model sees both objectives (DAgger-style
+        # aggregation) instead of the pair table REPLACING the dataset.
+        self.mix = mix
         self.entries = list(entries) if entries else []
         self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
 
@@ -115,6 +119,7 @@ class _PairOverrideDataset(torch.utils.data.Dataset):
             r = self.base[rec_idx]; x0, tgt = self.table[int(tid)][k]
         else:
             r = self.base[i]
+            if self.mix: return r
             pairs = self.table.get(int(r["triplet_id"]))
             if pairs is None: return r
             x0, tgt = pairs[int(torch.randint(len(pairs), (1,)))]
@@ -231,6 +236,9 @@ def parse_args():
                         "pairs, several per triplet: round-2 retargeting on the model's own "
                         "output distribution. x0 := endpoint, saddle := its Sella target; "
                         "splits are filtered to triplets present in the file.")
+    p.add_argument("--pair-override-mix", action="store_true",
+                   help="train on the WHOLE training set (fresh path starts) AND the relabelled pair slots, "
+                        "instead of letting the pair table replace the dataset -- one model, one stage.")
     p.add_argument("--init-weights", default=None,
                    help="Checkpoint dir to load MODEL WEIGHTS ONLY from (fresh optimizer "
                         "and LR schedule). For pre-train -> fine-tune on a new start dist.")
@@ -488,10 +496,12 @@ def main():
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
 
         if args.saddle_override is not None or args.pair_override is not None:
-            _keep = _OVERRIDE_TIDS if args.saddle_override is not None else set(_PAIR_TABLE)
-            train_tids = [t for t in train_tids if int(t) in _keep]
-            val_tids   = [t for t in val_tids   if int(t) in _keep]
-            test_tids  = [t for t in test_tids  if int(t) in _keep]
+            _keep = _OVERRIDE_TIDS if args.saddle_override is not None else (
+                None if args.pair_override_mix else set(_PAIR_TABLE))
+            if _keep is not None:
+                train_tids = [t for t in train_tids if int(t) in _keep]
+                val_tids   = [t for t in val_tids   if int(t) in _keep]
+                test_tids  = [t for t in test_tids  if int(t) in _keep]
             print(f"[train] {s}: saddle-override -> train={len(train_tids)} "
                   f"val={len(val_tids)} test={len(test_tids)}")
         train_idxs += sorted([offset + 2*t for t in train_tids]
@@ -525,11 +535,18 @@ def main():
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
     if args.pair_override is not None:
         _n_base = len(dataset_full)
-        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE, _PAIR_ENTRIES)
+        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE, _PAIR_ENTRIES,
+                                            mix=args.pair_override_mix)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
-        train_idxs = [_n_base + j for j in range(len(_PAIR_ENTRIES))]
-        print(f"[train] pair-override: train split expanded to {len(train_idxs)} slots = one per weighted pair "
-              f"(was {2 * len(_PAIR_TABLE)} record visits with a random within-triplet draw)")
+        _pair_idxs = [_n_base + j for j in range(len(_PAIR_ENTRIES))]
+        if args.pair_override_mix:
+            train_idxs = train_idxs + _pair_idxs
+            print(f"[train] pair-override MIX: {len(train_idxs)} slots = {len(train_idxs)-len(_pair_idxs)} normal "
+                  f"records (fresh path starts, whole training set) + {len(_pair_idxs)} relabelled pair slots")
+        else:
+            train_idxs = _pair_idxs
+            print(f"[train] pair-override: train split expanded to {len(train_idxs)} slots = one per weighted pair "
+                  f"(was {2 * len(_PAIR_TABLE)} record visits with a random within-triplet draw)")
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
             "delta_norm_mean": weighted_delta_norm,
