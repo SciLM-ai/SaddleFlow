@@ -262,6 +262,11 @@ def parse_args():
     p.add_argument("--path-start-prob", type=float, default=0.0,
                    help="Probability that a sample starts from a uniform point on the start->saddle line plus "
                         "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
+    p.add_argument("--max-val-records", type=int, default=0,
+                   help="Subsample the validation split to at most this many records (0 = use all). The "
+                        "validation loop has no batch cap, so a big subset makes it dominate the run: oc20's "
+                        "129k val triplets are 2,152 batches, ~12 h over a run's ten validations against ~9 h "
+                        "of training. Seeded, so every arm sees the same held-out cases.")
     p.add_argument("--restrict-train-tids", default=None,
                    help="Keep only the listed triplet ids in the TRAINING split. Either one npz/npy path "
                         "(applies to every subset) or per-subset 'oc20=a.npz,oc22=b.npz' -- a subset not named "
@@ -613,6 +618,12 @@ def main():
     print(f"[train] combined: {offset} records, weighted ⟨‖Δ‖⟩ = {weighted_delta_norm:.3f} Å")
 
     train_dataset = Subset(dataset_full, train_idxs)
+    if args.max_val_records > 0 and len(val_idxs) > args.max_val_records:
+        import numpy as _np5
+        _n5 = len(val_idxs)
+        val_idxs = sorted(int(i) for i in _np5.random.default_rng(12345).choice(
+            _np5.asarray(val_idxs), args.max_val_records, replace=False))
+        print(f"[train] --max-val-records: validation subsampled {_n5} -> {len(val_idxs)} records")
     val_dataset   = Subset(dataset_full, val_idxs) if val_idxs else None
     test_dataset  = Subset(dataset_full, test_idxs) if test_idxs else None
     train_dataset.delta_norm_mean = weighted_delta_norm
