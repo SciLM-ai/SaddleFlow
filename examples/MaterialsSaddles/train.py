@@ -263,10 +263,11 @@ def parse_args():
                    help="Probability that a sample starts from a uniform point on the start->saddle line plus "
                         "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
     p.add_argument("--restrict-train-tids", default=None,
-                   help="npz/npy with a 'tids' array (or a bare array): keep only these triplet ids in the "
-                        "TRAINING split. Validation and test are left untouched so the loss curve stays "
-                        "comparable across arms. Used to train on a chosen sub-population, e.g. the localised "
-                        "reactions selected by participating-atom count.")
+                   help="Keep only the listed triplet ids in the TRAINING split. Either one npz/npy path "
+                        "(applies to every subset) or per-subset 'oc20=a.npz,oc22=b.npz' -- a subset not named "
+                        "keeps its whole split. The file holds a 'tids' array, or is a bare array. Validation "
+                        "and test are left untouched so the loss curve stays comparable across arms. Used to "
+                        "train on a chosen sub-population, or to mix subsets at a chosen ratio.")
     p.add_argument("--task-name-map", default=None,
                    help="Remap UMA task names, e.g. 'oc22=oc20'. uma-m-1p1 has no oc22/oc25 expert and will "
                         "raise KeyError without this; uma-s-1p2 does not need it.")
@@ -449,13 +450,24 @@ def main():
             _PAIR_TABLE.setdefault(int(_tid3), []).extend([_pair] * int(max(1, _w3[_k3])))
         print(f"[train] pair-override: {len(_t3)} (endpoint, Sella-target) pairs over "
               f"{len(_PAIR_TABLE)} triplets ({sum(len(v) for v in _PAIR_TABLE.values())} weighted entries)")
-    _RESTRICT_TIDS = None
+    _RESTRICT_TIDS = {}          # subset -> set of tids; the key None applies to every subset
     if args.restrict_train_tids is not None:
         import numpy as _np4
-        _z4 = _np4.load(args.restrict_train_tids)
-        _arr4 = _z4["tids"] if hasattr(_z4, "files") else _z4
-        _RESTRICT_TIDS = set(int(_t4) for _t4 in _np4.asarray(_arr4).ravel().tolist())
-        print(f"[train] restrict-train-tids: {len(_RESTRICT_TIDS)} triplet ids kept for training")
+        def _load_tids(_path):
+            _z4 = _np4.load(_path)
+            _arr4 = _z4["tids"] if hasattr(_z4, "files") else _z4
+            return set(int(_t4) for _t4 in _np4.asarray(_arr4).ravel().tolist())
+        _spec = str(args.restrict_train_tids)
+        if "=" in _spec:
+            for _part in _spec.split(","):
+                _k4, _, _v4 = _part.strip().partition("=")
+                if not _k4 or not _v4:
+                    raise ValueError(f"bad --restrict-train-tids entry {_part!r}, expected SUBSET=PATH")
+                _RESTRICT_TIDS[_k4.strip()] = _load_tids(_v4.strip())
+        else:
+            _RESTRICT_TIDS[None] = _load_tids(_spec)
+        for _k4, _v4 in _RESTRICT_TIDS.items():
+            print(f"[train] restrict-train-tids[{_k4 or 'all subsets'}]: {len(_v4)} triplet ids kept for training")
     _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
     if args.saddle_override is not None:
         import numpy as _np
@@ -533,9 +545,10 @@ def main():
             print(f"[train] {s}: --limit-triplets {n} → "
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
 
-        if _RESTRICT_TIDS is not None:
+        _keep4 = _RESTRICT_TIDS.get(s, _RESTRICT_TIDS.get(None))
+        if _keep4 is not None:
             _n0 = len(train_tids)
-            train_tids = [t for t in train_tids if int(t) in _RESTRICT_TIDS]
+            train_tids = [t for t in train_tids if int(t) in _keep4]
             print(f"[train] {s}: --restrict-train-tids -> train={len(train_tids)} of {_n0}")
 
         if args.saddle_override is not None or args.pair_override is not None:
