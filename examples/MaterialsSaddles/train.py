@@ -262,6 +262,11 @@ def parse_args():
     p.add_argument("--path-start-prob", type=float, default=0.0,
                    help="Probability that a sample starts from a uniform point on the start->saddle line plus "
                         "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
+    p.add_argument("--restrict-train-tids", default=None,
+                   help="npz/npy with a 'tids' array (or a bare array): keep only these triplet ids in the "
+                        "TRAINING split. Validation and test are left untouched so the loss curve stays "
+                        "comparable across arms. Used to train on a chosen sub-population, e.g. the localised "
+                        "reactions selected by participating-atom count.")
     p.add_argument("--task-name-map", default=None,
                    help="Remap UMA task names, e.g. 'oc22=oc20'. uma-m-1p1 has no oc22/oc25 expert and will "
                         "raise KeyError without this; uma-s-1p2 does not need it.")
@@ -444,6 +449,13 @@ def main():
             _PAIR_TABLE.setdefault(int(_tid3), []).extend([_pair] * int(max(1, _w3[_k3])))
         print(f"[train] pair-override: {len(_t3)} (endpoint, Sella-target) pairs over "
               f"{len(_PAIR_TABLE)} triplets ({sum(len(v) for v in _PAIR_TABLE.values())} weighted entries)")
+    _RESTRICT_TIDS = None
+    if args.restrict_train_tids is not None:
+        import numpy as _np4
+        _z4 = _np4.load(args.restrict_train_tids)
+        _arr4 = _z4["tids"] if hasattr(_z4, "files") else _z4
+        _RESTRICT_TIDS = set(int(_t4) for _t4 in _np4.asarray(_arr4).ravel().tolist())
+        print(f"[train] restrict-train-tids: {len(_RESTRICT_TIDS)} triplet ids kept for training")
     _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
     if args.saddle_override is not None:
         import numpy as _np
@@ -520,6 +532,11 @@ def main():
             test_tids  = test_tids[:max(1, n // 20)]
             print(f"[train] {s}: --limit-triplets {n} → "
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
+
+        if _RESTRICT_TIDS is not None:
+            _n0 = len(train_tids)
+            train_tids = [t for t in train_tids if int(t) in _RESTRICT_TIDS]
+            print(f"[train] {s}: --restrict-train-tids -> train={len(train_tids)} of {_n0}")
 
         if args.saddle_override is not None or args.pair_override is not None:
             _keep = _OVERRIDE_TIDS if args.saddle_override is not None else (
@@ -857,6 +874,7 @@ def main():
             "start_override": args.start_override,
             "pair_override": args.pair_override,
             "task_name_map": args.task_name_map,
+            "restrict_train_tids": args.restrict_train_tids,
             "path_noise_sigma_endpoint": args.path_noise_sigma_endpoint,
             "path_noise_sigma_saddle": args.path_noise_sigma_saddle,
             "path_start_prob": args.path_start_prob,
