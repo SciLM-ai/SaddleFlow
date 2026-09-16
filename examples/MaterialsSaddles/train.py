@@ -624,6 +624,15 @@ def main():
         val_idxs = sorted(int(i) for i in _np5.random.default_rng(12345).choice(
             _np5.asarray(val_idxs), args.max_val_records, replace=False))
         print(f"[train] --max-val-records: validation subsampled {_n5} -> {len(val_idxs)} records")
+    if args.max_val_records > 0 and len(test_idxs) > args.max_val_records:
+        # training.py runs one FULL pass over the test split after the final checkpoint (utils/training.py
+        # ~line 459). It is a diagnostic loss we never use -- models are scored by the Sella protocol -- and
+        # on a mixed oc20+oc22 run it is 275,442 records, ~1 h holding 16 nodes after the run is finished.
+        import numpy as _np6
+        _n6 = len(test_idxs)
+        test_idxs = sorted(int(i) for i in _np6.random.default_rng(12345).choice(
+            _np6.asarray(test_idxs), args.max_val_records, replace=False))
+        print(f"[train] --max-val-records: test split subsampled {_n6} -> {len(test_idxs)} records")
     val_dataset   = Subset(dataset_full, val_idxs) if val_idxs else None
     test_dataset  = Subset(dataset_full, test_idxs) if test_idxs else None
     train_dataset.delta_norm_mean = weighted_delta_norm
