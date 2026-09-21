@@ -67,19 +67,28 @@ def main():
     Path(a.outdir).mkdir(parents=True, exist_ok=True)
     out = Trajectory(f"{a.outdir}/{a.tag}_{a.shard:02d}.traj", "w")
     g = torch.Generator().manual_seed(a.seed * 100003 + a.shard)
-    X0T, X0S, X0P = [], [], []          # starts are also saved to <tag>_<shard>_x0.npz (ASE traj drops custom arrays)
+    X0T, X0S, X0P = [], [], []
+    PASS_TR = []          # starts are also saved to <tag>_<shard>_x0.npz (ASE traj drops custom arrays)
     for i, tid in enumerate(tids):
         for side in sides:
             rec = ds[int(2 * tid + side)]; cell = rec["cell"]
             mobile = (~rec["fixed"]).float().unsqueeze(1)
             x0 = wrap_positions(rec["start_pos"] + a.sigma * torch.randn(rec["start_pos"].shape, generator=g) * mobile, cell)
             _np = int(os.environ.get("SF_NAPPLY", "1"))   # apply the stage-1 flow this many times
-            x = x0.clone()
+            # Restart Sampling (Xu et al. 2023): a small forward noise kick BETWEEN passes
+            # contracts accumulated error, which pure deterministic restarts cannot do.
+            _rs = float(os.environ.get("SF_RESTART_SIGMA", "0"))
+            _sp = os.environ.get("SF_SAVE_PASSES", "0") == "1"
+            x = x0.clone(); _trace = [x.numpy().astype(np.float32)] if _sp else None
             for _i in range(_np):
                 if a.integrator == "euler":
                     x = run_flow(m1, x, rec, cell, a.K, dc, device)
                 else:
                     x = run_flow_ho(m1, x, rec, cell, a.K, dc, device, a.integrator)
+                if _sp: _trace.append(x.numpy().astype(np.float32))
+                if _rs > 0 and _i < _np - 1:
+                    x = wrap_positions(x + _rs * torch.randn(x.shape, generator=g) * mobile, cell)
+            if _sp: PASS_TR.append(np.stack(_trace, 0))
             if m2 is not None:
                 for _i in range(int(os.environ.get("SF_NAPPLY2", "1"))):
                     if a.integrator == "euler":
@@ -96,6 +105,11 @@ def main():
     out.close()
     off = np.concatenate([[0], np.cumsum([len(x) for x in X0P])]) if X0P else np.zeros(1, int)
     np.savez(f"{a.outdir}/{a.tag}_{a.shard:02d}_x0.npz", tids=np.array(X0T), sides=np.array(X0S), offsets=off, x0=(np.concatenate(X0P, 0) if X0P else np.zeros((0, 3), np.float32)))
+    if PASS_TR:   # full per-pass trajectory: the path shape IS the result for an iterated flow
+        np.savez_compressed(f"{a.outdir}/{a.tag}_{a.shard:02d}_passes.npz",
+                            tids=np.array(X0T), sides=np.array(X0S), offsets=off,
+                            npass=np.array([t.shape[0] for t in PASS_TR]),
+                            passes=np.concatenate([t.reshape(-1, 3) for t in PASS_TR], 0))
     print(f"{a.tag} shard {a.shard}: wrote {len(tids)} triplets x {len(sides)} sides")
 
 

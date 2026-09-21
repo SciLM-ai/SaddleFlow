@@ -273,6 +273,12 @@ def parse_args():
                         "keeps its whole split. The file holds a 'tids' array, or is a bare array. Validation "
                         "and test are left untouched so the loss curve stays comparable across arms. Used to "
                         "train on a chosen sub-population, or to mix subsets at a chosen ratio.")
+    p.add_argument("--subset-repeat", default=None,
+                   help="Oversample small subsets inside ONE epoch, e.g. 'oc22=8,mp20bat=8,oc20=2'. "
+                        "Each named subset's TRAIN indices are repeated that many times (unnamed = 1x), "
+                        "so a single epoch gives each subset a chosen number of exposures without the "
+                        "huge subset (lemat, 92%% of the data) dictating everyone else's. Validation and "
+                        "test are never repeated, so loss curves stay comparable across arms.")
     p.add_argument("--task-name-map", default=None,
                    help="Remap UMA task names, e.g. 'oc22=oc20'. uma-m-1p1 has no oc22/oc25 expert and will "
                         "raise KeyError without this; uma-s-1p2 does not need it.")
@@ -342,6 +348,24 @@ def parse_args():
     p.add_argument("--unfreeze-uma-last", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--unfreeze-uma-last2", action=argparse.BooleanOptionalAction, default=True)
     # v7-5: full unfreeze of all 4 UMA backbone blocks (overrides --unfreeze-uma-last/last2).
+    p.add_argument("--truncate-blocks", type=int, default=0,
+                   help="Keep only the FIRST N message-passing blocks of the pretrained backbone "
+                        "(0 = keep all). Tests whether a large receptive field is needed at all, "
+                        "while PRESERVING pretraining -- unlike --backbone-shape, which must "
+                        "re-initialise. Cost is ~linear in blocks, so N=2 of 10 is ~5x cheaper.")
+    p.add_argument("--grad-accum-steps", type=int, default=1,
+                   help="Micro-batches per optimizer step. Lets a small node count hold the same "
+                        "GLOBAL batch (e.g. 8 nodes x 8/GPU x accum 2 = 128, matching 16 nodes x 8). "
+                        "NOTE the LR scheduler ticks once per MICRO-step per rank, so warmup and "
+                        "total steps scale by world_size * accum -- set --warmup-steps accordingly.")
+    p.add_argument("--backbone-shape", default=None,
+                   help="Train a RANDOMLY-INITIALISED backbone with this shape instead of loading "
+                        "pretrained UMA, e.g. 'layers=2,lmax=6,mmax=4,channels=256,experts=8'. "
+                        "Omitted keys keep the uma-m-1p1 value (10/4/2/128/32). Discards pretraining.")
+    p.add_argument("--random-init", action="store_true",
+                   help="Keep the pretrained backbone's exact shape but re-initialise its weights. "
+                        "The control that makes --backbone-shape interpretable: it separates "
+                        "'depth/width changed' from 'pretraining was thrown away'.")
     p.add_argument("--unfreeze-uma-all", action=argparse.BooleanOptionalAction, default=False,
                    help="v7-5: unfreeze ALL backbone blocks (not just last 2). "
                         "Overrides --unfreeze-uma-last/last2; all blocks land in "
@@ -565,8 +589,17 @@ def main():
                 test_tids  = [t for t in test_tids  if int(t) in _keep]
             print(f"[train] {s}: saddle-override -> train={len(train_tids)} "
                   f"val={len(val_tids)} test={len(test_tids)}")
-        train_idxs += sorted([offset + 2*t for t in train_tids]
-                             + [offset + 2*t + 1 for t in train_tids])
+        _rep = 1
+        if args.subset_repeat:
+            for _tok in args.subset_repeat.split(","):
+                if "=" in _tok and _tok.split("=", 1)[0].strip() == s:
+                    _rep = max(1, int(_tok.split("=", 1)[1]))
+        _base_idxs = sorted([offset + 2*t for t in train_tids]
+                            + [offset + 2*t + 1 for t in train_tids])
+        train_idxs += _base_idxs * _rep
+        if _rep > 1:
+            print(f"[train] {s}: --subset-repeat {_rep}x -> {len(_base_idxs)} -> "
+                  f"{len(_base_idxs) * _rep} train slots")
         if args.pair_override is not None:   # one training slot per weighted pair (see _PairOverrideDataset)
             # A tid can be in the split without being in the pair table when --saddle-override is also given
             # (the split filter then keeps the override's tids, which are a much larger set): skip those.
@@ -648,14 +681,45 @@ def main():
     print(f"[train] delta_endpoint_channels={args.delta_endpoint_channels}  "
           f"force_field_channels={args.force_field_channels}")
 
-    print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
-    raw_backbone = load_uma_backbone(
-        args.backbone, device=args.device, freeze=True, eval_mode=True,
-        unfreeze_last_block=args.unfreeze_uma_last,
-    )
-    if args.unfreeze_uma_last2:
+    if args.backbone_shape:
+        from saddleflow.utils.backbone import build_uma_backbone_custom
+        _dl = sorted({(args.task_name_map or {}).get(x, x) for x in (args.subsets or ["oc22"])}) \
+            if isinstance(getattr(args, "task_name_map", None), dict) else None
+        print(f"[train] CUSTOM backbone shape {args.backbone_shape!r} (random init, no pretraining)")
+        raw_backbone = build_uma_backbone_custom(
+            args.backbone_shape, dataset_list=_dl, device=args.device)
+    else:
+        print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
+        raw_backbone = load_uma_backbone(
+            args.backbone, device=args.device, freeze=True, eval_mode=True,
+            unfreeze_last_block=args.unfreeze_uma_last,
+        )
+        if args.truncate_blocks and args.truncate_blocks < len(raw_backbone.blocks):
+            import torch.nn as _tnn
+            _keep = int(args.truncate_blocks); _was = len(raw_backbone.blocks)
+            raw_backbone.blocks = _tnn.ModuleList(list(raw_backbone.blocks)[:_keep])
+            if hasattr(raw_backbone, "num_layers"):
+                raw_backbone.num_layers = _keep
+            print(f"[train] --truncate-blocks: kept first {_keep} of {_was} blocks "
+                  f"(pretrained weights preserved); receptive field ~{_keep * 6} A")
+        if args.random_init:
+            import torch.nn as _nn
+            _n = 0
+            for _m in raw_backbone.modules():
+                if hasattr(_m, "reset_parameters"):
+                    _m.reset_parameters(); _n += 1
+            for _p in raw_backbone.parameters():
+                _p.requires_grad_(True)
+            print(f"[train] --random-init: re-initialised {_n} submodules "
+                  f"(pretrained weights discarded; shape unchanged)")
+    if args.unfreeze_uma_last2 and len(raw_backbone.blocks) >= 2:
         for p in raw_backbone.blocks[-2].parameters():
             p.requires_grad_(True)
+    elif args.unfreeze_uma_last2:
+        # 1-block backbones (--backbone-shape layers=1) have no blocks[-2]; blocks[-1] already
+        # covers the whole stack, so this is a no-op rather than an IndexError.
+        print("[train] --unfreeze-uma-last2 skipped: backbone has only "
+              f"{len(raw_backbone.blocks)} block(s)")
     # v7-5: full unfreeze (all 4 blocks). Overrides last/last2 — they're the
     # default-True trailing flags, so we just unfreeze the rest here.
     if args.unfreeze_uma_all:
@@ -855,6 +919,7 @@ def main():
         num_workers=args.num_workers,
         learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay,
+        grad_accum_steps=args.grad_accum_steps,
         mixed_precision=args.mixed_precision, seed=args.seed,
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
         save_every_steps=args.save_every_steps,

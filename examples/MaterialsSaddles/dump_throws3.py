@@ -42,7 +42,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data-glob", required=True); p.add_argument("--outdir", required=True); p.add_argument("--tag", required=True)
     p.add_argument("--subset", default="mp20bat"); p.add_argument("--split", default="train", choices=["train", "val", "test"])
-    p.add_argument("--ckpt", required=True); p.add_argument("--ckpt2", default=None); p.add_argument("--K", type=int, default=20)
+    p.add_argument("--ckpt", required=True); p.add_argument("--ckpt2", default=None); p.add_argument("--ckpt3", default=None); p.add_argument("--K", type=int, default=20)
     p.add_argument("--sides", default="0,1", help="0 = start from R, 1 = start from P; '0,1' throws from both")
     p.add_argument("--sigma", type=float, default=0.3, help="Gaussian sigma (A) on every mobile-atom coordinate of the start")
     p.add_argument("--seed", type=int, default=0); p.add_argument("--num-cases", type=int, default=0)
@@ -64,28 +64,45 @@ def main():
                                  task_name_map=_parse_task_map(getattr(a, 'task_name_map', None)))
     m1, cfg = load_model(Path(a.ckpt), device, use_ema=a.use_ema); dc = int(cfg["extras"].get("delta_endpoint_channels") or 0)
     m2 = load_model(Path(a.ckpt2), device, use_ema=a.use_ema)[0] if a.ckpt2 else None
+    m3 = load_model(Path(a.ckpt3), device, use_ema=a.use_ema)[0] if a.ckpt3 else None
     Path(a.outdir).mkdir(parents=True, exist_ok=True)
     out = Trajectory(f"{a.outdir}/{a.tag}_{a.shard:02d}.traj", "w")
     g = torch.Generator().manual_seed(a.seed * 100003 + a.shard)
-    X0T, X0S, X0P = [], [], []          # starts are also saved to <tag>_<shard>_x0.npz (ASE traj drops custom arrays)
+    X0T, X0S, X0P = [], [], []
+    PASS_TR = []          # starts are also saved to <tag>_<shard>_x0.npz (ASE traj drops custom arrays)
     for i, tid in enumerate(tids):
         for side in sides:
             rec = ds[int(2 * tid + side)]; cell = rec["cell"]
             mobile = (~rec["fixed"]).float().unsqueeze(1)
             x0 = wrap_positions(rec["start_pos"] + a.sigma * torch.randn(rec["start_pos"].shape, generator=g) * mobile, cell)
             _np = int(os.environ.get("SF_NAPPLY", "1"))   # apply the stage-1 flow this many times
-            x = x0.clone()
+            # Restart Sampling (Xu et al. 2023): a small forward noise kick BETWEEN passes
+            # contracts accumulated error, which pure deterministic restarts cannot do.
+            _rs = float(os.environ.get("SF_RESTART_SIGMA", "0"))
+            _sp = os.environ.get("SF_SAVE_PASSES", "0") == "1"
+            x = x0.clone(); _trace = [x.numpy().astype(np.float32)] if _sp else None
             for _i in range(_np):
                 if a.integrator == "euler":
                     x = run_flow(m1, x, rec, cell, a.K, dc, device)
                 else:
                     x = run_flow_ho(m1, x, rec, cell, a.K, dc, device, a.integrator)
+                if _sp: _trace.append(x.numpy().astype(np.float32))
+                if _rs > 0 and _i < _np - 1:
+                    x = wrap_positions(x + _rs * torch.randn(x.shape, generator=g) * mobile, cell)
+            if _sp: PASS_TR.append(np.stack(_trace, 0))
             if m2 is not None:
                 for _i in range(int(os.environ.get("SF_NAPPLY2", "1"))):
                     if a.integrator == "euler":
                         x = run_flow(m2, x, rec, cell, a.K, 0, device)
                     else:
                         x = run_flow_ho(m2, x, rec, cell, a.K, 0, device, a.integrator)
+            if m3 is not None:      # third path-staged expert (user's 4-expert chain idea)
+                for _i in range(int(os.environ.get("SF_NAPPLY3", "1"))):
+                    if a.integrator == "euler":
+                        x = run_flow(m3, x, rec, cell, a.K, 0, device)
+                    else:
+                        x = run_flow_ho(m3, x, rec, cell, a.K, 0, device, a.integrator)
+                    if _sp: _trace.append(x.numpy().astype(np.float32))
             at = Atoms(positions=x.numpy().astype(float), numbers=rec["Z"].numpy(), cell=cell.numpy().astype(float), pbc=True)
             X0T.append(int(tid)); X0S.append(int(side)); X0P.append(x0.numpy().astype(np.float32))
             fixed = torch.where(rec["fixed"])[0].tolist()
@@ -96,6 +113,11 @@ def main():
     out.close()
     off = np.concatenate([[0], np.cumsum([len(x) for x in X0P])]) if X0P else np.zeros(1, int)
     np.savez(f"{a.outdir}/{a.tag}_{a.shard:02d}_x0.npz", tids=np.array(X0T), sides=np.array(X0S), offsets=off, x0=(np.concatenate(X0P, 0) if X0P else np.zeros((0, 3), np.float32)))
+    if PASS_TR:   # full per-pass trajectory: the path shape IS the result for an iterated flow
+        np.savez_compressed(f"{a.outdir}/{a.tag}_{a.shard:02d}_passes.npz",
+                            tids=np.array(X0T), sides=np.array(X0S), offsets=off,
+                            npass=np.array([t.shape[0] for t in PASS_TR]),
+                            passes=np.concatenate([t.reshape(-1, 3) for t in PASS_TR], 0))
     print(f"{a.tag} shard {a.shard}: wrote {len(tids)} triplets x {len(sides)} sides")
 
 

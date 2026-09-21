@@ -46,6 +46,7 @@ class TrainingConfig:
     min_lr_ratio: float = 0.01  # LR floor as fraction of `learning_rate`
 
     grad_clip_norm: float = 1.0
+    grad_accum_steps: int = 1   # micro-batches per optimizer step (see train.py --grad-accum-steps)
     ema_decay: float = 0.9999
 
     mixed_precision: str = "bf16"  # "bf16" | "fp16" | "no"
@@ -183,6 +184,7 @@ def train(
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         kwargs_handlers=handlers,
+        gradient_accumulation_steps=int(getattr(config, "grad_accum_steps", 1) or 1),
     )
     out_dir = Path(config.output_dir)
     if accelerator.is_main_process:
