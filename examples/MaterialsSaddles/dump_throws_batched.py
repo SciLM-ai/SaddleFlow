@@ -35,7 +35,7 @@ def flow_batch(model, xs, recs, K, dc, device, vscale=1.0):
     B = len(xs); cells = [r["cell"] for r in recs]
     fixed_cat = torch.cat([r["fixed"] for r in recs]).to(device)
     sizes = [int(r["Z"].shape[0]) for r in recs]
-    is_filmed = "TimeFiLM" in type(model.backbone).__name__
+    is_filmed = "TimeFiLM" in type(getattr(model.backbone, "_orig_mod", model.backbone)).__name__  # survives torch.compile
     with torch.no_grad():
         for step in range(K):
             t = step / K
