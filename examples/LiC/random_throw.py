@@ -4,14 +4,23 @@ This is the open-ended test of an unconditioned (TS-denoise) model: it is given
 no reactant, no product, and no hint of which saddle to aim at -- just a Li
 somewhere on the sheet -- and should relax to whichever real saddle is nearest.
 
-Sampling: uniform x, y over the full cell, z at the mean Li adsorption height
-from the training minima plus a small Gaussian jitter. Carbons are frozen and
-keep their reference positions throughout.
+Sampling: by default uniform x, y over the full cell, z at the mean Li adsorption
+height from the training minima plus a small Gaussian jitter. `--grid N` instead
+puts the starts on a regular N x N grid at that height; `--grid 64` is what
+README.md plots. Carbons are frozen and keep their reference positions throughout.
 
 Scoring compares each endpoint against the union of TRAIN and TEST saddles under
 PBC, and reports separately for the two, so you can see whether the model reaches
 saddles it never trained on. It also reports how far the *start* already was, so
 "flowed to a saddle" is not confused with "was thrown next to one".
+
+Run from the repository root, after train.py:
+
+    python examples/LiC/random_throw.py --grid 64 \\
+        --ckpt examples/LiC/runs/tsdenoise_sigma0.25/checkpoint_final
+
+The full Li path of every throw goes to <run>/random_throw/throw.npz; draw it
+with plot_throws.py.
 """
 import argparse
 import json
@@ -46,7 +55,8 @@ def parse_args():
     p.add_argument("--K", type=int, default=20, help="Euler steps per trajectory")
     p.add_argument("--z-jitter", type=float, default=0.3, help="Gaussian sigma on z (A)")
     p.add_argument("--batch-size", type=int, default=64)
-    p.add_argument("--hit-tol", type=float, default=0.35, help="A; endpoint counts as reaching a saddle")
+    p.add_argument("--hit-tol", type=float, default=0.10,
+                   help="A; endpoint counts as reaching a saddle (same radius as plot_throws.py)")
     p.add_argument("--seed", type=int, default=0)
     # EMA by default: load_ema_weights' safetensors path only knows the
     # "global_attn"/"velocity_head" prefixes, so it CANNOT restore an unfrozen
@@ -203,8 +213,9 @@ def main():
     for nm, arr in (("START", d_start), ("END", d_end)):
         print(f"    {nm:<7s}" + "".join(f"{np.percentile(arr,q):>9.3f}" for q in qs))
     print(f"  reached a saddle (< {args.hit_tol} A): {100*hit.mean():.1f}%")
-    print(f"  of those, nearest was a TEST saddle (unseen in training): "
-          f"{100*np.mean(d_end_te[hit] <= d_end_tr[hit]):.1f}%")
+    if hit.any():
+        print(f"  of those, nearest was a TEST saddle (unseen in training): "
+              f"{100*np.mean(d_end_te[hit] <= d_end_tr[hit]):.1f}%")
     print(f"  wrote {out_dir/'throw.npz'}")
 
 

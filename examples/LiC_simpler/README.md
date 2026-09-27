@@ -4,7 +4,8 @@ One lithium atom hopping on a pristine graphene sheet. Small enough to train in
 ~20 minutes on a single GPU, and symmetric enough that you can *see* whether the
 model learned the physics rather than just fitting a number.
 
-**Start here if you are new to the codebase.**
+**Start here if you are new to the codebase.** [`examples/LiC`](../LiC) is the
+next step: the same physics on a defective sheet with 179 saddles.
 
 ## The system
 
@@ -22,71 +23,76 @@ should fan out into six petals (a "flower"), not spray outward uniformly.
 ## Run it
 
 ```bash
-# (a) mode 1 — product-conditional. Given R and P, find the saddle between them.
 python examples/LiC_simpler/train.py
-python examples/LiC_simpler/viz_checkpoints.py --run-dir examples/LiC_simpler/runs/mode1
-
-# (b) TS-denoise — unconditioned. Given any structure, flow to the nearest saddle.
-#     This is the recipe that actually solves the example — see "Expected result".
-python examples/LiC_simpler/train.py --ts-denoise-sigma 0.5 \
-    --delta-endpoint-channels 0 --attn-layers 1 --ema-decay 0.99 \
-    --unfreeze-uma-all --uma-lr 1e-2 \
-    --early-time-film --early-time-film-blocks 0,1,2,3
 python examples/LiC_simpler/viz_checkpoints.py \
     --run-dir examples/LiC_simpler/runs/tsdenoise_sigma0.5
 ```
 
-**Do not drop the last two lines.** With the backbone frozen (the head-only
-default) this example plateaus at hexatic order ~0.91 and never closes the last
-~0.06 Å. Unfreezing all four UMA blocks at `--uma-lr 1e-2` *together with*
-equivariant time-FiLM at every block is what takes it to a perfect orbit.
+The model is unconditioned. Every training sample starts at the one known saddle
+with Gaussian noise on the Li, `x_0 = saddle + N(0, 0.5²)`, and the flow learns to
+carry it back; it never sees the reactant or the product. The visualiser then
+starts 48 trajectories from the reactant plus 0.15 Å of noise and follows each
+one to wherever the learned field takes it.
+
+The defaults unfreeze all four UMA blocks at `--uma-lr 1e-2` and apply
+equivariant time-FiLM at every block. Both matter: with the backbone frozen this
+example plateaus at hexatic order ~0.91 and never closes the last ~0.06 Å.
 Capacity is not the missing ingredient: `--head-depth 3` on top of this is
 slightly **worse** (hexatic 0.944), and dropping attention costs a little
 (0.933).
 
+Each checkpoint is about 4.6 GB with the backbone unfrozen, because it holds the
+weights, the EMA copy and the optimizer state. The trainer saves one every 2000
+epochs plus the final one, about 28 GB, and the visualiser draws one panel per
+checkpoint. Pass `--save-every-epochs 0` to keep only the final one.
+
 ## Expected result
 
-At 10000 epochs, fp32, with the command above (48 perturbed starts, σ_inf 0.15,
-K = 20, EMA weights), measured against the six symmetry-equivalent saddles:
+At 10000 epochs, fp32, with the defaults (48 perturbed starts, σ_inf 0.15,
+K = 20, EMA weights), measured against the six symmetry-equivalent saddles,
+for two runs with identical settings. The first four rows are the numbers the
+visualiser prints in its panel titles:
 
-| quantity | value |
-|---|---|
-| hexatic order \|⟨e^{6iθ}⟩\| | **1.000** |
-| endpoints on the saddle orbit | **100 %** |
-| median distance to the nearest true saddle | **0.002 Å** |
-| p90 distance | **0.004 Å** |
-| within the 0.05 Å hit radius | **100 %** |
+| quantity | reference run | repeat run |
+|---|---|---|
+| hexatic order \|⟨e^{6iθ}⟩\| about the reactant site | **1.000** | **0.977** |
+| endpoints within the 0.05 Å hit radius | **48 of 48** | **45 of 48** |
+| median distance to the nearest true saddle | **0.002 Å** | **0.003 Å** |
+| p90 distance | **0.004 Å** | **0.024 Å** |
+| farthest endpoint | 0.025 Å | 0.21 Å |
 
-All six saddles are recovered from the **one** that appears in the training
-data — which is the whole point of the example. Ablations at the same budget:
+In both runs every trajectory ends in one of the six saddle petals, so all six
+saddles are recovered from the **one** that appears in the training data —
+which is the whole point of the example. The runs differ only in how tightly the
+last few trajectories converge: GPU training is not bit-for-bit reproducible,
+and two runs with identical settings differed by this much. Ablations at the
+same budget, scored at K = 50:
 
-| variant | hexatic | on-orbit | median dist |
-|---|---|---|---|
-| unfrozen + time-FiLM (above) | 1.000 | 100 % | 0.005 Å |
-| + head depth 3 | 0.944 | 96 % | 0.005 Å |
-| unfrozen, no attention | 0.933 | 98 % | 0.005 Å |
-| frozen backbone (head only) | 0.912 | 98 % | 0.056 Å |
-| frozen + head depth 3 | 0.763 | 90 % | 0.070 Å |
+| variant | flags | hexatic | on-orbit | median dist |
+|---|---|---|---|---|
+| unfrozen + time-FiLM (the defaults) | | 1.000 | 100 % | 0.005 Å |
+| + head depth 3 | `--head-depth 3` | 0.944 | 96 % | 0.005 Å |
+| unfrozen, no attention | `--attn-layers 0` | 0.933 | 98 % | 0.005 Å |
+| frozen backbone (head only) | `--no-unfreeze-uma-all --no-early-time-film` | 0.912 | 98 % | 0.056 Å |
+| frozen + head depth 3 | `--no-unfreeze-uma-all --no-early-time-film --head-depth 3` | 0.763 | 90 % | 0.070 Å |
 
-Each is ~20 min on one GPU. Runs land in `runs/<objective>/`, so (a) and (b) do
-not overwrite each other.
+Each is ~20 min on one GPU. A run lands in `runs/` under a name built from its
+flags, for example `runs/tsdenoise_sigma0.5_depth3`, so ablations do not
+overwrite each other; pass that folder to the visualiser with `--run-dir`.
 
 The visualiser reads the architecture from the run's own `config.json`, so you
-never have to pass matching `--attn-layers` / `--head-depth` by hand. It writes
-one figure per checkpoint plus a `flower_evolution.pdf` montage.
+never have to repeat the training flags. It writes one figure per checkpoint
+plus a `flower_evolution.pdf` montage.
 
-## The two objectives, and when to use which
+## Why the model is not conditioned on R and P
 
-|  | mode 1 (default) | TS-denoise |
-|---|---|---|
-| start `x_0` | the (R+P)/2 midpoint | saddle + Gaussian noise |
-| sees R and P? | yes, at every step | **no** |
-| answers | "the saddle between *these two* endpoints" | "the nearest saddle to *here*" |
-| score against | the dataset saddle | the saddle a saddle-optimiser reaches |
-
-Do not mix them up when evaluating: an unconditioned model was never told which
-saddle you had in mind, so scoring it against a specific stored label punishes it
-for working correctly.
+The method in the main README is product-conditional: it starts from the
+midpoint of a reactant R and a product P and shows the model both endpoints. On
+this sheet that leaves nothing to learn. R and P are neighbouring hollow sites
+and the saddle is the bridge between them, so the midpoint already sits on the
+saddle, 0.0006 Å away in-plane, and the flow would only lift the Li by 0.26 Å.
+The conditioned scheme is used in [`examples/MP20Bat`](../MP20Bat), where the
+midpoint is far from the saddle.
 
 ## Reading the figures
 
@@ -102,27 +108,15 @@ trajectory has hit one exactly when its endpoint falls inside the circle:
 Two deliberate differences from `examples/LiC`. The view is **zoomed to ±2.6 Å**
 around the reactant rather than showing the whole sheet, because the cell is
 pristine and every hexagon is equivalent. And the hit radius is **0.05 Å**
-rather than 0.30 Å — this example is clean enough that 0.30 Å would call
-everything a hit and hide the difference between the variants above. The radius
-is printed in every panel title.
+rather than the 0.10 Å used there: at 0.10 Å most endpoints of the
+frozen-backbone variant (median 0.056 Å) would count as hits, hiding the
+difference between the variants above. The radius is printed in every panel
+title.
 
 ## Other files
 
-Three visualisers, three genuinely different questions — none is redundant:
-
-| script | answers | works on |
-|---|---|---|
-| `viz_checkpoints.py` | *How did the field evolve over training?* One panel per checkpoint plus a montage, same perturbation seed throughout. | both objectives |
-| `visualize.py` | *What does the velocity field look like everywhere?* Evaluates the field on a 2D grid around the Li at several flow times — including regions no trajectory visits. `--plot {trajectories,field,both}`. | both objectives |
-| `visualize_mode1.py` | *Does conditioning actually steer it?* Synthesises the five missing partners by rotating (P−R) by k·60°, samples each separately, and checks you get six different saddles. | conditioned (mode 1) only |
-
-Start with `viz_checkpoints.py`. Reach for the field map when trajectories look
-wrong and you want to see *why* — it is what revealed that a broken model's field
-points at the atop directions at every radius. Reach for `visualize_mode1.py` when
-you want to test the conditioning mechanism itself rather than one trajectory set.
-
-All three read the architecture from the run's `config.json`.
-
+- `viz_checkpoints.py` — the visualiser above. Every checkpoint gets the same
+  perturbation draws, so the montage shows the flower forming over training.
 - `make_small_cell.py` — builds `small_n5_one_saddle.traj` / `small_n5_six_saddles.traj`,
   hexagonal cells that are **exactly** C6-symmetric about the Li site (the stock
   113-atom cell is rectangular and only symmetric to ~0.001 Å). Smaller and

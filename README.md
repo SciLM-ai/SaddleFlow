@@ -86,8 +86,10 @@ This trains on the full `mp20bat` subset (~34,742 triplets) for 60 epochs with 4
 
 For a quick sanity-check on small data:
 
-- [`examples/LiC_simpler/`](examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. **It passes:** with the backbone unfrozen and per-block time-FiLM, all 48 sampled trajectories land within **0.006 Å** of a true saddle and the hexatic order of the endpoints is **1.000** — a perfect six-fold orbit from one training saddle. The frozen-backbone default reaches only 0.91, so use the full command in its [README](examples/LiC_simpler/README.md).
-- [`examples/LiC/`](examples/LiC/) — defective-graphene case with 12 train + 167 test triplets (179 saddles, each Sella-reconverged at fmax 0.005 and verified index-1); ~3 h on one A100.
+- [`examples/LiC_simpler/`](examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. **It passes:** with the backbone unfrozen and per-block time-FiLM, all 48 sampled trajectories end in one of the six saddle petals — a six-fold orbit from one training saddle, with hexatic order **0.98–1.00** over two independent runs. That recipe is the script's default; a frozen backbone reaches only 0.91 (see its [README](examples/LiC_simpler/README.md)).
+- [`examples/LiC/`](examples/LiC/) — defective graphene: 12 training saddles, 167 held-out ones (each Sella-reconverged at fmax 0.005 and verified index-1), and 10 bond midpoints that look like saddles but are not. An unconditioned model carries a Li thrown anywhere on the sheet to the nearest saddle; ~4 h on one GPU. Its [README](examples/LiC/README.md) reproduces the trajectory figure.
+
+Both use an *unconditioned* model rather than the `(R, P)`-conditioned scheme below: on graphene the midpoint of R and P already sits on the saddle, so conditioning would leave the flow nothing to learn.
 
 ## Method (in brief)
 

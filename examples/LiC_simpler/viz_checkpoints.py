@@ -9,9 +9,9 @@ and plot the Li atom's xy path over the carbon sheet. Also emits a
 montage figure (`flower_evolution.pdf`) with one panel per checkpoint so
 the flower → sunburst transition is visible at a glance.
 
-Run:
-    CUDA_VISIBLE_DEVICES=0 python examples/LiC_simpler/viz_checkpoints.py \
-        --run-dir examples/LiC_simpler/runs/flower_obj1_sig0p5
+Run from the repository root, after train.py:
+    python examples/LiC_simpler/viz_checkpoints.py \\
+        --run-dir examples/LiC_simpler/runs/tsdenoise_sigma0.5
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def parse_args():
     here = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--run-dir", default=str(here / "runs" / "flower_obj1_sig0p5"))
+    p.add_argument("--run-dir", default=str(here / "runs" / "tsdenoise_sigma0.5"))
     p.add_argument("--traj", default=str(here / "one_saddle.traj"))
     p.add_argument("--sigma-inf", type=float, default=0.15,
                    help="Å. Inference-time Gaussian perturbation around r_R.")
@@ -58,10 +58,6 @@ def parse_args():
     p.add_argument("--attn-layers", type=int, default=None)
     p.add_argument("--attn-heads", type=int, default=None)
     p.add_argument("--head-depth", type=int, default=None)
-    p.add_argument("--delta-endpoint-channels", type=int, default=None)
-    p.add_argument("--unfreeze-last-block", action="store_true",
-                   help="match a run trained with unfrozen blocks[-1] (EMA param order)")
-    p.add_argument("--unfreeze-all-blocks", action="store_true")
     p.add_argument("--every", type=int, default=1,
                    help="plot every Nth epoch checkpoint (final always included).")
     p.add_argument("--out-dir", default=None, help="default: <run-dir>/viz")
@@ -107,7 +103,11 @@ def saddle_stats(li_paths, orbit):
     end = li_paths[:, -1, :2]
     d = np.linalg.norm(end[:, None, :] - orbit[None, :, :2], axis=2)
     dmin = d.min(1)
-    th = np.arctan2(*(end - li_paths[:, 0, :2]).T[::-1])
+    # Angle of each endpoint around the reactant site, which is the centre of the
+    # six-saddle orbit. Measuring it from each perturbed start instead adds ~7
+    # degrees of noise and caps even a perfect flower near 0.92.
+    site = orbit[:, :2].mean(0)
+    th = np.arctan2(*(end - site).T[::-1])
     return dmin, dict(hit=100.0 * float((dmin < HIT).mean()),
                       med=float(np.median(dmin)),
                       p90=float(np.percentile(dmin, 90)),
@@ -184,24 +184,26 @@ def main():
     attn_layers = pick(args.attn_layers, "attn_layers", 1)
     attn_heads  = pick(args.attn_heads,  "attn_heads",  8)
     head_depth  = pick(args.head_depth,  "head_depth",  1)
-    delta_C     = int(pick(args.delta_endpoint_channels, "delta_endpoint_channels", 0) or 0)
+    if int(ex.get("delta_endpoint_channels", 0) or 0):
+        raise SystemExit("this run's head is conditioned on (R, P) endpoints; this "
+                         "example only trains and plots unconditioned models")
     tfilm       = bool(ex.get("early_time_film", False))
     tfilm_blocks = str(ex.get("early_time_film_blocks", "0,1,2,3"))
     uma_unfrozen = bool(ex.get("unfreeze_uma_all", False))
     if cfg_path.exists():
         print(f"[viz] architecture from {cfg_path.name}: attn_layers={attn_layers} "
-              f"attn_heads={attn_heads} head_depth={head_depth} delta_C={delta_C}")
+              f"attn_heads={attn_heads} head_depth={head_depth} "
+              f"uma_unfrozen={uma_unfrozen} time_film={tfilm}")
     else:
         print(f"[viz] no config.json under {run_dir} -- using defaults/CLI; "
               f"a mismatch will load the EMA weights into the wrong slots.")
 
     device = args.device
-    backbone = load_uma_backbone("uma-s-1p2", device=device, freeze=True, eval_mode=True,
-                                 unfreeze_last_block=args.unfreeze_last_block)
-    if args.unfreeze_all_blocks or uma_unfrozen:
-        # Triggered by the CLI flag OR by extras["unfreeze_uma_all"] in the run's
-        # config: EMA stores every trainable parameter, so if training unfroze the
-        # backbone the same params must be trainable here or the counts disagree.
+    backbone = load_uma_backbone("uma-s-1p2", device=device, freeze=True, eval_mode=True)
+    if uma_unfrozen:
+        # Set by extras["unfreeze_uma_all"] in the run's config: EMA stores every
+        # trainable parameter, so if training unfroze the backbone the same
+        # params must be trainable here or the counts disagree.
         # Match the trainer's convention (examples/MaterialsSaddles/train.py):
         # the loader exposes only unfreeze_last_block, so an all-blocks run
         # unfreezes in the caller. This must mirror training exactly -- the EMA
@@ -221,8 +223,7 @@ def main():
         print(f"[viz] time-FiLM backbone rebuilt at blocks {idx}")
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                       num_heads=attn_heads, num_layers=attn_layers).to(device)
-    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth,
-                        delta_endpoint_channels=delta_C).to(device)
+    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth).to(device)
 
     ckpts = sorted(run_dir.glob("checkpoint_epoch_*"))[:: args.every]
     final = run_dir / "checkpoint_final"
@@ -239,21 +240,17 @@ def main():
         epoch = meta.get("epoch", ckpt.name)
         # EMA holds every trainable parameter in order: backbone (if it was
         # unfrozen), then FiLM, then attn/head. Mirror training exactly.
-        ema_modules = ([backbone, attn, head]
-                       if (args.unfreeze_last_block or args.unfreeze_all_blocks
-                           or uma_unfrozen or tfilm)
-                       else [attn, head])
+        ema_modules = [backbone, attn, head] if (uma_unfrozen or tfilm) else [attn, head]
         load_ema_weights(str(ckpt), ema_modules, device=device)
         attn.eval(); head.eval()
         gen = torch.Generator().manual_seed(args.seed)   # identical draws per checkpoint
         with torch.no_grad():
-            # An unconditioned head (delta_C == 0) must NOT be given partner_pos;
-            # the sampler then starts each trajectory at the REACTANT plus the
-            # sigma_inf perturbation -- the flower setup. A conditioned head
-            # requires it, and starts from the (R, P) midpoint instead.
+            # No partner_pos: the head is unconditioned, so the sampler starts each
+            # trajectory at the REACTANT plus the sigma_inf perturbation -- the
+            # flower setup.
             _, traj = sample_saddles(
                 rec, backbone, attn, head,
-                partner_pos=(rec["partner_un_pos"] if delta_C > 0 else None),
+                partner_pos=None,
                 sigma_inf=args.sigma_inf,
                 n_perturbations=args.n_perturbations, K=args.K,
                 device=device, generator=gen, return_trajectory=True,
