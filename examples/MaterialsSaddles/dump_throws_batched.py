@@ -22,7 +22,7 @@ from ase.io import Trajectory
 from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from data_prep import load_official_splits                                  # noqa: E402
+from data_prep import load_official_splits, subset_shards, tid_to_saddle_msid  # noqa: E402
 from dump_throws3 import _parse_task_map                                    # noqa: E402
 from eval_full_testset_K10 import load_model                                # noqa: E402
 from saddleflow.data.materials_saddles_dataset import MaterialsSaddlesDataset  # noqa: E402
@@ -75,11 +75,19 @@ def main():
 
     tids = [int(t) for t in load_official_splits(a.subset)[{"train": 0, "val": 1, "test": 2}[a.split]]]
     if a.restrict_tids:
-        keep = set(np.load(a.restrict_tids)["tids"].tolist()); tids = [t for t in tids if t in keep]
+        z = np.load(a.restrict_tids); keep = set(z["tids"].tolist())
+        if "saddle_ms_ids" in z.files:                     # pinned sets carry ms_ids: refuse a tid/ms_id mismatch
+            msid = tid_to_saddle_msid(a.subset)
+            if not np.array_equal(msid[z["tids"]], z["saddle_ms_ids"]):
+                raise SystemExit(f"{a.restrict_tids}: tids no longer point at the recorded ms_ids")
+        tids = [t for t in tids if t in keep]
     if a.num_cases and a.num_cases < len(tids):
         rng = np.random.default_rng(a.seed); tids = sorted(rng.choice(tids, a.num_cases, replace=False).tolist())
     tids = tids[a.shard::a.nshards]
     ds = MaterialsSaddlesDataset(sorted(glob.glob(a.data_glob)), task_name_map=_parse_task_map(a.task_name_map))
+    if list(ds.shards) != subset_shards(a.subset):
+        raise SystemExit(f"--data-glob {a.data_glob!r} does not select exactly the {a.subset} files in "
+                         f"data_prep order; the split tids would point at the wrong triplets")
     m1, cfg = load_model(Path(a.ckpt), device, use_ema=a.use_ema); dc = int(cfg["extras"].get("delta_endpoint_channels") or 0)
     m2 = load_model(Path(a.ckpt2), device, use_ema=a.use_ema)[0] if a.ckpt2 else None
     Path(a.outdir).mkdir(parents=True, exist_ok=True)

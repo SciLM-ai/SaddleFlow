@@ -11,10 +11,11 @@ Architecture (v6 production default; see CLAUDE.md "Mode 1 architecture sweep"):
   - GlobalAttn off (Mode 1 has the partner direction; UMA's 4-hop MP already
     reaches the whole cell on these systems)
 
-Data is staged automatically under $SCRATCH/MaterialsSaddles/<subset>/ and the
-official splits/<subset>/{train,val,test}.parquet are used (no random
-splitting on our side). On a fresh machine the first launch downloads the
-missing pieces from HuggingFace; subsequent launches reuse the local copy.
+Data is MaterialsSaddles v2 (Hugging Face SciLM/MaterialsSaddles), staged under
+$MATERIALSSADDLES_ROOT (default $SCRATCH/MaterialsSaddles_v2) as
+<subset>/{train,val,test}/*.aselmdb; the split is the directory a file is in (see
+data_prep.py). On a fresh machine the first launch downloads the missing files;
+subsequent launches reuse the local copy.
 
 Launch (single node, single GPU):
     python train.py --output-dir runs/v6
@@ -38,7 +39,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data_prep import (  # noqa: E402
     ALL_SUBSETS, ensure_subset, ensure_subsets, load_local_triplet_splits,
-    load_official_splits,
+    load_official_splits, materials_saddles_root, subset_shards,
 )
 
 from saddleflow.data import MaterialsSaddlesDataset
@@ -522,8 +523,7 @@ def main():
     # loss); using stale-by-days values is fine.
     from pathlib import Path as _Path
     canonical_stats_root = _Path(os.environ.get(
-        "SADDLEFLOW_MATERIALS_SADDLES_ROOT",
-        os.path.expandvars("$SCRATCH/MaterialsSaddles"),
+        "SADDLEFLOW_MATERIALS_SADDLES_ROOT", str(materials_saddles_root()),
     ))
 
     offset = 0
@@ -542,6 +542,9 @@ def main():
             stats_cache=stats_path_for_ds,
             task_name_map=_parse_task_map(args.task_name_map),
         )
+        if args.shards_dir is None and list(ds.shards) != subset_shards(s):
+            raise SystemExit(f"[train] {s}: dataset file order differs from data_prep.subset_shards; "
+                             f"the split tids would point at the wrong triplets")
         print(f"[train] {s}: {len(ds)} records ({ds.num_triplets} triplets × 2 sides), "
               f"across {len(ds.shards)} shards  ⟨‖Δ‖⟩={ds.delta_norm_mean:.3f} Å"
               if ds.delta_norm_mean is not None else

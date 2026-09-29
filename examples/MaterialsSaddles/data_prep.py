@@ -1,71 +1,93 @@
 """
-Data preparation helper — idempotent download + official-split loading.
+Data preparation helper for MaterialsSaddles v2 — idempotent download + split loading.
 
-Convention:
-  * Single canonical location: ``$SCRATCH/MaterialsSaddles/`` on every machine.
-  * Two artefacts per subset:
-      ``$SCRATCH/MaterialsSaddles/<subset>/*.aselmdb``         (the data)
-      ``$SCRATCH/MaterialsSaddles/splits/<subset>/{train,val,test}.parquet``
-  * If both already exist with the expected file counts they are reused; otherwise
-    the missing pieces are pulled from HuggingFace ``AnonymouScientist/MaterialsSaddles``.
+MaterialsSaddles v2 (Hugging Face ``SciLM/MaterialsSaddles``) stores every subset
+already split and deduplicated:
 
-Each parquet column is just ``ms_id`` (uint32). One row per ASE-LMDB row, so each
-triplet contributes 3 ``ms_id`` rows that are guaranteed to be in the same split
-(empirically: per-triplet ms_ids are 3 consecutive integers).
+    <root>/<subset>/{train,val,test}/<subset>_<split>_<NNNN>.aselmdb
 
-The helper is rank-aware via ``accelerate.PartialState`` — only the global main
-process touches the network/filesystem; the others wait at a barrier and then
-read the freshly-laid-down files.
+Each file holds at most 50,000 transition states as consecutive (R, S, P) rows in
+ascending ``ms_id`` order; the split is the directory a file lives in (chemical
+systems are disjoint between splits). ``metadata/triplets.parquet`` maps every
+saddle ``ms_id`` to its file and row.
+
+Triplet ids ("tids"). SaddleFlow addresses a subset as ONE ``MaterialsSaddlesDataset``
+over all of that subset's files in sorted path order (``subset_shards``), i.e.
+``<subset>/test/*``, then ``<subset>/train/*``, then ``<subset>/val/*``. A tid is the
+position of a triplet in that concatenation (records ``2*tid`` / ``2*tid+1`` are the
+R->S / P->S samples). ``load_official_splits`` returns the tids of each split by
+reading which directory each file is in — no ms_id lookup is involved. Use
+``tid_to_saddle_msid`` to translate tids into the dataset's stable ``ms_id``s.
+
+Location: ``$MATERIALSSADDLES_ROOT`` if set, else ``$SCRATCH/MaterialsSaddles_v2``.
+Source: ``$MATERIALSSADDLES_REPO`` (default ``SciLM/MaterialsSaddles``) at revision
+``$MATERIALSSADDLES_REVISION`` (default ``v2-dedup``, the branch holding v2 until it
+is merged to ``main``). The download runs only for files that are missing, only on
+the global main process; other ranks wait at a barrier.
 """
 
 from __future__ import annotations
 
-import os
 import json
+import os
+import zlib
 from pathlib import Path
 from typing import Iterable
 
-# How many .aselmdb shards each MaterialsSaddles subset is supposed to contain.
-# Sourced from the dataset README; used as a sanity check before deciding the
-# local copy is "complete".
-EXPECTED_SHARDS = {
-    "lemat":   256,
-    "oc20":    96,
-    "oc22":    32,
-    "mp20bat": 32,
-}
+REPO_ID = os.environ.get("MATERIALSSADDLES_REPO", "SciLM/MaterialsSaddles")
+REVISION = os.environ.get("MATERIALSSADDLES_REVISION", "v2-dedup")
+SPLITS: tuple[str, ...] = ("train", "val", "test")
+TRIPLETS_PER_FILE = 50_000
 
-REPO_ID = "AnonymouScientist/MaterialsSaddles"
+# Triplet counts of the v2 release (verified against every file when it was written).
+# They pin the file lists and double as a completeness / consistency check.
+EXPECTED_TRIPLETS = {
+    "lemat":   {"train": 28_223_516, "val": 1_533_392, "test": 1_566_009},
+    "oc20":    {"train": 2_133_114,  "val": 123_751,   "test": 110_853},
+    "oc22":    {"train": 139_175,    "val": 6_557,     "test": 6_861},
+    "mp20bat": {"train": 31_046,     "val": 1_454,     "test": 1_531},
+}
+ALL_SUBSETS: tuple[str, ...] = tuple(EXPECTED_TRIPLETS.keys())
 
 
 def materials_saddles_root() -> Path:
-    """Resolve ``$SCRATCH/MaterialsSaddles`` (creating the directory if needed)."""
-    scratch = os.environ.get("SCRATCH")
-    if not scratch:
-        raise SystemExit(
-            "$SCRATCH is not set. SaddleFlow pins the dataset under "
-            "$SCRATCH/MaterialsSaddles so it works across machines — please "
-            "export SCRATCH (most Slurm sites set this automatically; on other clusters "
-            "point it at a fast scratch path)."
-        )
-    root = Path(scratch) / "MaterialsSaddles"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    """Resolve the v2 data root (creating the directory if needed)."""
+    root = os.environ.get("MATERIALSSADDLES_ROOT")
+    if not root:
+        scratch = os.environ.get("SCRATCH")
+        if not scratch:
+            raise SystemExit(
+                "Neither $MATERIALSSADDLES_ROOT nor $SCRATCH is set; point "
+                "MATERIALSSADDLES_ROOT at a fast filesystem to hold the dataset.")
+        root = str(Path(scratch) / "MaterialsSaddles_v2")
+    p = Path(root)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def _shard_count(d: Path) -> int:
-    return sum(1 for p in d.glob("*.aselmdb")) if d.is_dir() else 0
+def expected_files(subset: str, split: str) -> list[str]:
+    """Repository paths of the files of one subset/split, in order."""
+    n = EXPECTED_TRIPLETS[subset][split]
+    k = (n + TRIPLETS_PER_FILE - 1) // TRIPLETS_PER_FILE
+    return [f"{subset}/{split}/{subset}_{split}_{i:04d}.aselmdb" for i in range(k)]
 
 
-def _splits_complete(d: Path) -> bool:
-    if not d.is_dir():
-        return False
-    needed = {"train.parquet", "val.parquet", "test.parquet"}
-    have = {p.name for p in d.iterdir()}
-    return needed.issubset(have)
+def subset_shards(subset: str, root: Path | None = None) -> list[str]:
+    """Every file of a subset (all splits), sorted by path — the order in which
+    ``MaterialsSaddlesDataset`` concatenates them, which defines the tids."""
+    root = root or materials_saddles_root()
+    return sorted(str(root / f) for sp in SPLITS for f in expected_files(subset, sp))
 
 
-ALL_SUBSETS: tuple[str, ...] = tuple(EXPECTED_SHARDS.keys())
+def subset_glob(subset: str, root: Path | None = None) -> str:
+    """Glob matching exactly ``subset_shards(subset)``."""
+    root = root or materials_saddles_root()
+    return str(root / subset / "*" / f"{subset}_*.aselmdb")
+
+
+def _check_subset(s: str) -> None:
+    if s not in EXPECTED_TRIPLETS:
+        raise ValueError(f"Unknown subset {s!r}. Known: {sorted(EXPECTED_TRIPLETS)}")
 
 
 def ensure_subsets(
@@ -73,226 +95,137 @@ def ensure_subsets(
     *,
     accelerator_state=None,
     max_workers: int = 32,
-) -> dict[str, Path]:
-    """Make sure ``$SCRATCH/MaterialsSaddles/<subset>`` and its splits exist on
-    disk for every requested subset; if anything is missing, pull it from
-    HuggingFace in a single ``snapshot_download`` call (idempotent — re-runs
-    only fetch new/changed files, the HF equivalent of ``git pull``).
-
-    Returns ``{subset: shards_dir}``.
-
-    On a multi-rank launch only the global main process performs the download;
-    other ranks wait on a barrier. Pass ``accelerator_state=PartialState()`` (or
-    any object with ``is_main_process`` + ``wait_for_everyone()``); falls back
-    to single-process behaviour if not given.
-
-    ``max_workers`` controls per-file download concurrency. 32 is a sane default
-    for NERSC-class WANs (≈ 32 × 50 MB/s ≈ 1.5 GB/s aggregate, well below HF's
-    concurrent-connection throttle and far below pscratch's write speed).
-    """
+    metadata: bool = True,
+) -> dict[str, str]:
+    """Make sure every file of the requested subsets (all three splits) is on disk,
+    downloading only what is missing. Returns ``{subset: glob}``; pass the glob to
+    ``MaterialsSaddlesDataset``."""
     subsets = list(subsets)
     for s in subsets:
-        if s not in EXPECTED_SHARDS:
-            raise ValueError(
-                f"Unknown subset {s!r}. Known: {sorted(EXPECTED_SHARDS)}"
-            )
-
+        _check_subset(s)
     root = materials_saddles_root()
     is_main = (accelerator_state is None) or accelerator_state.is_main_process
 
-    need_shards: list[str] = []
-    need_splits: list[str] = []
+    patterns: list[str] = []
     for s in subsets:
-        if _shard_count(root / s) != EXPECTED_SHARDS[s]:
-            need_shards.append(s)
-        if not _splits_complete(root / "splits" / s):
-            need_splits.append(s)
-
-    if (need_shards or need_splits) and is_main:
+        for sp in SPLITS:
+            if not all((root / f).is_file() for f in expected_files(s, sp)):
+                patterns.append(f"{s}/{sp}/*.aselmdb")
+    if metadata and not (root / "metadata" / "triplets.parquet").is_file():
+        patterns.append("metadata/*.parquet")
+    if patterns and is_main:
         from huggingface_hub import snapshot_download
-        patterns: list[str] = []
-        for s in need_shards:
-            patterns.append(f"{s}/*.aselmdb")
-        for s in need_splits:
-            patterns.append(f"splits/{s}/*.parquet")
-        # Repo-root docs are tiny; refresh them on every git-pull-style call so
-        # each scratch root stays self-documenting.
-        patterns += ["README.md", "DATASHEET.md", "example_load.py"]
-        print(f"[data_prep] downloading {patterns} from {REPO_ID} → {root} "
+        patterns += ["README.md", "DATASHEET.md"]
+        print(f"[data_prep] downloading {patterns} from {REPO_ID}@{REVISION} -> {root} "
               f"(max_workers={max_workers})")
         snapshot_download(
-            repo_id=REPO_ID,
-            repo_type="dataset",
-            local_dir=str(root),
-            allow_patterns=patterns,
-            token=os.environ.get("HF_TOKEN"),
-            max_workers=max_workers,
+            repo_id=REPO_ID, repo_type="dataset", revision=REVISION,
+            local_dir=str(root), allow_patterns=patterns,
+            token=os.environ.get("HF_TOKEN"), max_workers=max_workers,
         )
-
     if accelerator_state is not None:
         accelerator_state.wait_for_everyone()
 
-    out: dict[str, Path] = {}
+    out: dict[str, str] = {}
     for s in subsets:
-        shards_dir = root / s
-        splits_dir = root / "splits" / s
-        n = _shard_count(shards_dir)
-        expected = EXPECTED_SHARDS[s]
-        if n != expected:
-            raise SystemExit(
-                f"[data_prep] {shards_dir} has {n} *.aselmdb shards, expected "
-                f"{expected}. Re-run on a node with HF_TOKEN set, or remove the "
-                f"directory to force a re-download."
-            )
-        if not _splits_complete(splits_dir):
-            raise SystemExit(
-                f"[data_prep] {splits_dir} is missing one of train/val/test.parquet. "
-                f"Re-run on a node with HF_TOKEN set, or remove the directory."
-            )
-        print(f"[data_prep] {s}: {shards_dir} ({n} shards) + splits OK")
-        out[s] = shards_dir
+        missing = [f for sp in SPLITS for f in expected_files(s, sp) if not (root / f).is_file()]
+        if missing:
+            raise SystemExit(f"[data_prep] {len(missing)} files of {s} missing under {root}, "
+                             f"e.g. {missing[:3]}. Re-run on a node with network access.")
+        stray = sorted(set(map(str, root.glob(f"{s}/*/*.aselmdb"))) - set(subset_shards(s, root)))
+        if stray:
+            raise SystemExit(f"[data_prep] unexpected files under {root / s}: {stray[:3]} "
+                             f"(they would shift every tid). Remove them.")
+        print(f"[data_prep] {s}: {len(subset_shards(s, root))} files under {root / s} OK")
+        out[s] = subset_glob(s, root)
     return out
 
 
-def ensure_subset(subset: str = "mp20bat", *, accelerator_state=None) -> Path:
-    """Single-subset wrapper around :func:`ensure_subsets` (backward-compat —
-    older training scripts call this directly)."""
+def ensure_subset(subset: str = "mp20bat", *, accelerator_state=None) -> str:
+    """Single-subset wrapper around :func:`ensure_subsets`."""
     return ensure_subsets([subset], accelerator_state=accelerator_state)[subset]
 
 
-def _build_or_load_msid_to_triplet(shards_dir: Path, *, cache_path: Path,
-                                    is_main: bool, accelerator_state=None) -> dict[int, int]:
-    """Build (and JSON-cache under ``cache_path``) the saddle-row ``ms_id ->
-    triplet_id`` mapping for a MaterialsSaddles subset, where ``triplet_id`` is
-    the dataset-wide index (concatenated across shards in lexicographic order).
+def _triplets_in_file(path: str) -> int:
+    """Number of triplets in one ``.aselmdb`` (read from its LMDB ``nextid``; the
+    release has no deleted rows)."""
+    import lmdb
+    env = lmdb.open(path, subdir=False, readonly=True, lock=False, readahead=False, meminit=False)
+    try:
+        with env.begin() as t:
+            nextid = int(json.loads(zlib.decompress(t.get(b"nextid")).decode()))
+            if t.get(b"deleted_ids") is not None:
+                raise SystemExit(f"[data_prep] {path}: has deleted rows; not a release file")
+    finally:
+        env.close()
+    rows = nextid - 1
+    if rows % 3:
+        raise SystemExit(f"[data_prep] {path}: {rows} rows, not a multiple of 3")
+    return rows // 3
 
-    Each triplet's 3 rows have consecutive ms_ids; the saddle is the middle
-    one. We cache only the saddle ms_id since that's the unambiguous anchor.
-    """
-    if cache_path.is_file():
-        with cache_path.open() as f:
-            data = json.load(f)
-        return {int(k): int(v) for k, v in data["saddle_ms_to_triplet"].items()}
 
-    if is_main:
-        from ase.db import connect
-        shard_paths = sorted(shards_dir.glob("*.aselmdb"))
-        saddle_to_tid: dict[int, int] = {}
-        triplet_id = 0
-        # Fast path: ms_ids are perfectly consecutive within and across triplets
-        # in every shard (verified empirically May 2026 on mp20bat + lemat;
-        # README documents per-triplet consecutiveness, cross-triplet is implied
-        # by the row-order convention). So we only need the FIRST row's ms_id
-        # per shard + the row count; the saddle ms_id of triplet `i` in that
-        # shard is `first_ms_id + 3*i + 1`. This is ~5 orders of magnitude
-        # faster than the previous full-row walk (which JSON-decoded every
-        # atoms.info dict) on multi-GB lemat shards.
-        for shard_path in shard_paths:
-            db = connect(str(shard_path), type="aselmdb",
-                         readonly=True, use_lock_file=False)
-            row_count = db.count()
-            if row_count % 3 != 0:
-                raise SystemExit(
-                    f"[data_prep] {shard_path}: row count {row_count} is not a "
-                    f"multiple of 3 — file is corrupt or not a triplet shard."
-                )
-            n_shard_triplets = row_count // 3
-            first_row = next(db.select(limit=1))
-            first_ms_id = int(first_row.data["info"]["ms_id"])
-            for i in range(n_shard_triplets):
-                saddle_to_tid[first_ms_id + 3 * i + 1] = triplet_id + i
-            triplet_id += n_shard_triplets
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps({
-            "shards_dir": str(shards_dir),
-            "num_triplets": triplet_id,
-            "saddle_ms_to_triplet": {str(k): v for k, v in saddle_to_tid.items()},
-        }))
-        print(f"[data_prep] built {len(saddle_to_tid):,}-entry ms_id cache → {cache_path}")
-
-    if accelerator_state is not None:
-        accelerator_state.wait_for_everyone()
-
-    with cache_path.open() as f:
-        data = json.load(f)
-    return {int(k): int(v) for k, v in data["saddle_ms_to_triplet"].items()}
+def split_tids(subset: str, root: Path | None = None) -> dict[str, list[int]]:
+    """``{split: tids}`` for one subset, from the directory each file is in."""
+    _check_subset(subset)
+    files = subset_shards(subset, root)
+    out: dict[str, list[int]] = {sp: [] for sp in SPLITS}
+    t0 = 0
+    for f in files:
+        n = _triplets_in_file(f)
+        out[Path(f).parent.name].extend(range(t0, t0 + n))
+        t0 += n
+    for sp in SPLITS:
+        if len(out[sp]) != EXPECTED_TRIPLETS[subset][sp]:
+            raise SystemExit(f"[data_prep] {subset}/{sp}: {len(out[sp])} triplets on disk, "
+                             f"expected {EXPECTED_TRIPLETS[subset][sp]}")
+    return out
 
 
 def load_official_splits(subset: str = "mp20bat", *, accelerator_state=None
                          ) -> tuple[list[int], list[int], list[int]]:
-    """Return ``(train_tids, val_tids, test_tids)`` for the requested subset,
-    using the official ``splits/<subset>/{train,val,test}.parquet`` files
-    shipped with the HuggingFace dataset.
+    """``(train_tids, val_tids, test_tids)`` of one subset (see module docstring)."""
+    d = split_tids(subset)
+    print(f"[data_prep] {subset} splits: train={len(d['train']):,}  val={len(d['val']):,}  "
+          f"test={len(d['test']):,}")
+    return d["train"], d["val"], d["test"]
 
-    Triplet IDs are the index used by ``MaterialsSaddlesDataset`` (records
-    ``2*tid`` and ``2*tid+1`` are the R→S and P→S samples).
-    """
+
+def tid_to_saddle_msid(subset: str, root: Path | None = None):
+    """numpy array ``msid[tid]`` = the saddle ``ms_id`` of every tid of a subset,
+    from ``metadata/triplets.parquet``."""
+    import numpy as np
     import pyarrow.parquet as pq
-    root = materials_saddles_root()
-    shards_dir = root / subset
-    splits_dir = root / "splits" / subset
-    cache_path = root / f".msid_cache_{subset}.json"
-
-    is_main = (accelerator_state is None) or accelerator_state.is_main_process
-    saddle_to_tid = _build_or_load_msid_to_triplet(
-        shards_dir, cache_path=cache_path, is_main=is_main,
-        accelerator_state=accelerator_state,
-    )
-
-    out: dict[str, list[int]] = {}
-    for split in ("train", "val", "test"):
-        ms_ids = pq.read_table(str(splits_dir / f"{split}.parquet")).column("ms_id").to_pylist()
-        tids: set[int] = set()
-        unmatched = 0
-        for ms in ms_ids:
-            ms = int(ms)
-            # Each triplet's 3 ms_ids are consecutive (R = saddle-1, P = saddle+1).
-            # Use explicit `is not None` because triplet_id 0 is a valid value
-            # that would be swallowed by `or` short-circuiting.
-            tid = saddle_to_tid.get(ms)
-            if tid is None:
-                tid = saddle_to_tid.get(ms + 1)
-            if tid is None:
-                tid = saddle_to_tid.get(ms - 1)
-            if tid is not None:
-                tids.add(tid)
-            else:
-                unmatched += 1
-        if unmatched:
-            raise SystemExit(
-                f"[data_prep] {unmatched} ms_ids in {split}.parquet did not "
-                f"resolve to a triplet — the parquet and the local shards are "
-                f"out of sync. Wipe {root}/{subset} + {root}/splits/{subset} "
-                f"and re-run to refresh."
-            )
-        out[split] = sorted(tids)
-
-    print(f"[data_prep] official splits: train={len(out['train']):,}  "
-          f"val={len(out['val']):,}  test={len(out['test']):,}  "
-          f"(total {sum(len(v) for v in out.values()):,} triplets)")
-    return out["train"], out["val"], out["test"]
+    root = root or materials_saddles_root()
+    files = subset_shards(subset, root)
+    fidx = {os.path.relpath(f, root): i for i, f in enumerate(files)}
+    counts = np.array([_triplets_in_file(f) for f in files], np.int64)
+    cum = np.concatenate([[0], np.cumsum(counts)])
+    t = pq.read_table(str(root / "metadata" / "triplets.parquet"),
+                      columns=["saddle_ms_id", "file", "reactant_row_id"],
+                      filters=[("subset", "==", subset)]).to_pydict()
+    msid = np.full(int(cum[-1]), -1, np.int64)
+    fi = np.array([fidx[f] for f in t["file"]], np.int64)
+    row = np.asarray(t["reactant_row_id"], np.int64)
+    if ((row - 1) % 3).any():
+        raise SystemExit("[data_prep] metadata reactant_row_id not of the form 3k+1")
+    tid = cum[fi] + (row - 1) // 3
+    msid[tid] = np.asarray(t["saddle_ms_id"], np.int64)
+    if (msid < 0).any() or len(tid) != len(msid):
+        raise SystemExit(f"[data_prep] metadata/triplets.parquet does not cover every tid of {subset}")
+    return msid
 
 
 def load_local_triplet_splits(
     shards_dir, manifest_csv, *, accelerator_state=None,
 ) -> tuple[list[int], list[int], list[int]]:
-    """Split loader for a *local* triplet dataset (not on HuggingFace).
+    """Split loader for a *local* triplet dataset (not on Hugging Face).
 
-    Mirrors :func:`load_official_splits` but reads the split assignment from a
-    CSV manifest with columns ``triplet_index, ms_id_R, ..., split`` (the
-    ``dataset1_split_manifest.csv`` of the lemat-bulk family) instead of the HF
-    parquet files, and reads the shards directly from ``shards_dir`` (no
-    HF staging).
-
-    Returns ``(train_tids, val_tids, test_tids)`` where ``tid`` is the
-    positional triplet index used by ``MaterialsSaddlesDataset`` (records
-    ``2*tid`` / ``2*tid+1`` are the R→S / P→S samples).
-
-    The join is by the **reactant** ms_id (``ms_id_R``), the unambiguous anchor:
-    within each shard the R-row ms_ids are consecutive in steps of 3
-    (``first_ms_id + 3*j`` for local triplet ``j``; verified on the lemat-bulk
-    shards), so we build ``{ms_id_R: tid}`` from only ``db.count()`` + the first
-    row per shard — the same fast path as the HF loader, order-independent.
+    Reads the split assignment from a CSV manifest with columns ``ms_id_R`` and
+    ``split`` (the ``dataset1_split_manifest.csv`` of the lemat-bulk family) and
+    the shards directly from ``shards_dir``. Returns ``(train_tids, val_tids,
+    test_tids)`` as positional triplet indices over the sorted shards. Assumes each
+    shard's R-row ms_ids are ``first_ms_id + 3*j`` (true for those local shards —
+    NOT for the Hugging Face release, which uses :func:`load_official_splits`).
     """
     import csv
     from ase.db import connect
@@ -307,9 +240,7 @@ def load_local_triplet_splits(
         try:
             row_count = db.count()
             if row_count % 3 != 0:
-                raise SystemExit(
-                    f"[data_prep] {sp}: row count {row_count} not a multiple of 3."
-                )
+                raise SystemExit(f"[data_prep] {sp}: row count {row_count} not a multiple of 3.")
             n = row_count // 3
             first_ms = int(next(db.select(limit=1)).data["info"]["ms_id"])
         finally:
@@ -323,10 +254,8 @@ def load_local_triplet_splits(
     with open(manifest_csv) as f:
         reader = csv.DictReader(f)
         if "ms_id_R" not in reader.fieldnames or "split" not in reader.fieldnames:
-            raise SystemExit(
-                f"[data_prep] {manifest_csv}: expected columns 'ms_id_R' and "
-                f"'split', got {reader.fieldnames}."
-            )
+            raise SystemExit(f"[data_prep] {manifest_csv}: expected columns 'ms_id_R' and "
+                             f"'split', got {reader.fieldnames}.")
         for row in reader:
             t = msidR_to_tid.get(int(row["ms_id_R"]))
             if t is None:
@@ -346,36 +275,21 @@ def load_local_triplet_splits(
     return out["train"], out["val"], out["test"]
 
 
-# ----- CLI: run this file standalone to pre-stage data on a new machine -----
+# ----- CLI: run this file standalone to pre-stage / check data on a new machine -----
 
 def _cli():
     import argparse
-    p = argparse.ArgumentParser(
-        description="Idempotently stage MaterialsSaddles subsets under "
-                    "$SCRATCH/MaterialsSaddles. Pass --all to stage every "
-                    "subset (~640 GiB total, dominated by lemat 596 GiB), "
-                    "or --subset NAME for a single one. Re-running this is "
-                    "cheap — only files that are missing / changed upstream "
-                    "are re-downloaded.",
-    )
+    p = argparse.ArgumentParser(description="Stage MaterialsSaddles v2 subsets (idempotent) and "
+                                            "report their split sizes.")
     g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--subset", choices=sorted(EXPECTED_SHARDS),
-                   help="Stage one subset.")
-    g.add_argument("--all", action="store_true",
-                   help="Stage every subset listed in EXPECTED_SHARDS.")
-    p.add_argument("--max-workers", type=int, default=32,
-                   help="Per-file HF download concurrency. Default 32 is the "
-                        "sweet spot on NERSC; bump higher only if you have "
-                        "verified that the network rather than HF's "
-                        "concurrent-connection throttle is the bottleneck.")
+    g.add_argument("--subset", choices=sorted(EXPECTED_TRIPLETS))
+    g.add_argument("--all", action="store_true")
+    p.add_argument("--max-workers", type=int, default=32)
     args = p.parse_args()
-
     subsets = list(ALL_SUBSETS) if args.all else [args.subset]
-    staged = ensure_subsets(subsets, max_workers=args.max_workers)
-    print(f"[data_prep] staged: {list(staged)}")
-    for s, shards_dir in staged.items():
-        train, val, test = load_official_splits(s)
-        print(f"[data_prep] {s}: train={len(train):,}  val={len(val):,}  test={len(test):,}")
+    ensure_subsets(subsets, max_workers=args.max_workers)
+    for s in subsets:
+        load_official_splits(s)
 
 
 if __name__ == "__main__":
