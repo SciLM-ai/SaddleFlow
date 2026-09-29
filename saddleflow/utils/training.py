@@ -164,7 +164,7 @@ def train(
     # can be used in environments where the dependency is not installed.
     from datetime import timedelta
     from accelerate import Accelerator, InitProcessGroupKwargs
-    from accelerate.utils import set_seed
+    from accelerate.utils import DataLoaderConfiguration, set_seed
 
     set_seed(config.seed)
     # NCCL's default 10-min collective timeout is too tight on multi-node setups
@@ -181,10 +181,13 @@ def train(
     if os.environ.get("FIND_UNUSED_PARAMS") == "1":
         from accelerate.utils import DistributedDataParallelKwargs
         handlers.append(DistributedDataParallelKwargs(find_unused_parameters=True))
+    # Seedable sampler: epoch e is shuffled with seed (config.seed + e) whatever the RNG state, so a run
+    # resumed mid-epoch can reproduce that epoch's order and skip exactly the batches it already trained on.
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         kwargs_handlers=handlers,
         gradient_accumulation_steps=int(getattr(config, "grad_accum_steps", 1) or 1),
+        dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True, data_seed=config.seed),
     )
     out_dir = Path(config.output_dir)
     if accelerator.is_main_process:
@@ -324,7 +327,19 @@ def train(
         epoch_loss = 0.0
         epoch_n = 0
         _prev_t = None  # for per-step timing (reset each epoch; loses 1 sample/epoch boundary)
-        for batch in dataloader:
+        epoch_loader = dataloader
+        if config.resume_from and epoch == start_epoch:
+            # Continue the interrupted epoch: same shuffle (seedable sampler at this epoch), minus the batches
+            # already trained. global_step counts batches, so the offset into this epoch is exact.
+            n_skip = global_step - epoch * len(dataloader)
+            dataloader.iteration = epoch
+            if 0 < n_skip < len(dataloader):
+                epoch_loader = accelerator.skip_first_batches(dataloader, n_skip)
+                epoch_loader.iteration = epoch
+            if accelerator.is_main_process:
+                print(f"[train] resume: epoch {epoch}, skipping the first {max(n_skip, 0)} of "
+                      f"{len(dataloader)} batches (already trained)")
+        for batch in epoch_loader:
             _body_top = time.perf_counter()  # after the dataloader yielded this batch
             # Open the timing window exactly when warmup ends, after syncing so
             # no warm-up GPU work bleeds into the measured wall-clock, and reset
