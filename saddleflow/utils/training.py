@@ -251,7 +251,9 @@ def train(
                       f"{n_i:,} params  lr={lr_i:.2e}  wd={wd_i:g}")
     total_steps = max(1, config.num_epochs * len(dataloader))
     if config.max_steps > 0:
-        total_steps = config.max_steps
+        # The schedule counts scheduler ticks, and accelerate ticks once per rank per optimizer step
+        # (len(dataloader) above is the unsharded length for the same reason); max_steps counts optimizer steps.
+        total_steps = config.max_steps * accelerator.num_processes
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda s: _lr_lambda(s, config.warmup_steps, total_steps, config.min_lr_ratio),
