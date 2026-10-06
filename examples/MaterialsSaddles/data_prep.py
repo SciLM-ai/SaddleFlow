@@ -21,9 +21,8 @@ reading which directory each file is in — no ms_id lookup is involved. Use
 
 Location: ``$MATERIALSSADDLES_ROOT`` if set, else ``$SCRATCH/MaterialsSaddles_v2``.
 Source: ``$MATERIALSSADDLES_REPO`` (default ``SciLM/MaterialsSaddles``) at revision
-``$MATERIALSSADDLES_REVISION`` (default ``v2-dedup``, the branch holding v2 until it
-is merged to ``main``). The download runs only for files that are missing, only on
-the global main process; other ranks wait at a barrier.
+``$MATERIALSSADDLES_REVISION`` (default ``main``). The download runs only for files that
+are missing, only on the global main process; other ranks wait at a barrier.
 """
 
 from __future__ import annotations
@@ -35,14 +34,15 @@ from pathlib import Path
 from typing import Iterable
 
 REPO_ID = os.environ.get("MATERIALSSADDLES_REPO", "SciLM/MaterialsSaddles")
-REVISION = os.environ.get("MATERIALSSADDLES_REVISION", "v2-dedup")
+REVISION = os.environ.get("MATERIALSSADDLES_REVISION", "main")
 SPLITS: tuple[str, ...] = ("train", "val", "test")
 TRIPLETS_PER_FILE = 50_000
 
 # Triplet counts of the v2 release (verified against every file when it was written).
-# They pin the file lists and double as a completeness / consistency check.
+# They pin the file lists and double as a completeness / consistency check. lemat train excludes the 2 triplets
+# with broken forces that the release dropped (lemat_train_0213 and lemat_train_0479 hold 49,999 each).
 EXPECTED_TRIPLETS = {
-    "lemat":   {"train": 28_223_516, "val": 1_533_392, "test": 1_566_009},
+    "lemat":   {"train": 28_223_514, "val": 1_533_392, "test": 1_566_009},
     "oc20":    {"train": 2_133_114,  "val": 123_751,   "test": 110_853},
     "oc22":    {"train": 139_175,    "val": 6_557,     "test": 6_861},
     "mp20bat": {"train": 31_046,     "val": 1_454,     "test": 1_531},
