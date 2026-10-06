@@ -70,3 +70,6 @@ private/
 
 # NeurIPS rebuttal working directory (uploaded to OpenReview, not part of the package)
 rebuttal/
+
+# Personal / machine-specific Claude notes (research log, cluster paths); never commit
+CLAUDE.local.md

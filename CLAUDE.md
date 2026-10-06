@@ -1,491 +1,206 @@
 # CLAUDE.md
 
-## What is SaddleFlow
+Guide for anyone (person or coding agent) working on SaddleFlow. Machine- or person-specific notes (cluster paths,
+job logs, unpublished experiments) belong in an untracked `CLAUDE.local.md` next to this file; it is git-ignored and
+must never be committed.
 
-SaddleFlow is a PyTorch library for generating transition-state (saddle-point) structures for periodic materials, given a reactant–product pair `(R, P)`. The target use case is high-throughput reaction screening: many `(R, P)` pairs are cheap to enumerate but each NEB / Dimer search to find the saddle between them is expensive; SaddleFlow proposes the saddle structure directly from the pair.
+## What SaddleFlow is
 
-The ML method is **flow matching**. The velocity field is a three-stage module: Meta FAIR's pretrained **UMA** (`uma-s-1p2`) as the local-equivariant backbone, an optional light **invariant-weighted equivariant global self-attention** layer (`GlobalAttn`) for distant-site coordination, and a small `VelocityHead` that projects the per-atom features to per-atom velocity vectors. The head is conditioned on a per-atom Δ_partner = MIC(partner − x_t) at every flow step, so it has access to the partner-endpoint direction throughout integration.
+SaddleFlow generates transition-state (first-order saddle) structures for periodic materials by **flow matching**.
+The velocity field is Meta FAIR's pretrained **UMA** backbone (`uma-s-1p2` or `uma-m-1p1`) with an equivariant
+**time-FiLM** at selected backbone blocks (all of them in the paper model), an optional global-attention layer
+(`GlobalAttn`, off in every released recipe), and a small SO(3)-equivariant `VelocityHead` that outputs a per-atom
+velocity. Package import name `saddleflow`; written
+**SaddleFlow** in prose.
 
-## Production configuration (MP20Bat — what the paper covers)
+Two ways to use it:
 
-> **`v7_6_2a` is the *paper* model, not the best model.** A 2026-08 sweep beats it substantially — see "MP20Bat 2026-08 sweep" below. This section documents what the paper covers; keep it accurate for reproduction, don't retrofit later findings into it.
+- **Unconditional, single-ended (Dimer-like).** Only the reactant is known. Start from the reactant plus Gaussian noise
+  and flow to a nearby first-order saddle; the head never sees the product (`--delta-endpoint-channels 0`). This is
+  the model in the MaterialsSaddles paper (NeurIPS 2026, Evaluations & Datasets), trained in `examples/MaterialsSaddles`.
+- **Conditional, double-ended (NEB-like).** Both endpoints (R, P) are known. Start at their minimum-image midpoint and
+  give the head the per-atom displacement to each endpoint at every step (`--delta-endpoint-channels 32`). Recipe in
+  `examples/MP20Bat`.
 
-Production model: **`v7_6_2a`** (run `v7_6_2a_20260504_084512`, trained 2026-05-04 on 4 nodes × 3 A100 under the collaborator account `graeme` for queue throughput; invocation in `examples/MP20Bat/run.sh`). **Checkpoint recovered 2026-07-24** — durable copy: `/work/08405/ilgar/vista/SaddleFlow_mp20bat_paper/checkpoint_final/` (Stockyard, visible from all TACC machines; includes `model.safetensors`, `ema.pt`, optimizer state, the recorded `full_testset_K10`/`compare_K10_K50`/`sample_distance_eval` outputs with the paper parity PDFs, and `HANDOFF_v7.md` documenting the v7-line); working copy on Vista scratch at `/scratch/08405/ilgar/SaddleFlow_mp20bat_paper/checkpoint_final/` (purgeable). The original run tree with all per-epoch checkpoints and the v7_0–v7_6/`v7_6_2a_p010` siblings (~1.3 TB) remains on `/scratch/00405/graeme/SaddleFlow_mp20bat/` (Lonestar6 scratch — purge-at-risk; only `checkpoint_final` was salvaged). `v7_6_2a` is **not** the LiC-sweep v6 below; the v7-line extended v6 with force-FiLM, a frozen force backbone, an eigenmode aux head, a Dimer-style output residual, multi-layer feature stacks and endpoint feature injection. `v7_6_2a` simplified the v7-line back down — **keeps** what helped (full backbone unfreeze, 4-block time-FiLM, convergent v_target schedule `t_floor=0.1`, CoM-symmetric MSE, x_t perturbation σ=0.05) and **drops** the rest (force injection, frozen force backbone, eigenmode head, Dimer residual, endpoint features, multi-layer stacks, GlobalAttn).
+## Repository layout
 
-### Reproducing the test-set parity figures (the paper figures) — working recipe
+- `saddleflow/data/` — datasets (`TrajTripletDataset` for `.traj`, `AseDbSaddleDataset`, `MaterialsSaddlesDataset`
+  for the released ASE-LMDB shards), coordinate transforms (`wrap_positions`, `mic_displacement`).
+- `saddleflow/flow/` — `FlowMatchingConfig`, `FlowMatchingLoss`, start-distribution sampling, sampler.
+- `saddleflow/models/` — `TimeFiLMBackbone`, `VelocityHead`, `GlobalAttn`.
+- `saddleflow/utils/` — backbone loading, the `accelerate` training loop (`training.py`), EMA, evaluation helpers.
+- `examples/` — `MaterialsSaddles` (paper model, data download, evaluation), `MP20Bat` (conditional recipe),
+  `LiC` and `LiC_simpler` (small unconditioned examples with their own READMEs), `LematBulk`, `scaling_bench`.
+- `tests/` — `pytest tests`.
 
-`examples/MaterialsSaddles/eval_mp20bat_testset.sh` produces, for one checkpoint, the parity plots (`parity_all_atoms_log`, `parity_maxdisp_log`) + the four histograms + `results.npz`/`summary.json`:
+## The paper model (unconditional, all four MaterialsSaddles subsets)
+
+**Data.** `python examples/MaterialsSaddles/data_prep.py` downloads MaterialsSaddles from Hugging Face
+(`SciLM/MaterialsSaddles`) into `$MATERIALSSADDLES_ROOT` (default `$SCRATCH/MaterialsSaddles_v2`). The release is
+deduplicated and split 90/5/5 by element set into `<subset>/{train,val,test}/` directories; no chemical system
+appears in two splits.
+
+**Training command** (one epoch over all subsets with oc20 ×2 and oc22, mp20bat ×8 = 67.7 M records; 64 GH200 GPUs,
+8 records per GPU, global batch 512, ~132 k steps). Launch one process per GPU with the SPMD pattern of
+`examples/MaterialsSaddles/run.sh`:
 
 ```
-conda activate saddleflow                 # env with saddleflow + fairchem
-cd examples/MaterialsSaddles
-bash eval_mp20bat_testset.sh <CKPT_DIR> <OUT_DIR> [live|ema] [subset=mp20bat] [K=10] [NUM_CASES=0]
+python examples/MaterialsSaddles/train.py --all-subsets --output-dir <out> \
+  --subset-repeat oc22=8,mp20bat=8,oc20=2 --task-name-map oc22=oc20 \
+  --backbone uma-m-1p1 --mixed-precision no --grad-clip-norm 1.0 --batch-size 8 --num-epochs 1 \
+  --learning-rate 1e-3 --uma-lr 3e-3 --warmup-steps $((250 * WORLD_SIZE)) --ema-decay 0.9996 \
+  --loss-type huber --huber-delta 0.05 \
+  --delta-endpoint-channels 0 --path-start-prob 1.0 --path-noise-sigma 0.3 --path-u-power 2.0 \
+  --save-every-steps 2000 --val-every-steps 2000 --max-val-records 4000 \
+  --unfreeze-uma-all --early-time-film-blocks 0,1,2,3,4,5,6,7,8,9 --head-depth 3 --attn-layers 0 \
+  --com-symmetric-loss --xt-target-correction --xt-perturb-sigma 0.05 \
+  --no-inject-force --no-dimer-residual --no-frozen-force-backbone --no-endpoint-features --eigenmode-aux-weight 0
 ```
 
-It is **single-node `accelerate launch`** over the GPUs on the current node (`--num_processes = #GPUs on node`), then `replot_parity.py`. The 1737-case mp20bat test split is ~5 min on 4 A100s. Internally: `eval_full_testset_K10.py` (sample+score, writes histograms) → `replot_parity.py` (parity scatters). There is **no** dedicated eval-submit `.sh` besides this one — `run.sh` is training-only, and the paper figures were originally made by invoking the two Python scripts directly (README "Post-training analyses").
+**Why each choice.**
+- **Path starts** (`--path-start-prob 1`). Each sample starts on the line from an endpoint E (reactant or product) to its
+  saddle S plus noise: `x0 = E + u (S − E) + ε`, `ε ~ N(0, σ²)` on mobile atoms. Training only from `S + ε`
+  (transition-state denoising) fails for this task: in 3N dimensions an isotropic draw almost never points along the
+  reaction, so the model learns to undo noise and stays at the minimum.
+- **`u ~ U(0,1)²`** (`--path-u-power 2`) biases starts toward the endpoint, where inference begins.
+- **σ = 0.3 Å matches the inference noise.** Never deploy wider than the training σ (the model degrades sharply);
+  narrower is safe. Ship the training σ with the weights.
+- **x_t perturbation (0.05 Å)** is not redundant with the start noise: ε enters `x_t` scaled by `(1 − t)` and fades near
+  the saddle, where the model's own endpoints land off the line.
+- **Convergent target** (`--xt-target-correction`, `t_floor = 0.1`): `v = MIC(S − x_t)/(1 − t)` for `t ≤ 0.9`,
+  `S − x0` above (perturbation off there).
+- **Huber δ = 0.05** approximates the median of a multi-modal target where MSE averages the modes.
+- **Backbone LR 3e-3 on UMA-M** (1e-2, the UMA-S optimum, diverges on UMA-M); head/FiLM LR 1e-3.
+- **`--task-name-map oc22=oc20`**: `uma-m-1p1` has no `oc22` mixture-of-experts entry and raises `KeyError('oc22')`.
 
-**Other subsets (lemat / oc20 / oc22) — use a random subset, not first-N.** Their full test splits are 25k–4.7M cases. Pass `NUM_CASES` (6th arg) > 0 and the wrapper draws that many triplets **uniformly at random** (seeded) via `eval_full_testset_K10.py --random-sample`. This flag matters: the parquet splits are sorted by `ms_id`, so `--num-cases N` *without* `--random-sample` takes a biased contiguous low-id slice. 2000 random ≈ a few min/subset on 4 A100s and is representative. The cross-subset sweep used for the 2026-05-30 analysis:
+**Inference: ×5 K4.** Spend 20 network evaluations as five passes of four Euler steps, each pass restarting at `t = 0`
+from the previous endpoint, rather than one pass of 20 (×1 K20). A single pass stops short of the saddle; because the
+training starts span the whole endpoint–saddle line, the same model also knows how to refine its own endpoint.
 
 ```
-CKPT=$SCRATCH/SaddleFlow_MaterialsSaddles/runs/MaterialsSaddles_20260529_125142/checkpoint_final
-for s in lemat oc20 oc22; do
-  bash eval_mp20bat_testset.sh "$CKPT" \
-    $SCRATCH/SaddleFlow_MaterialsSaddles/eval_subsets_K10_NEWMODEL/$s live "$s" 10 2000
-done
+SF_NAPPLY=5 python examples/MaterialsSaddles/dump_throws_batched.py \
+  --data-glob "$MATERIALSSADDLES_ROOT/<subset>/*/<subset>_*.aselmdb" --subset <subset> --split test \
+  --ckpt <ckpt> --use-ema --task-name-map oc22=oc20 --sides 0 --sigma 0.3 --K 4 --seed 0 --tag ev --outdir <dir>
 ```
 
-**Gotchas (these cost real time on 2026-05-30):**
-- **Don't multi-node `srun` this.** A 1737-case eval needs one node. Inside an `salloc` that defaulted to 1 task/node (`SLURM_NTASKS=4` for `-N 4`), `srun --ntasks=16 --ntasks-per-node=4` fails with *"More processors requested than permitted"* / *"Insufficient GRES available in allocation"* — the alloc can't subdivide 4 GPUs/node across 4 tasks. `accelerate launch` on one node sidesteps it. (Only if you genuinely need a multi-node step: request `salloc … --ntasks-per-node=4 --gpus-per-node=4`.)
-- **Live vs EMA.** `checkpoint_final/` has both `model.safetensors` (live) and `ema.pt` (EMA shadow). The eval defaults to **live**; pass `ema` (→ `--use-ema`) for the shadow.
-- **Env:** `FAIRCHEM_CACHE_DIR=$SCRATCH/fairchem_cache` (cached UMA-S-1.2) so ranks don't re-download.
-- **Sanity check:** `rmsd_base_all_mean` in `summary.json` is the model-independent `(R+P)/2` baseline — two runs on the same subset/seed that don't report the **identical** baseline are not comparing the same test set.
+Then converge every endpoint with Sella (see Evaluation) and collect with `sm_collect.py`.
 
-**Full-dataset model on the mp20bat test set (2026-05-30; K=10, seed=0, N=1737, baseline `(R+P)/2` mean 0.327 Å).** Model `runs/MaterialsSaddles_20260529_125142/checkpoint_final` (trained on the full MaterialsSaddles dataset): RMSD mean **0.276 Å** / median **0.144 Å**, 79.5 % beat the midpoint baseline, 59.9 % under 0.20 Å (live; EMA ≈ identical: mean 0.277, 80.7 % beat baseline). Figures in `$SCRATCH/SaddleFlow_MaterialsSaddles/eval_mp20bat_test_K10_NEWMODEL/{live,ema}/`. The apples-to-apples paper-side numbers are now on hand (checkpoint + its `full_testset_K10/summary.json` recovered 2026-07-24; same test set — baseline matches at 0.32668 Å): **v7_6_2a specialist RMSD mean 0.2495 Å / median 0.1125 Å, 82.4 % beat the midpoint baseline, 46.7 % < 0.10 Å, 64.5 % < 0.20 Å, maxd median 0.366 Å** (K=10, seed=0, live). The specialist beats the full-data generalist on every mp20bat metric.
+## The conditional recipe (`examples/MP20Bat`)
 
-**Cross-subset sweep, same model (2026-05-30; K=10, seed=0, live; lemat/oc20/oc22 = 2000 random cases, mp20bat = full 1737).** Figures under `$SCRATCH/SaddleFlow_MaterialsSaddles/eval_subsets_K10_NEWMODEL/{lemat,oc20,oc22}/` (+ mp20bat dir above).
-
-| subset | train share | RMSD med | baseline med | beat baseline | RMSD mean | maxd med |
-|---|---|---|---|---|---|---|
-| lemat | 91.8 % | 0.168 | 0.221 | 71.0 % | 0.234 | 0.512 |
-| oc20 | 7.6 % | 0.093 | 0.121 | 71.0 % | 0.128 | 0.516 |
-| oc22 | 0.49 % | 0.102 | 0.108 | **51.1 %** | 0.153 | 0.664 |
-| mp20bat | 0.10 % | 0.144 | 0.224 | 79.5 % | 0.276 | 0.497 |
-
-**Reading the table (compare *parity gap* model-vs-its-own-baseline, not absolute RMSD).** The model adds the least value exactly where it saw the least data: oc22 (0.49 % of training) barely beats the `(R+P)/2` midpoint (51 % — a coin flip), while lemat/oc20/mp20bat improve on the midpoint by 23–36 %. lemat's *absolute* RMSD (0.168) is higher than oc20/oc22 (~0.09–0.10) **not** because it's worse-learned but because lemat reactions are physically larger — ⟨‖Δ‖⟩ = 2.41 Å (lemat) vs 1.95/1.86 (oc20/oc22) per `dataset_stats.json`; its baseline is correspondingly higher (0.221). mp20bat punches above its 0.10 % share (79.5 % beat-baseline) via chemistry transfer from lemat's MP/Alexandria oxides. Caveat (corrected 2026-07-24 against the recovered paper `summary.json`): "more data" did **not** help mp20bat at all — the full-data generalist regressed vs the mp20bat-only specialist on **both** RMSD (mean 0.276 vs 0.2495, median 0.144 vs 0.1125) and maxd (median 0.497 vs 0.366) — a specialist→generalist trade across the board on this subset. A short low-LR fine-tune on mp20bat is the expected fix.
-
-**Paper guidance.** Describe only "Used in production" below — clean, exactly what was trained. Skip the off-by-default switches; the "Mode 1 architecture sweep" table and "What was tried" sections are internal research history that motivated the design. For the experiments section, read `examples/MP20Bat/` — `README.md` documents the on-disk layout, `run.sh` has the exact hyperparameters, the `*.py` scripts are the eval pipeline, and numbers / figures live under `<RUN>/checkpoint_final/`.
-
-### Used in production
-
-- **Data.** MaterialsSaddles `mp20bat` subset (~34,742 NEB-CI saddles from MP battery structures, ~69,484 records after R↔P doubling). Official HuggingFace train/val/test parquet splits.
-- **Backbone.** UMA-S-1.2 (`uma-s-1p2`), all 4 MP blocks unfrozen at LR `1e-4` via a discriminative parameter group (head/attn/FiLM group runs at `1e-3`).
-- **Time conditioning.** Equivariant time-FiLM at every backbone block (`--early-time-film-blocks 0,1,2,3`): per-channel additive bias on `l=0`, multiplicative `(1+γ)` on `l≥1`; final FiLM-MLP layer zero-init.
-- **Velocity head.** `VelocityHead(depth=3, delta_endpoint_channels=32)`. Per-atom Δ_partner is a single-channel irrep (`l=0=‖Δ‖, l=1=Δ`), expanded to 32 channels by zero-initialised `SO3_Linear`, concatenated with UMA features, mixed by `delta_fuse`. Both `delta_R` and `delta_P` are passed simultaneously (stacked as `(N, 2, 3)`) so the head sees both endpoints relative to `x_t`.
-- **Loss / sampling shape.** `mode=1` (product-conditional, `x_0 = (R+P)/2`); `--xt-perturb-sigma 0.05 Å` (mobile atoms only); `--xt-target-correction` with `t_floor=0.1` (for `t ≤ 1−t_floor` target is convergent `MIC(saddle − x_t)/(1−t)`; for `t > 1−t_floor` perturbation drops and target reverts to `saddle − midpoint`); `--com-symmetric-loss` (strip per-system CoM from both `v_pred` and `v_target` before MSE; skipped on systems with FixAtoms).
-- **Optimizer.** AdamW. Head/attn/FiLM LR `1e-3`, UMA-blocks LR `1e-4`. Cosine schedule, 1000 warmup steps, grad clip `1.0`. bf16 mixed precision. EMA decay `0.9995`.
-- **Hardware / batch.** 4 nodes × 3 A100s = 12 GPUs. Per-process batch 16 → global batch 192. 60 epochs (≈ 21,700 optimizer steps). Per-epoch checkpoints, EMA shadow saved alongside.
-
-### Available in code but OFF in production
-
-These flags exist in `train.py --help` and the corresponding modules are present in `saddleflow/`, but the production run explicitly disables them. **Ablation infrastructure, not method components — exclude from the paper's method description.**
-
-| CLI flag (production setting) | What it would do |
-|---|---|
-| `--no-inject-force` | Feed UMA's `F = −∂E/∂x` (autograd through the energy block) to the head as an l=1 input. Marginal LiC win; did not transfer to MP20Bat. |
-| `--no-frozen-force-backbone` | Use a separate frozen UMA copy for force computation (decouples force quality from trainable-backbone drift). Only meaningful with force injection. |
-| `--no-endpoint-features` | Static UMA forwards on R and P separately, concatenated into the head as fixed conditioning (+2× backbone forwards per step). |
-| `--no-dimer-residual` | Output-side nudge `v_out = v_raw + α · F_dimer` with learnable per-atom α MLP. Requires force injection + eigenmode head. |
-| `--eigenmode-aux-weight 0` | Auxiliary `EigenmodeHead` (sign-invariant cos² loss against the ground-truth saddle eigenmode); used to compute `F_dimer = F − 2(F·ê)ê` for the Dimer residual. |
-| `--attn-layers 0` | `GlobalAttn` global self-attention. No-op on these datasets (UMA's 4-hop MP already crosses the cell). |
-| `--multi-layer-xt ""` / `--multi-layer-endpoint ""` | Concatenate features from multiple backbone blocks before the head (separately for `x_t` and for the R/P endpoint forwards). |
-| `--force-film False` | Per-injection-point force-FiLM inside the unfrozen UMA blocks (alongside time-FiLM). |
-| `--force-residual False` | Older Dimer-residual variant using only F (no eigenmode); α drifts to zero. |
-
-### One-line summary for the paper
-
-The production architecture is **UMA-S-1.2 with all four backbone blocks unfrozen at low LR + per-block equivariant time-FiLM + a depth-3 equivariant `VelocityHead` that takes a per-atom (Δ_R, Δ_P) partner-displacement signal**. Training uses **straight-line product-conditional flow matching with midpoint anchoring (x_0 = (R+P)/2), a small Gaussian perturbation on `x_t`, a PBC-correct convergent velocity-target schedule, and a CoM-symmetric MSE loss**. Nothing else listed in `train.py --help` is part of the released method.
-
-## MP20Bat 2026-08 sweep — what beats the paper recipe
-
-~40 runs at 60 epochs, fixed global batch, scored by the Sella protocol below. **The paper recipe `v7_6_2a` is no longer the best model.**
-
-**Scoring policy — match the reference to the model class.** An *unconditional* model (`--delta-endpoint-channels 0`) never sees R or P; it flows from whatever structure it is given to the nearest saddle. Score it against **the saddle Sella reaches from its own prediction**, never against the stored label — a label it had no information to select is not a target it can be held to. A *conditional* model (`--delta-endpoint-channels 32`, per-atom Δ_R/Δ_P at every step) is asked to recover the specific saddle connecting a given (R, P); score it against **the dataset label**. The NEAREST column exists only to compare the two families on one axis and is optimistic by construction (per-case min).
-
-**Best: `CASC_refiner`, a two-stage unconditional cascade.** Stage 1 = unconditioned midpoint→saddle (`--delta-endpoint-channels 0`, head-depth 3, uma-lr 1e-2, Huber). Stage 2 = a *refiner*, `--init-weights` from stage 1 plus `--start-override` on stage 1's own predictions over the training set, so its input distribution equals what it meets at test time. Inference: integrate stage 1 from the midpoint (K=10), then stage 2 from stage 1's output.
-
-**Which labels each model trained on — don't confuse the two relabelings.** Every `R*`/`S*`/`T*`/cascade run used `--saddle-override reconv_saddles.npz` = **32,540 Dimer-reconverged** saddles (below). **Only the `SEL*` runs used `sella_targets.npz`** = 25,942 Sella targets. So `CASC_refiner` is trained on *Dimer-reconverged* labels, **not** Sella ones — the two are different objects (see "Two relabelings" below). The controlled old-vs-new-label test is X2 vs R2 (identical recipe): no significant difference, so relabeling is not what makes the cascade work.
-
-| model | vs DATASET maxd med | vs SELLA maxd med | NEAREST maxd med | Sella fcalls | conv% |
-|---|---|---|---|---|---|
-| SELCASC (SEL1 + refiner — ties CASC_refiner, see below) | 0.311 | 0.140 | 0.109 | 53 | 96% |
-| **CASC_refiner** | 0.318 | 0.146 | **0.121** | **57** | 97% |
-| S2_selfcond (`--self-cond-prob`, one model) | 0.270 | 0.200 | 0.148 | 75 | 95% |
-| X2 (conditioned, Huber, uma-lr 1e-2) | **0.219** | 0.305 | 0.152 | 88 | 95% |
-| R15 (cascade stage 1 alone) | 0.299 | 0.209 | 0.159 | 79 | 97% |
-| R1 (paper recipe, reconverged labels) | 0.364 | 0.518 | 0.289 | 128 | 93% |
-| midpoint baseline | 0.689 | 0.842 | 0.618 | 202 | 92% |
-
-**Judge each model by its own criterion**: conditioned models win against the *dataset* saddle (they were trained to hit that specific one); unconditioned/cascade models win against the *Sella* saddle (they flow to the nearest saddle, whichever it is). NEAREST takes a per-case min and is optimistic by construction. Full 27-model table: `TABLE_BIG.txt` (see Artifacts).
-
-**Levers that work.**
-- **Huber loss** (`--loss-type huber --huber-delta 0.05`) — the single biggest win: vs the paper recipe maxd median −48%, rmsd median −41%. MSE fits the *mean* of a multi-modal saddle posterior; Huber approximates the median. Applies to conditioned models; for unconditioned it is a wash.
-- **UMA backbone LR**, monotone 1e-4 → 3e-4 → 1e-3 → 3e-3 → 1e-2. The paper's 1e-4 is far too low — it also cannot absorb relabeled data (moves only 12% toward new targets vs 30–42% at 3e-3+).
-- **Refiner / self-conditioning** — training on the model's *own* output distribution. Measured mechanism: the correction is only 0.029 Å against a 0.160 Å error (cosine +0.22, improves 58% of cases), so it mostly moves structures into **cleaner basins** (93% index-1, fewest force calls) rather than reducing error. Stacking decays fast: stage 3 gave 18% of what stage 2 gave.
-- **Sella-verified targets** — retarget training on saddles Sella actually reaches from stage-1 predictions. Ran Sella on **29,281 stage-1 (R15) predictions over the TRAIN split** — not on the dataset labels, and not on the whole dataset — keeping only `conv and nneg == 1`: **25,958 kept (88.7%)**. Median 0.015 Å from the dataset label but **16% are a different saddle**. NEAREST maxd med 0.165 → 0.148 (~10%, against a ~0.013 Å noise floor). Does not beat the cascade, and **stacking the two is a tie** — see below.
-
-**SETTLED 2026-08-25 — the cascade and Sella-retargeting are SUBSTITUTES, not complements.** `SELCASC` combines both: stage 1 = SEL1 (Sella targets), stage 2 = a refiner on SEL1's own predictions, re-anchored (Sella re-run from SEL1's 31,268 train outputs → 25,018 verified index-1 targets). It tops the table nominally (NEAREST maxd med 0.109 vs CASC_refiner's 0.118, 53 vs 57 force calls) but **the difference is noise**: paired Wilcoxon on 252 common cases gives SELCASC better in **52–54%** of cases, **p = 0.16–0.76 on every metric** (maxd and rmsd, against all three references), and Sella steps 11 vs 12, p = 0.21. Stacking the two mechanisms returns nothing over either alone. **`CASC_refiner` remains the recommendation** — one relabeling instead of two and no second Sella pass. Reproduce SELCASC with `--init-weights <SEL1> --start-override <SEL1 train preds> --saddle-override sella_targets_v2.npz`. Corollary: the earlier "+10% for SEL1 over R15" was never significance-tested and should be read as suggestive only.
-
-**Why they don't compose (the useful lesson).** Both work by the *same* mechanism — aligning the training signal with where the model actually goes — just at different ends. The refiner moves the *start* onto the model's own output distribution; retargeting moves the *target* onto the saddle reachable from there. Once either has removed that mismatch, the other has nothing left to remove. This also explains the earlier observation that a third cascade stage returned only 18% of what stage 2 gave: the gain saturates because there is one error source, not two. **Do not re-test combinations of these two.** Escaping the remaining ~0.11 Å requires a different axis entirely — a model that emits a distribution plus a selector, or curvature/force terms in the objective.
-
-**Two relabelings — different anchors, different meanings.**
-| | `reconv_saddles.npz` | `sella_targets.npz` |
-|---|---|---|
-| started from | the **stored label** | the **model's prediction** |
-| optimiser | SaddleMill Dimer, fmax 0.005 | Sella, fmax 0.01, `--check-index` |
-| ran on | all 34,742 labels | 29,281 stage-1 predictions (train split only) |
-| kept | 32,540 (93.7%, = the 94% convergence) | 25,958 (88.7%, index-1 only) |
-| answers | "where does this label really settle?" | "what saddle is actually *reachable* from where the model goes?" |
-| effect | none in any paired test | +10% for an unconditional stage 1 |
-
-The first is still label-anchored, so it swaps one arbitrary target for another; ~16–30% land on a saddle that no longer connects the original (R, P), and which one is unpredictable from the inputs. The second removes the *unlearnable* part of the target: a deterministic regressor facing several equally-plausible saddles averages them (the conditional-mean ceiling), and retargeting to the reachable one collapses that multi-modality per case. **Caveat: this is self-training.** The index-1 check stops drift onto non-saddles, but nothing stops drift toward saddles that are merely *easy for the model to reach*. Legitimate for the "nearest saddle from any start" goal; for the paper's (R,P)-specific claim it quietly redefines the task.
-
-**Confirmed nulls — do not re-test.** Head depth 3/5/8 · epochs past ~15–20 (saturates) · K = 10→100 Euler steps (0.1686 → 0.1672, so the residual error is *not* integration error) · explicit maxd loss term (`--maxd-weight`, actively hurt) · TS-denoise σ over 0.19–0.75, and uniform/adaptive σ are *worse* than fixed · fp32 vs bf16 on MP20Bat (p=0.44; matters only on exact-symmetry cells — see latent-bug log) · reconverged labels (below).
-
-**Label quality.** ~31% of mp20bat saddle labels are **not first-order** (index ≥ 2 at λ₂ < −1e-2 eV/Å²; see the criterion box below — the figure is cutoff-sensitive) and reconverge to different, lower saddles; the rest slide ~0.14 Å along ultra-soft modes (|λ₂| ~ 1e-4 eV/Å²). So RMSD against a single stored saddle is intrinsically ambiguous at the ~0.1–0.3 Å level — the scale at which we rank models. Energy confirms the split: dE on reconvergence is < −0.1 eV in 30% of cases, matching the 33% that were index ≥ 2.
-
-**How the reconvergence was done** (repeatable): SaddleMill in a clean run dir (`config.ini`, `run.sh`, `data/` only), `method = Dimer`, `reaction_types = initial_guess`, `fmax = 0.005`, `steps = 500`, `delocalization_threshold = 0.99`, `max_num_rot = 50`, `f_rot_min = 0.01`, UMA-s-1p2 / omat, `jobs_per_gpu = 6` via MPS, launched `srun --jobid=$J --overlap -N n -n n flux start python -m saddlemill`. Every frame of every `*.traj` under `dir_path` becomes one job and `orig_info` carries your `atoms.info` keys through to the output. **The load-bearing trick: seed each Dimer with the eigenmode already stored in `atoms.info['eigenmode']`** instead of a random initial direction — throughput ×2 and convergence 76% → 94%, because the rotation phase starts already aligned with the unstable mode. Result: index ≥ 2 falls **31% → 10% dataset-wide** (3% among structures that actually reconverge — see the population caveat below); labels move a median 0.062 Å (seeded) / 0.14 Å (unseeded).
-
-> **State the index criterion or the number is meaningless.** Measured on **n = 240 paired** (label, reconverged) structures — *not* dataset-wide — both sides on the same tids, over labels whose reconvergence converged. Method: finite-difference Lanczos on the **raw, non-mass-weighted** Hessian `H = −∂F/∂x` (eV/Å²) via `scipy eigsh`, `which='SA'`, **eps = 2e-3 Å, nev = 4**, `maxiter=300`, `tol=1e-3`, UMA-S-1.2 / omat. **The 3 acoustic translations are NOT projected out**, so for a clean index-1 saddle 3 of the 4 computed eigenvalues *are* translations, sitting at ±1e-5–1e-4 with ~half numerically negative. Consequence: **the index is wildly cutoff-dependent below ~1e-3** — idx ≥ 2 for the stored labels reads 84% at −1e-4, 41% at −1e-3, 33% at −3e-3, 31% at −1e-2, 22% at −1e-1. Quote the robust form: **λ₂ < −1e-2 eV/Å²**, which is stable across −1e-2/−3e-2/−1e-1 (31/28/22% → 3.3/2.5/1.2%). Earlier text said "33% → 2% (98% index-1)"; that was an unrecorded ad-hoc cutoff of ≈ −3e-3. The qualitative claim (about a third of labels are not first-order; reconvergence fixes nearly all) is robust — the exact percentages are not. Raw eigenvalues for all 240: `curvature_raw/index_eigenvalues.npz` + `ce_*.json` (see Artifacts).
->
-> **Population caveat — quote the blended number, not 3%.** The 3% is conditioned on the Dimer converging. It excludes **21.4%** of the sample (of 800 outcomes: 144 `not_converged`, 12 `not_converged_StopRun`, 9 `converged_to_desorption`, 6 `not_converged_after_extension`; 629 tids kept, 171 dropped). Those 171 stay in the released dataset with their **original** labels, which measure **35.5%** index ≥ 2 at λ₂ < −1e-2 (n=166, `curvature_raw/ex_*.json`). Weighting properly, the dataset-level rate after reconvergence is **31.2% → 10.2%** (8.1% at −3e-2, 4.6% at −1e-1) — an independent reimplementation measured 10.5% over its whole sample, so the two agree once the conditioning is matched. **Also: never take Dimer output regardless of status.** For the non-converged set the final Dimer geometry is *worse* than the label it started from — 35.5% → **46.7%** index ≥ 2 — so filtering on convergence is a correctness requirement, not bookkeeping. Note `reconv_saddles.npz` contains **no** eigenvalues, only positions. Beware: `curvature.py` uses −1e-3 and `sella_eval.py` uses −1e-2 — three different cutoffs have been used across scripts. Tightening 0.01 → 0.005 changes that only 0.127 → 0.137 Å — the motion never stabilizes, because those soft directions are energetically free. Despite all of which the new labels **never helped in any paired test**.
-
-**The ceiling is the formulation, not the fit.** The model cannot fit its own training set (train mean 0.218 vs midpoint baseline 0.294) and more training does not help — underfitting a multi-modal target with a conditional mean. An oracle best-of-16 reaches 93.7% beat-baseline vs 82.4% single-shot. Escaping this needs a model that emits a *distribution* plus a selector, or curvature/force terms in the objective — not more capacity.
-
-### Evaluation — use Sella, never Dimer
-
-**Scoring a prediction by RMSD to the stored label conflates "is this near a saddle" with "is it near *that* saddle".** Run a saddle optimiser from the prediction and measure how far it moved.
-
-**Dimer wandering invalidated every Dimer-scored result before 2026-08-04.** ASE Dimer walked to a *different* saddle in ~8% of cases: in the tail decile the prediction sits 0.17 Å from the label but **2.21 Å from where Dimer ended**; Spearman(distance, force calls) = +0.81; the tail costs 1425 vs 329 calls. That produced the immovable maxd means (~1.08 Å across 20+ models) and the bogus "geometric accuracy anti-correlates with convergence" pattern — measurement error, not model error.
-
-**Sella (P-RFO) is the oracle.** Same structures: **44 vs 384 force calls (9×), 100% vs 77% converged, 0% vs 8% wandering, 93% verified index-1** (finite-difference Lanczos). Sanity check: from an already-converged saddle it takes **0 steps, moves 0.0000 Å**. It never builds a Hessian — TS-BFGS updates from gradient differences + iterative diagonalization, so cost scales like an optimizer, not like a Hessian.
-
-Pipeline: `dump_predictions.py` (integrate the flow, one traj per shard; `--ckpt A --ckpt2 B` runs the cascade) → `sella_eval.py --check-index` (optimise + verify index-1) → filter to `nneg == 1`. **Eval convergence is `fmax = 0.01` eV/Å** (`--fmax`, `order=1`, `delta0=0.1`, ≤300 steps); index verification counts eigenvalues < −1e-2. Note the deliberate asymmetry: *relabeling* used a tighter 0.005 (a label is written once and reused), *scoring* uses 0.01 (run 27 × 300 times, and 0.01 already gives 93% verified index-1). Both in `examples/MaterialsSaddles/`. Sella is the `eval` extra: `CC=gcc CXX=g++ pip install 'saddleflow[eval]'` (default `nvc` rejects `-fno-strict-overflow`).
-
-### CLI flags added by this sweep
-
-`--loss-type {mse,huber} --huber-delta` · `--maxd-weight` (null) · `--saddle-override <npz>` (swap in reconverged saddles) · `--start-override <npz>` (x₀ := stage-1 predictions → trains a refiner) · `--init-weights <ckpt>` (weights only, fresh optimizer/schedule) · `--self-cond-prob` (x₀ := the model's own one-shot prediction) · `--mixed-start-prob`. All no-ops at defaults; all recorded in the checkpoint's `config.json` `extras`.
-
-### Artifacts
-
-`/work/08405/ilgar/vista/saddleflow_2026-08-04/` (Stockyard, durable): `TABLE_BIG.txt` (27 models × 3 references), `TABLE_SELLATGT.txt`, `FINAL_TABLE.txt` (the superseded Dimer table — kept only as the record of the wandering artefact), `reconv_saddles.npz`, `sella_targets.npz`, `curvature_raw/` (the 240 paired Hessian spectra behind the index claim, + the generator script), and `checkpoints/` with six curated models (live + EMA weights, no optimizer state; `<model>/config.json` + `<model>/checkpoint_final/`). Everything else from the sweep was on purgeable scratch.
+UMA-S-1.2 with all four blocks unfrozen (LR 1e-4) and time-FiLM at every block; `VelocityHead(depth=3,
+delta_endpoint_channels=32)` fed `(Δ_R, Δ_P) = MIC(R − x_t), MIC(P − x_t)` stacked as `(N, 2, 3)`; `x0 = (R + P)/2`
+(minimum-image midpoint); x_t perturbation 0.05 Å with the convergent target; CoM-symmetric loss. `run.sh` holds the
+exact hyperparameters. Later work found Huber loss and a much higher backbone LR (3e-3 to 1e-2) clearly better for
+this recipe. Score conditional models against the dataset label (they are asked for that specific saddle).
 
 ## Architecture
 
-### Backbone — fairchem UMA (`uma-s-1p2`)
+**Backbone (UMA).** Loaded by `saddleflow.utils.load_uma_backbone`; only `.backbone` is used, the energy/force heads are
+discarded. UMA-S-1.2: 4 blocks, lmax 2, 128 channels, embedding `(N, 9, 128)`. UMA-M-1.1: 10 blocks, lmax 4,
+128 channels, embedding `(N, 25, 128)`, 1.4 B parameters. With a 6 Å cutoff, even the 4 UMA-S blocks reach ~24 Å,
+beyond most released cells; this is why `GlobalAttn` stays off. Mixture-of-experts routing comes from each record's
+`task_name` (`omat`, `oc20`, `oc22`, ...) via `csd_embedding(charge, spin, task)`; `charge`/`spin` default to 0.
 
-Pretrained SO(3)-equivariant eSCN-MD. Loaded via `fairchem.core.calculate.pretrained_mlip.get_predict_unit("uma-s-1p2", ...)`; we consume `.module.backbone` directly and discard `.module.output_heads` (replaced by `GlobalAttn → VelocityHead`). UMA-S-1.2 is the small variant `K4L2` (`sphere_channels=128, lmax=2, num_layers=4`, cutoff `6.0 Å`, `max_neighbors=300` non-strict). Returns `node_embedding: (N, 9, 128)`. bf16. 6.6M active params / 290M total when all 32 MoE experts are merged.
+**Time-FiLM.** A zero-initialised equivariant FiLM is hooked before each selected block (`TimeFiLMBackbone`) and in the
+head: an additive bias on `l = 0` channels and a `(1 + γ)` gate on `l ≥ 1` channels, both functions of `t` only, so
+equivariance is exact. The bias alone would never reach `l ≥ 1` outputs (`SO3_Linear` keeps the `l` paths separate);
+the gate is what lets time act on the vector channels. At init the wrapped model equals UMA bit for bit.
 
-**Receptive field:** 4 MP layers × 6 Å ≈ 24 Å — larger than the LiC cell (17 × 20 Å) and most mp20bat cells, so UMA alone crosses the cell on these datasets. Larger future cells may need explicit global mixing.
+**VelocityHead.** Built from UMA's `SO3_Linear` (not e3nn's `o3.Linear`; the two tensor layouts are not
+interchangeable) with `depth − 1` blocks of `SO3_Linear → UMAGate` before the `l = 1` readout. Optional zero-initialised
+inputs (endpoint displacements, forces) leave it identical to a plain force head when off.
 
-**MoE routing.** Routed by `data.dataset` (alias `task_name` ∈ `{omat, oc20, oc22, oc25, omol, odac, omc}`, full set used) via `csd_embedding(charge, spin, dataset)` → per-expert MOLE coefficients. `charge`/`spin` mandatory (defaults 0, 0; `spin` only used by `omol`). Homogeneous-`task_name` batches amortise the coefficient-set step. Production unfreezes all 4 blocks at LR 1e-4 (`--unfreeze-uma-all`); see LiC sweep below for partial-unfreeze history.
-
-### Global attention — `GlobalAttn`
-
-Optional invariant-weighted equivariant self-attention layer between UMA and the head. **Disabled in production** (`--attn-layers 0`): UMA's 4-hop MP already reaches ~24 Å, larger than any cell in the released datasets. Original motivation was distant-site mediation; empirically verified 2026-04-21 on the LiC checkpoint that it doesn't earn its keep here — Li's attention over the 126 C atoms is near-uniform (std ≈ 1% of mean), barely depends on Li position (self-attention 32.2–32.9% across ±1 Å), so it contributes a roughly position-independent offset rather than mode disambiguation. Kept available for >24 Å cells; a distance-sparse variant (attend within 2× UMA cutoff) is the natural optimisation at 200+ atoms.
-
-**Architecture (when enabled):** weights from `l=0` invariants only (`Q,K = nn.Linear(x_l0)`, `attn = softmax(QK^T/√d)` is SO(3)-invariant); values `V = SO3_Linear(x_full_irreps)` keep equivariance; output `Σ_j attn_{ij}·V_j` is a scalar-weighted sum of equivariant vectors. Default 1 layer (1–4 configurable). Additive residual, no norm. Inter-system masking via `batch_idx`. O(N²) per forward; fine at N ≲ 200.
-
-### Head — `VelocityHead`
-
-Implementation in `saddleflow/models/velocity_head.py`. Mirrors fairchem's `Linear_Force_Head` at `depth=1` + time-FiLM, with optional zero-init conditioning paths (Δ_partner injection, force injection, output-side force-residual) so the head is bit-for-bit a plain force-head when those switches are off. Production: `depth=3`, Δ_partner on, force / force-residual off.
-
-**Implementation note.** Uses UMA's `SO3_Linear` (independent per-l weights, bias on `l=0` only) instead of e3nn's `o3.Linear` to avoid `(N, (lmax+1)², C) ↔ (N, Irreps.dim)` layout conversion at every module boundary. `UMAGate` (for `depth ≥ 2`) is `e3nn.nn.Gate` rewritten in UMA's layout: SiLU on `l=0`, sigmoid(linear(`l=0`)) as a multiplicative gate on `l≥1`.
-
-**Time conditioning — FiLM / AdaLN-zero style.** A sinusoidal embedding of `t ∈ [0,1]` goes through a small MLP outputting `2C` features: a per-channel scalar bias added to `l=0` channels, and a per-channel `(1+γ)` factor multiplying `l≥1` channels. Final MLP layer is zero-initialised so at init `bias=0, γ=0 ⇒ (1+γ)=1` and the head is numerically identical to `Linear_Force_Head`. Hyperparameters: `time_embed_dim=64`, `time_mlp_hidden=128`.
-
-**Why time FiLM is equivariant.** Both `t_bias` and `t_gate` come from `sinusoidal(t)` — functions of flow-time and `batch_idx` only, no atomic coords, hence SO(3)-invariant. Adding an invariant to `l=0` keeps it invariant; multiplying an `l=ℓ` feature by an invariant scalar keeps it `l=ℓ` (`(D^ℓ(g)·x) · t_gate = D^ℓ(g)·(x·t_gate)`). The bias-on-`l=0` alone is insufficient — `SO3_Linear` keeps l-channel paths independent so the bias never reaches `l=1` output; the `(1+γ)` gate on `l≥1` fixes that. General rule: **"scalar" in the equivariant sense = SO(3)-invariant, not spatially constant** — per-atom, per-channel invariant factors are safe to add/multiply with equivariant features (`e3nn.Gate` and UMA's MOLE gating use the same trick). Verified: equivariance error ≤5e-7 at init and after 20 Adam steps; `v(t=0.1) == v(t=0.9)` at init; `‖v(0.9)−v(0.1)‖ ≈ 0.37` after training.
-
-**Capacity knob `depth`** (default 1, production 3). `depth ≥ 2` inserts `(depth−1)` `SO3_Linear → UMAGate` blocks before the final projection. UMA's backbone is linear-headed (its 4 MP layers supply the nonlinearity), but with that backbone partially frozen the head needs its own capacity — raise as an ablation if recall plateaus.
-
-### Output projections (applied after the head, in order)
-
-1. **Hard mask for frozen atoms:** `v[fixed] = 0` (FixAtoms enforced, not learned).
-2. **Conditional per-system CoM projection on mobile atoms:** `v[mobile] −= v[mobile].mean(dim=0, keepdim=True)`, applied **only for systems with zero frozen atoms** (skipped otherwise). Implemented in `saddleflow/flow/matching.py::_com_projection_batched`.
-
-**Why conditional — don't remove this check.** CoM projection removes translational symmetry; frozen atoms already pin the frame, making it unnecessary there. Worse: unconditional projection is *actively destructive* on single-mobile-atom systems — `v[mobile].mean()` equals `v[mobile]`, so `v -= v.mean()` zeroes the only mobile atom's velocity and silently kills training (constant loss, zero gradient on the time-FiLM, no error). Unit tests in `_com_projection_batched`'s docstring cover single-mobile-frozen, all-mobile, and batched-mix. The "skip when FixAtoms present" rule is correct for slabs, adsorbates, and essentially the entire 30M-triplet training set.
+**Output projections, in order.** (1) `v[fixed] = 0`. (2) Subtract the mobile-atom mean velocity **only in systems with
+no frozen atoms** (`_com_projection_batched`). Do not make this unconditional: in a system with one mobile atom it
+zeroes that atom's velocity and silently kills training.
 
 ## Flow formulation
 
-The released training scheme is product-conditional flow matching: every triplet provides a `(start, partner, saddle)` triple where the start is one endpoint (R or P, doubled per epoch by the dataset's R↔P doubling) and the partner is the other. Each training sample sets `x_0 = (start + partner)/2` (the PBC-correct geodesic midpoint, since `partner_un_pos` is MIC-unwrapped to `start`), `x_1 = saddle_un`, and feeds the velocity head a per-atom Δ_partner = MIC(partner − x_t) at every flow step. This is `mode=1`, the only mode implemented.
+- **State:** Cartesian positions in Å; UMA always sees physical positions, wrapped into the cell just before each
+  forward pass. Interpolation happens in unwrapped space.
+- **Minimum-image unwrap** of every target relative to the start (once, when a record is built):
+  `Δs = inv(cell) @ (r_target − r_start); Δs −= round(Δs); r_target_un = r_start + cell @ Δs`.
+- **R↔P doubling:** every triplet gives two records, one per endpoint as start; the unwrap is recomputed per anchor.
+- **Start distributions** (`FlowMatchingConfig`): `(R+P)/2` midpoint (conditional), transition-state denoising
+  (`ts_denoise_sigma`), path starts (`path_start_prob`, `path_noise_sigma`, `path_u_power`, optional σ schedule
+  `path_noise_sigma_endpoint`/`_saddle`). All new options default off.
+- **Path:** `x_t = (1 − t) x0 + t S`, `t ~ U(0, 1)`; target as above.
+- **Inference:** forward Euler, `K` steps per pass, optional restarts (`SF_NAPPLY` in the dumpers). Higher-order
+  integrators and larger `K` do not help; the error is in the field, not the integration.
 
-### Search modes (`mode` on `FlowMatchingConfig`)
+## Data formats
 
-The `mode` field selects which kind of transition-state search SaddleFlow performs. **Only `mode=1` is currently implemented**; `mode=2` is planned (see below) and the config hard-raises on any other value.
-
-- **`mode=1` — double-ended search (NEB-style).** Both endpoints of the reaction are known: you supply a reactant–product pair `(R, P)` and SaddleFlow proposes the saddle *between* them. This is the analogue of NEB / string methods, which interpolate a path between two given minima and climb to the saddle on it. Use case: high-throughput screening of reactions you can already enumerate as `(R, P)` pairs — the saddle's identity is bounded by the two endpoints you provide. This is the released method and what the MP20Bat paper covers.
-
-- **`mode=2` — one-ended / open-ended search (Dimer-style).** Only a single minimum is known (one endpoint, the reactant); **the product is unknown**. SaddleFlow discovers transition states *accessible from* that single starting structure without being told where the reaction leads. This is the analogue of the Dimer method and other single-ended saddle searches, which start from one minimum and walk uphill to find a first-order saddle with no second endpoint specified. Use case: reaction *discovery* — enumerating the unknown reaction channels (and hence the unknown products) reachable from a given structure, e.g. mapping diffusion/hopping pathways, catalytic steps, or decomposition routes when the product set has not been pre-enumerated. **Coming, not yet implemented** — *what* it does and *where* it applies are fixed (the above); *how* it will be trained and sampled is deliberately left open here.
-
-### Space and endpoints
-- **Flow state:** actual Cartesian atomic coordinates `r(t) ∈ ℝ^(N×3)` in Å. UMA is always fed physical atomic positions, never displacement vectors.
-- **Endpoints:** `r(0) = x_0 = (r_R + r_P)/2`, `r(1) = r_saddle_unwrapped`.
-- **Path:** straight-line Optimal Transport, `r(t) = (1−t) · r(0) + t · r(1)`, wrapped back into the unit cell before each UMA forward pass.
-- **Target velocity:** `v_target = r(1) − r(0)`, constant in `t` for each training sample (with an off-line correction on perturbed `x_t`; see `--xt-target-correction` in `saddleflow.flow.matching.FlowMatchingConfig`).
-
-### Minimum-image unwrap (one-time, at dataset conversion)
-
-```
-Δ_raw = r_saddle_raw − r_reactant
-Δs    = inv(cell) @ Δ_raw
-Δs   -= round(Δs)                 # wrap fractional components into [−½, ½]
-Δ     = cell @ Δs
-r_saddle_unwrapped = r_reactant + Δ
-```
-
-`r_saddle_unwrapped` may lie outside the unit cell; that's fine. Interpolation is done in unwrapped space. Positions are wrapped back into the cell only immediately before being passed to UMA (for clean neighbor-list generation and canonical coordinates).
-
-### Mode selection at inference
-
-Different random draws of a small Gaussian perturbation `ε_inf` around the start at `t = 0` produce different starting positions, which land in different angular wedges of the reactant's local environment. The trained velocity field routes each into its own wedge's saddle via local-environment features and UMA's equivariance. `σ_inf` is the only inference-time knob. On LiC a value of `σ_inf = 0.15 Å` gives reliable coverage across all 63 test reactants.
-
-### Training algorithm
-
-```
-PER TRAINING SAMPLE
-    Load pair record (one of two emitted per triplet by R↔P doubling):
-        start, partner_un, saddle_un, Z, cell, fixed, task_name, charge, spin
-    # saddle_un / partner_un are MIC-unwrapped relative to start.
-
-    x_0      = 0.5 * (start + partner_un)                  # PBC-correct midpoint
-    x_1      = saddle_un
-    t        ~ Uniform(0, 1)
-    v_target = x_1 − x_0                                   # constant in t (straight-line OT)
-    x_t      = wrap((1 − t) · x_0 + t · x_1)
-
-    # Forward pass (the "shared forward" reused by inference):
-    #   atoms = Atoms(positions=x_t, numbers=Z, cell=cell, pbc=True)
-    #   data  = AtomicData.from_ase(atoms, task_name); data.charge=charge; data.spin=spin
-    #   local_feat  = UMA_backbone(data)["node_embedding"]   # (N, 9, 128) for UMA-S-1.2
-    #   global_feat = GlobalAttn(local_feat)                 # identity if --attn-layers 0
-    #   v_pred      = VelocityHead(global_feat, t, Δ_R, Δ_P)
-    #   v_pred[fixed] = 0; if fixed.sum() == 0: v_pred -= v_pred[mobile].mean()
-    #     (CoM-symmetric loss: also strip CoM from v_target the same way)
-    loss_sample = mean_squared_error(v_pred, v_target)
-
-# Per-batch: average loss, backprop, optimizer step, EMA update.
-```
-
-### Inference / sampling algorithm
-
-```
-GIVEN: start, partner_un, Z, cell, fixed, task_name, charge, spin,
-       n_perturbations, K, σ_inf
-
-x_0 = wrap(0.5 * (start + partner_un))          # midpoint of (R, P)
-For i in 1..n_perturbations:
-    ε_i       ~ N(0, σ_inf² · I) on mobile atoms (zero on frozen)
-    x_i       = wrap(x_0 + ε_i)                 # perturbed start
-
-For each i (batched):
-    x = x_i
-    for step in range(K):
-        t = step / K
-        v = forward(x, t, partner=partner_un, ...)   # same backbone+attn+head
-                                                     # as training algorithm,
-                                                     # plus Δ_R and Δ_P inputs
-                                                     # to the head
-        v[fixed] = 0;  if fixed.sum() == 0: v -= v[mobile].mean()
-        x = wrap(x + (1/K) · v)
-    candidate_saddles.append(x)
-
-Cluster candidates by pairwise PBC-RMSD (agglomerative, cutoff ≈ 0.1 Å);
-take medoids. Optional Dimer-refine each centroid via fairchem ASE Calculator.
-```
-
-**Default integrator:** forward Euler with `K = 50` (production MP20Bat eval uses K=10; raise if trajectories stop short). One-line swap to `torchdiffeq` RK45 if needed. **Default `σ_inf = 0.15 Å`** — verified on LiC; small enough to stay near the trained region, large enough to give multi-saddle spread when the local environment is ~1 Å from the reactant. Scale proportionally with `|Δ|` for very different reaction lengths.
-
-## Training data
-
-- **~30 million (reactant, saddle, product) triplets**, from large-scale NEB + Dimer searches over Materials Project, ICSD, Alexandria, OC20, and OC22.
-- Same atom count, same constant cell, aligned atom indices across each triplet. Optional `FixAtoms` constraints preserved.
-- **Source format:** ASE `.traj` files with per-frame metadata in `atoms.info` (includes the `task_name` per sample for UMA's MoE routing).
-- Currently all 3D PBC; slabs and molecules are a future-compatible add-on (UMA supports all three via `task_name`).
-- **Split:** by *reactant*, not by triplet — all saddles of a given reactant go to one split. Tests cross-reactant generalization (the actual research claim), not cross-saddle memorization.
-
-### Data format — dual backend: raw `.traj` or ASE-DB
-
-Source is always ASE `.traj` files containing flat `[R₁, S₁, P₁, R₂, S₂, P₂, …]` sequences (one frame each, `atoms.info['side'] ∈ {-1, 0, 1}` labels). Two downstream read paths, chosen by scale:
-
-- **Backend A** (`saddleflow.data.TrajTripletDataset`) — read `.traj` directly, no conversion. For LiC and moderate-size problems. `ase.io.Trajectory` has O(1) random-access via its frame index.
-- **Backend B** (`saddleflow.data.convert_to_db` → `AseDbSaddleDataset`) — one-time conversion to ASE-DB. For 30M scale and queryable metadata. Output format from file extension: `*.db`/`*.sqlite` (SQLite, human-inspectable, OK to a few million rows); `*.aselmdb` (LMDB-backed via `ase-db-backends`, fairchem's production format).
-
-Both backends expose the same per-sample dict (one sample = one `(start, saddle)` pair; each triplet → 2 samples via R↔P doubling):
-
-```
-{
-    start_pos      : (N, 3) float32  raw (R or P) positions in Å, not unwrapped
-    partner_un_pos : (N, 3) float32  the OTHER endpoint, MIC-unwrapped to start_pos
-    saddle_un_pos  : (N, 3) float32  saddle, MIC-unwrapped to start_pos
-    Z              : (N,)   long
-    cell           : (3, 3) float32  lattice vectors (constant across triplet)
-    fixed          : (N,)   bool     FixAtoms mask (constant across triplet)
-    task_name      : str             {omat, oc20, oc22, oc25, omol, odac, omc}
-    charge         : int             UMA csd_embedding input (default 0)
-    spin           : int             UMA csd_embedding input (default 0; only omol uses it)
-    delta_norm     : float32         ‖saddle_un_pos − start_pos‖ (dataset-level scaling)
-    role           : str             "R2S" or "P2S" (diagnostic only)
-    triplet_id     : int
-    metadata       : dict            sanitised atoms.info from R, S, P frames
-}
-```
-
-**R→S and P→S doubling.** By microscopic reversibility both `(start=R, saddle=S)` and `(start=P, saddle=S)` are valid training pairs for the same saddle. `triplet_to_pair_records` emits both; MIC-unwrap is recomputed for each since the periodic-image choice depends on the anchor. Effective dataset size = 2 × num_triplets. Dataset-level `⟨‖Δ‖⟩` is cached (Backend B writes `<db_path>.stats.json`; Backend A caches via `stats_cache`); used by Open-question hyperparameter rules of thumb.
-
-**No precomputed neighbour lists.** Graphs are rebuilt by `AtomicData.from_ase` at every forward pass — required anyway since `r(t)` changes with flow time and bond-breaking reactions can cross UMA's cutoff. Neighbour-list cost is ~1–10 ms CPU per system, dominated by the UMA forward.
-
-### LiC saddle set — reverified 2026-09-01 (Sella, fmax 0.005, all index-1)
-
-`examples/LiC/{train,test}_set.traj` hold **12 train + 167 test = 179** triplets, each saddle reconverged with **Sella at fmax 0.005** and **verified index-1** by finite-difference Lanczos. 183/183 converged; the Li moved a median **0.0120 Å** (p90 0.029), so the CI-NEB labels were already good. Untouched CI-NEB originals archived at `/work/08405/ilgar/vista/LiC_original_CINEB/`.
-
-**Four test triplets were removed** — CI-NEB had stopped them on a *shoulder*, not a stationary point. Their Li force was **0.00996 eV/Å**, i.e. just under NEB's 0.01 cutoff, and Sella moved each ~0.95 Å to a genuine saddle (final force 0.0005–0.0018). Every one landed on a saddle **already in the set**, so removing them loses nothing — and one of them (tid 135) had collapsed onto **train** tid 7, a train/test leak. Removed global tids and their original Li positions:
-
-| tid | original Li (x, y, z) | moved | collapsed onto |
-|---|---|---|---|
-| 109 | 7.3259, 12.6946, −5.3717 | 0.920 Å | tid 112 (test), 0.0009 Å |
-| 135 | 10.1457, 7.6873, −5.4028 | 0.971 Å | **tid 7 (train)**, 0.0088 Å |
-| 145 | 10.0770, 14.3389, −5.3795 | 0.974 Å | tid 144 (test), 0.0072 Å |
-| 164 | 12.9155, 9.3046, −5.3891 | 0.926 Å | tid 139 (test), 0.0028 Å |
-
-After cleaning: no two saddles within 0.97 Å, train/test disjoint at 1.05 Å.
-
-**10 of the 189 C–C bond midpoints are verified NON-saddles.** Every real saddle sits at a bond midpoint (the other 179 midpoints are within 0.219 Å of one), so these 10 are geometrically indistinguishable from saddles — which is why an unconditioned model flows into them. They are not stationary: `|F_Li|` = **0.060–0.284 eV/Å**, and a 0.02 Å grid scan over ±0.5 Å finds a minimum of only **0.0071**, never reaching the 0.005 threshold.
-
-**Why they look like saddles but aren't.** The Li Hessian there is genuinely index-1, with the *same* axis structure as a real saddle: negative curvature perpendicular to the C–C bond (the hop coordinate), soft positive along the bond, stiff out-of-plane (λ ≈ +4.8). But along the bond the energy is **monotonically downhill** — the positive curvature is a *shoulder*, not a well. `F·bond` dips to ~0.0055 at 0.27 Å and turns back up **without crossing zero**, so no stationary point exists. Positive curvature survives only ~0.3 Å, then inverts; past that the force grows and any optimiser taking steps >0.3 Å escapes. Sella (90/90 converged) and Dimer (68/90; the 22 failures are eigenmode *delocalisation*, itself a no-saddle signature) both leave from all 90 starts — clean and 0.1 Å-noised alike — moving ≥0.90 Å. Control: from a real saddle, Sella stays (97.8% within 0.2 Å, median 0.012 Å). The two populations do not overlap: largest "stayed" move 0.039 Å, smallest "left" move 0.904 Å.
-
-**Consequence for modelling.** Only the *gradient magnitude* distinguishes these sites, and a purely geometric unconditioned flow never sees it. So a tail of predictions landing on saddle-less midpoints is expected, not a bug — and it is not fixable by more training, a different σ, or more integration steps.
-
-### First test case: Li on defective C-sheet
-
-Frozen C-sheet with 2 C-vacancy defects, `FixAtoms` on indices 0–125; **Li is atom index 126**, the only mobile atom. Cell diag `[17.09, 19.56, −15.00]` (negative `z` = vacuum, left-handed; MIC and fairchem neighbour-list handle it fine). `atoms.info` carries `task_name='omat'`, `charge=0`, `spin=0`, plus search-pipeline keys; no `side` key, so `validate_triplet` uses positional `[R, S, P, …]`. Sizes: train 12 triplets, test 171.
-
-**Site structure (R↔P-symmetric).** Each triplet contributes two local-minimum Li sites (both legitimate "reactants" by microscopic reversibility). Train: 16 unique R∪P sites, 1.5 saddles/site (max 3). Test: 63 sites, **5.43 saddles/site** (max 7) — 41 with exactly 6 (hex bulk), 21 with 3–5 (defect-adjacent, missing 1–3 hop directions to a vacancy), 1 with 7. The ~6/site median matches the hex lattice's 6 neighbours per adsorption site.
-
-**Overlap at R∪P site level.** All 16 train sites appear in test (train ⊂ test); 47 test sites are novel (cross-reactant H1 number). **Saddle-disjoint:** 0 saddle geometries shared (min cross-set Li(S)–Li(S) = 0.94 Å), so even shared sites contribute no shared saddles. Pairwise reactant-Li distances are perfectly bimodal (<0.01 Å duplicate vs >1.5 Å distinct), so any clustering threshold in that gap recovers the same 63 sites.
-
-**Evaluation protocol (leave-one-reactant-out per-site).** For each unique test site, sample once with `n_perturbations=32`, cluster candidates by PBC-RMSD, Hungarian-match centroids to the site's known saddles (3–7); report ALL / NOVEL / SHARED. NOVEL (47 sites) is the H1 number. Implemented in `examples/LiC/evaluate.py` via `saddleflow.utils.group_triplets_by_site(endpoints="RP")` and `match_sites(…)`.
-
-## Data pipeline
-
-- `torch.utils.data.Dataset` → either `TrajTripletDataset` (backend A) or `AseDbSaddleDataset` (backend B). Both yield the dict above as tensors; no ASE objects held past `__getitem__`.
-- Graph built fresh per forward pass via `AtomicData.from_ase(Atoms(positions=x_t, ...), task_name=...)` with `charge`/`spin` set on the result. Correct handling of neighbor-list changes along the flow trajectory.
-- Batching: fairchem's `data_list_collater` (or `atomicdata_list_to_batch` directly) concatenates atoms across samples with PyG-style `batch`. Heterogeneous N and M handled natively.
-- **Batch homogeneity for MoE routing:** UMA's MOLE expert merge re-runs whenever `data.dataset` (task_name) changes. For training efficiency, use a per-task `torch.utils.data.Sampler` or sort batches by task so each batch is homogeneous. Mixed-task batches work but waste compute on the coefficient step.
+All sources reduce to the same per-record dict: `start_pos`, `partner_un_pos`, `saddle_un_pos` (both unwrapped to the
+start), `Z`, `cell`, `fixed`, `task_name`, `charge`, `spin`, `delta_norm`, `role` (`R2S`/`P2S`), `triplet_id`,
+`metadata`. Triplets are stored as consecutive `[R, S, P]` frames. Small problems read `.traj` directly
+(`TrajTripletDataset`); MaterialsSaddles reads ASE-LMDB shards (`MaterialsSaddlesDataset`, which also applies
+`task_name_map`). Neighbour lists are rebuilt every forward pass (`AtomicData.from_ase`), since bonds change along the
+flow.
 
 ## Training infrastructure
 
-**Plain PyTorch + HuggingFace `accelerate`**, matching the author's prior flow-matching pattern. No Hydra, no Lightning, no TorchTNT.
+Plain PyTorch + Hugging Face `accelerate` (`saddleflow/utils/training.py`); no Hydra or Lightning.
 
-- **Optimizer:** AdamW. `lr = 1e-3` (head-only, frozen backbone) or `lr = 1e-5` (end-to-end fine-tuning with UMA unfrozen). Cosine LR schedule, gradient clip `max_norm = 1.0`.
-- **EMA:** decay scales with total training steps — see the EMA-tuning rule below. Default `0.9999` is calibrated for the 30M-triplet production run (≥ 500k steps). For small-scale debug / example runs (a few thousand steps), `0.9999` leaves the shadow frozen at initialization and has to be lowered.
-- **Precision:** bf16 forward + fp32 optimizer state, to match UMA's training precision. Exact match to fairchem's config verified in first coding session.
-- **Multi-node:** srun-native SPMD (one srun task per GPU, env-var DDP). The canonical, scale-tested launcher is **`examples/MaterialsSaddles/run.sh`** — copy from it for any new multi-node example. Do **NOT** use `accelerate launch --multi_gpu --num_machines=N` for multi-node: that wraps `torch.distributed.elastic`'s dynamic c10d rendezvous, which reliably strands ~2 stragglers at ≥128 nodes and times out (verified May 2026 on Perlmutter over multiple jobs, even with `--rdzv_conf join_timeout=1800`). The SPMD pattern matches what fairchem/UMA itself uses for multi-node (`common/distutils.py::setup`): each rank derives `RANK=$SLURM_PROCID`, `LOCAL_RANK=$SLURM_LOCALID`, `WORLD_SIZE=$SLURM_NTASKS`, then a static `init_process_group` from `env://` with no quorum dance. `examples/MP20Bat/run.sh` still uses the legacy accelerate-launch pattern — it worked for the 4-node paper run but **don't copy it for new multi-node jobs**; see the warning at its top.
-- **Checkpointing:** `accelerator.save_state()` / `load_state()`; FSDP-sharded under the hood for multi-node.
-- **Gradient checkpointing:** `torch.utils.checkpoint` on the UMA backbone layers when fine-tuning; transparent to `accelerate`.
-
-### EMA tuning — scales with run length
-
-EMA update: `shadow[k+1] = d · shadow[k] + (1 − d) · θ[k+1]`. Two knobs: **init leakage** `d^K` (must be `<1%` for the shadow to reflect the trained model) and **averaging window** `τ = 1/(1 − d)` (should be ~`K_total/50`). Pick rule: `d = 1 − 1/window` with `window ≈ K_total/50`. Concrete: `d = 0.99` for 1–5k-step debug runs, `0.999` for 5–50k, `0.9999` for ≥500k. MP20Bat production used `d = 0.9995` (calibrated for ~21k steps at global batch 192). `d = 0.9999` on a Li/C-scale 1k-step run leaves init leakage at ~90% — typical symptom: EMA eval gives ~0% recall, one cluster collapsed on the reactant, `|v_pred| ≈ 0.1 Å` when target is ~1 Å. `examples/LiC/evaluate.py --no-ema` bypasses the shadow as a diagnostic.
-
-### Why not fairchem's full training stack (TorchTNT + Hydra + Ray)
-
-Fairchem's stack is designed for multi-task MLIP training (energy/force/stress, dataset-specific heads, Ray orchestration). SaddleFlow has one regression task, one head, one loss; adopting `MLIPTrainEvalUnit + TrainEvalRunner + Hydra` would add ~1000 lines of framework to hide a 150-line `accelerate`-based loop. `accelerate` covers DDP, FSDP, and multi-node at UMA-S-1.2 scale (6.6M active params drive per-batch compute, 290M total when all MoE experts are merged drives FSDP planning). Migration path to the full stack remains open and is localised to `saddleflow/utils/training.py`.
+- **Multi-node: SPMD, one process per GPU** (`RANK=$SLURM_PROCID`, `WORLD_SIZE=$SLURM_NTASKS`, static
+  `init_process_group`), as in `examples/MaterialsSaddles/run.sh`. Do not use `accelerate launch --num_machines`
+  across many nodes: its elastic rendezvous strands stragglers. `examples/MP20Bat/run.sh` still uses the old pattern.
+- **Warmup and `--max-steps` count scheduler ticks, and accelerate ticks once per rank per optimizer step.** For a real
+  warmup of W optimizer steps pass `--warmup-steps W × world_size`. `--max-steps` is converted internally.
+- **Fixed global batch, free node count.** Changing nodes at fixed global batch changes nothing but speed; never
+  resume a run on a different node count (the schedule is per-rank ticks).
+- **Resume** (`--resume-from <checkpoint>`) continues mid-epoch with the same shuffle and skips trained batches.
+  `--init-weights` loads weights only (fresh optimizer and schedule) and re-snapshots the EMA.
+- **EMA:** choose `d = 1 − 1/window` with `window ≈ total_steps/50`. Too high a decay on a short run leaves the shadow
+  at the initial weights (evaluation then looks broken; compare with live weights).
+- **Large validation sets:** cap them with `--max-val-records`.
+- **Precision:** fp32 is the safe default (the paper model is fp32). bf16 autocast is acceptable for UMA-S training
+  because the coordinate helpers are pinned to fp32 (see bug log).
 
 ## Evaluation
 
-**Two protocols, different datasets.** LiC uses per-site Hungarian matching against known saddles (below). **MP20Bat uses the Sella protocol** — see "Evaluation — use Sella, never Dimer" above; that is the protocol for any new work, and Dimer-based scoring is a known trap.
+- **Score with Sella, never with ASE Dimer.** Dimer wanders to a different saddle in a sizeable fraction of cases and
+  fabricates a tail. Run Sella (via SaddleMill, `method = Sella`; example `examples/Sella_OC22` in
+  `SciLM-ai/SaddleMill`) from each prediction: UMA-S-1.2 with the subset's own task (`omat` for lemat/mp20bat,
+  `oc20`, `oc22`), first order, `fmax = 0.01` eV/Å, ≤ 300 steps, `delta0 = 0.1`, index check (exactly one eigenvalue
+  below −0.01 eV/Å²). For SaddleFlow outputs use `dataset_type = bulk`: they carry their own `FixAtoms` and all-zero
+  tags, and `oc` would re-freeze every tag-0 atom.
+- **Check the task name against the subset before scoring.** Scoring through the wrong expert inflates errors.
+- **Metric:** maximum per-atom displacement (minimum image) from the prediction to the saddle Sella reaches, over cases
+  that converge and verify as first order; report mean and median and the Sella force calls. Unconditional models are
+  scored against the Sella saddle, conditional models against the dataset label.
+- **Collect strictly** (`sm_collect.py`): count only real Sella convergence and verified index-1; a desorption check
+  can mark an unoptimised input as converged at step 0; Sella crashes are failures, not dropped cases; a truncated
+  pass keeps the easy cases first and is biased.
+- **Compare arms on identical starts** with paired tests. Different noise draws move medians by several hundredths
+  of an Å, more than most training changes.
 
-**Site-based (not R-only) grouping.** Test triplets are grouped by their **R ∪ P** Li adsorption sites — both endpoints of every triplet are legitimate "reactants" by microscopic reversibility, and counting saddles per site must include both for the numbers to match the physics (see §"First test case" for concrete counts). Implemented as `saddleflow.utils.group_triplets_by_site(endpoints="RP")`; the legacy R-only variant is available via `endpoints="R"` but should not be the default for reaction-discovery eval.
+## Latent-bug log — re-check these if behaviour looks wrong
 
-**Per-site Hungarian matching, threshold-safe.** Cluster candidates per site (medoid centroids), run `scipy.optimize.linear_sum_assignment` against the site's known saddles. LSA minimises total cost without per-pair threshold; one far-off centroid can cascade into a pathological assignment. Fix: mask above-threshold cost-matrix entries to `1e9` before LSA so sub-threshold pairings win, then filter above-threshold pairings post-LSA. Implemented in `saddleflow.utils.hungarian_match`.
+- **Autocast silently quantises coordinates.** `wrap_positions` and `mic_displacement` do a Cartesian→fractional→
+  Cartesian round trip; under `torch.autocast` those matmuls run in bf16 (spacing 0.06 Å at 12 Å), so the structure
+  fed to UMA is corrupted while the target is exact. Training still reaches a *lower* loss. Both helpers now force
+  autocast off (`tests/test_autocast_precision.py`). Rule: never do arithmetic on absolute coordinates under autocast.
+  fp16 hides the bug; do not test for it with fp16.
+- **UMA dropouts leak into training.** `.train()` enables UMA's composition and mixture dropouts; `FlowMatchingLoss`
+  re-calls `backbone.eval()`.
+- **Time embedding base.** The transformer base 10000 is ~constant over `t ∈ [0, 1]`; the head uses geometric
+  frequencies from 1 to `half` cycles per unit time.
+- **RMSD over all atoms dilutes error by √N.** All evaluation helpers take `mobile_mask`.
+- **CoM projection** must stay conditional on having no frozen atoms (see Architecture).
+- **AdaLN-zero:** the first time-MLP layer has zero gradient at step 0 only; if it persists, something is broken.
+- **Force injection uses the first sample's task name for the whole batch.** Fine for homogeneous batches or with
+  `--no-inject-force` (all released recipes); wrong for mixed-subset batches with force injection.
+- **Multi-node NCCL hang** on some clusters near an epoch boundary (a race between gradient all-reduce buckets):
+  `TORCH_DISTRIBUTED_DEBUG=DETAIL` serialises the collectives (~40 % slower) and fixes it; a per-step barrier does not.
+- **LiC:** the Li is atom 126 in `LiC` and 112 in `LiC_simpler`; the negative cell `z` is intentional vacuum.
 
-**Metrics.** Primary: per-site RMSD under PBC between each predicted cluster centroid and its Hungarian-matched known saddle. Secondary: recall (fraction of known saddles recovered at RMSD < τ; τ = 0.1 Å on LiC), precision (fraction of centroids matching a known saddle), bonus-discovery rate (centroid matching a saddle in the train set — valid rediscovery; train/test are saddle-disjoint by construction on LiC). The test-site set partitions into NOVEL (not in train at R∪P site level — cross-reactant H1 number) and SHARED (in train — held-out-saddle recovery at known reactants); `examples/LiC/evaluate.py` reports ALL / NOVEL / SHARED. Future: Dimer-convergence rate (fraction of centroids Dimer-refines to a valid first-order saddle in ≤ 50 steps).
+## Contributing
 
-## Research hypotheses and risks
-
-For the methods-section writeup. Each hypothesis has an explicit falsification test.
-
-- **H1 — Local-environment transfer.** The GNN over UMA features generalises TS knowledge across reactants with similar local chemistry. *Falsification:* leave-one-reactant-out on Li/C should recover held-out TSs below threshold. *Risk:* similar local environments may point to very different TSs.
-- **H2 — Implicit latent via inference-time perturbation.** Random Gaussian `ε_inf` at t=0 selects different saddle modes without explicit mode conditioning; UMA's force-trained features carry Hessian-like soft-mode structure that lets the field route each perturbation to its angularly-closest saddle wedge. *Falsification:* saddle diversity should scale with `σ_inf` and `n_perturbations`. **Confirmed on LiC**: 45/48 hits distributed across all 6 C_6-orbit saddles.
-- **H3 — Midpoint anchoring + Δ_partner prevents mode averaging.** Isotropic Gaussian on `x_0` leaks tails into neighbouring symmetry wedges, creating equivariance-linked targets the SO(3)-equivariant model can't simultaneously satisfy → SGD collapses to the symmetry-averaged radial compromise. The product-conditional scheme sidesteps this: `x_0` is fixed at the (R, P) midpoint (no Gaussian smear) and the head sees a *direction* per atom (Δ_partner), so symmetry-equivalent saddles get distinct training signals. **Confirmed on LiC**: Gaussian-perturbation training drifts within 8k epochs; midpoint-anchored training is stable through 10k+ epochs.
-- **H4 — Backbone unfreeze improves accuracy.** Frozen UMA is a fine baseline; selectively unfreezing backbone blocks at low LR (1e-5) lets layer-N `l≥1` outputs adapt to the velocity loss. **Confirmed on LiC sweep** (v1: blocks[-1] → v3: blocks[-1,-2] → MP20Bat: all 4 blocks at LR 1e-4). *Risk:* destroying pretrained features at high LR; mitigated by the discriminative parameter group.
-- **H7 — Global attention resolves distant-site ambiguity.** `GlobalAttn` would let atoms beyond UMA's cutoff exchange info, preventing simultaneous-reaction artefacts. *Falsification:* on Li/C with two distant Li adatoms, predict single-Li-hop saddles. **Partially falsified 2026-04-21:** UMA's 4-hop MP already gives ~24 Å receptive field, larger than the LiC cell; empirical probe shows GlobalAttn attention is near-uniform across atoms and barely depends on Li position. May still matter on >24 Å cells in larger future runs; per-system check needed.
-
-
-Package import name: `saddleflow` (lowercase, per PEP 8); the project is referred to as **SaddleFlow** in prose.
+- Work on a branch, open a pull request, merge it; do not push to `main` directly.
+- Commit messages: one sentence; add a short body only when the reason is not visible in the diff.
+- Figures as PDF.
+- Never commit data, checkpoints, or `CLAUDE.local.md`.
 
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
-## Latent-bug log — pitfalls already caught; re-check if behaviour looks wrong
-
-- **Scoring predictions with the ASE Dimer silently fabricates a tail** (2026-08-04). The Dimer walks to a *different* saddle in ~8% of cases, so the reported error is the distance to a saddle the prediction was never near — 0.17 Å from the label but 2.21 Å from the Dimer endpoint in the tail decile. It made maxd means immovable at ~1.08 Å across 20+ models and produced a spurious "accuracy anti-correlates with convergence" result. Use `sella_eval.py`; verify index-1 with `--check-index` and filter on `nneg == 1`.
-- **`K` (Euler steps) is not the bottleneck.** K=10→100 moves maxd 0.1686 → 0.1672. If predictions fall short, it is the objective, not the integrator.
-- **Autocast silently demotes coordinate matmuls — the single worst bug found in this project** (root-caused 2026-08-31, after costing months). `wrap_positions` and `mic_displacement` do a Cartesian→fractional→Cartesian round trip, i.e. two matmuls, which `torch.autocast` runs in bf16. bf16 keeps 7 mantissa bits, so its representable-value spacing is **0.0625 Å at a 12 Å coordinate and 0.125 Å at 17 Å** — the structure handed to the backbone is quantised while the flow-matching target still encodes the exact displacement. Measured on LiC_simpler: `wrap_positions` displaced atoms **0.027 Å mean / 0.094 Å max** (and note **0 of 113 atoms actually needed wrapping** — the damage is the identity round trip, not the wrap); `mic_displacement` 0.0001/0.008 (smaller only because it acts on ~1 Å differences, not ~12 Å absolutes). **Single-variable proof** (`9db1abd` vs `c92d13b` — one file, 13 lines; every config and `extras` key identical, including the 10000-epoch LR horizon, seed 42, batch 2, lr 1e-3, EMA 0.99, bf16, σ_ts 0.5, attn 1, depth 1, stock 113-atom cell, one saddle). At epoch 10k: hexatic order **0.119 → 0.732**, on-orbit **42% → 88%**, radius **1.050 → 1.141**, per-petal counts `5,3,3,1,5,3` → `8,6,4,7,10,7`. The unpinned run keeps degrading with training — by 15k it reaches hex 0.107 / r 0.880. (Note: *balance* entropy stays high in the broken run (0.947) only because it describes how the few on-orbit endpoints are spread; it is meaningless when on-orbit is low. Always read it together with on-orbit fraction.) The unpinned run reaches a *lower* training loss (0.013 vs 0.183) — it fits the corrupted geometry well, which is why this hides. fp16 barely shows it (10 mantissa bits ⇒ ~8× finer grid), so **never use fp16 to test for this**. Both helpers now force `torch.autocast(enabled=False)`; `tests/test_autocast_precision.py` locks it. **Rule: any arithmetic on absolute atomic coordinates must be excluded from autocast.** Reproduce the failure in ~20 min on one GPU: `examples/LiC_simpler/train.py --ts-denoise-sigma 0.5 --delta-endpoint-channels 0 --attn-layers 1 --head-depth 1 --batch-size 2 --num-epochs 10000 --mixed-precision bf16`, then `viz_checkpoints.py`; with the pins removed the six-fold structure decays after ~epoch 2500, with them it holds. **Diagnostic to reach for first when a geometric model trains to a good loss but produces subtly wrong structures: assert your coordinate helpers are bit-identical inside and outside `torch.autocast`.**
-- **bf16 autocast breaks SO(3) equivariance by ~17%** (measured 2026-08-01). **Caveat added 2026-08-31: that measurement ran with `wrap_positions` unpinned, so it may be the same coordinate-quantisation bug rather than an independent effect — re-measure with the pins in place before citing it separately.** Same weights, Li rotated 60° about a C6 site: fp32 gives `|R·v(x) − v(Rx)|/|v|` = **0.00%**, `torch.autocast(bf16)` gives **16.9%**. The architecture is exactly equivariant in exact arithmetic; the violation is numerical and follows the cartesian rounding grid, not the crystal. On LiC_simpler this let one-saddle training reach a bf16-only optimum (loss 0.03 in bf16, 1.03 in fp32) whose flower sits 30° off, on the atop sites — fp32 training fixes it. Also pin `wrap_positions` to fp32 (commit c92d13b): its cart↔frac matmuls ran in bf16 and quantised coordinates by ~0.05 Å. **On MP20Bat the accuracy effect is NOT significant** (2026-08-03, single-variable test at the paper recipe, n=1628: fp32 better in 55% of cases, p=0.44) — presumably because those cells have no exact point symmetry for the asymmetry to exploit. So: fp32 matters for symmetric-cell studies, not measurably for MP20Bat production.
-- **UMA production dropouts leak into training.** `uma-s-1p2` ships with `composition_dropout=0.10` and `mole_dropout=Dropout(p=0.05)`; PyTorch's recursive `.train()` activates them on the (frozen) backbone → stochastic training features vs deterministic inference. Fix: `FlowMatchingLoss.train()` re-calls `self.backbone.eval()`. Symptom: train-loss floor stuck at noise, |v_pred| mismatches train vs inference probes.
-- **Sinusoidal time-embedding base wrong for t ∈ [0,1].** Transformer's base-10000 puts `sin(freq·t)` at ~0 on 31 of 32 dims for flow-time in [0,1]. `velocity_head.sinusoidal_time_embedding` now uses geometric frequencies from 1 to `half` cycles per unit flow-time. Symptom: time-FiLM scale ~0, velocity field nearly time-invariant, nominal `time_embed_dim=64` is effectively ~4 useful dims.
-- **Eval RMSD over all atoms dilutes mobile error by √N.** All eval helpers (`rmsd_pbc`, `pairwise_rmsd_pbc`, `cluster_by_rmsd`, `hungarian_match`, `evaluate_predictions`) take `mobile_mask`. On Li/C (126 frozen + 1 mobile), a 0.10 Å threshold without the mask matches anything within 1.13 Å of truth.
-- **Silent CoM-projection bug** — see §"Output projections" above; single-mobile-atom systems silently zero their only velocity if the projection is unconditional. Current code gates on `fixed.sum() == 0`.
-- **AdaLN-zero step-0 gradient unlock.** `time_mlp`'s last layer is zero-init → first-layer grad is exactly 0 at step 0 (no path through the zero matrix). Last layer updates on step 0, unlocking earlier layers from step 1. `|∇time_mlp[0]| = 0` only at step 0 is expected; persistence past step 1 means something's broken.
-- **LiC mobile-atom indices.** `LiC` Li is index 126 (0–125 frozen C); `LiC_simpler` Li is index 112 (112 C in pristine cell). Atom 0 is not mobile.
-- **Site grouping must be R∪P**, not R-only — R-only undercounts saddles/site by ~2×.
-- **UMA `(N, (lmax+1)², C)` vs e3nn `(N, Irreps.dim)` layouts not interchangeable.** All SaddleFlow modules use UMA's `SO3_Linear`; add conversion helpers if you mix in e3nn ops.
-- **Negative z in the Li/C cell (`-15 Å`)** is intentional (vacuum, left-handed cell). MIC math and fairchem neighbour-list handle it; don't "fix" the sign.
-- **Isotropic Gaussian on `x_0` drifts the field radial-outward.** Any Gaussian tail crossing into a neighbouring symmetry wedge creates equivariance-linked targets no SO(3)-equivariant model can simultaneously satisfy → SGD collapses to the symmetry-averaged radial compromise. Fixed by midpoint anchoring + Δ_partner conditioning.
-- **Force injection on mixed-task batches uses only `batch[0]`'s task_name.** `saddleflow/flow/matching.py:687,722` pass `task_name=batch[0]["task_name"]` to the force-head forward, so all samples in the batch get forces computed under sample 0's MoE routing. Correct for homogeneous-task batches (LiC, MP20Bat) and for the current MaterialsSaddles production config which sets `--no-inject-force` (force path never executes). **WRONG** if you enable `--inject-force` *and* train across multiple subsets simultaneously (e.g. `--all-subsets` + force injection). Fix when needed: sort the dataloader by `task_name` so each batch is homogeneous, or process per-task subbatches in the force forward. The main velocity-head forward path is fine — it uses per-sample `task_name` via `AtomicData.from_ase(task_name=...)` → `data.dataset` list → UMA's `csd_embedding` per-system.
-- **Vista multi-node jobs hang at ~epoch 2 (intermittent NCCL collective-timing race).** On Vista (GH200, 1 GPU/node), multi-node training (e.g. the `private/examples/run_vista.sh` x0-recipe runs at 32 nodes / bs32) deterministically hangs near the epoch-2 boundary (~step 1737; step *varies* 1737/1791/1900 → a **race in the per-bucket gradient all-reduce within one backward**, not a fixed bad group), then the NCCL watchdog (10 min) aborts the whole job. Ruled out with evidence: GPU OOM, host-RAM OOM/leak, DDP unused-params (`find_unused` finds none), the srun-SPMD launcher, and any degenerate data group. **Fix (proven on two runs): serialize the collectives via `TORCH_DISTRIBUTED_DEBUG=DETAIL`** (`SERIALIZE=1` in `run_vista.sh`) — its `ProcessGroupWrapper` pre-syncs before every collective so the per-bucket all-reduces can't race; ~40% slower (~1.4 vs ~1.0 s/step) but completes. A per-step `cuda.synchronize`/barrier does **NOT** help — there's already a per-step `accelerator.gather`, so the race is *inter-bucket*; only per-collective serialization works. (With `SERIALIZE` the DETAIL log line is suppressed at the default WARNING level — confirm it's active via the slow step rate, not the log.) Backstop: `#SBATCH --requeue` + `scontrol requeue` on failure (works from compute nodes; sbatch doesn't), with `OUT_DIR` keyed by `$SLURM_JOB_ID` so the requeue auto-resumes from the newest checkpoint (`meta.json` restores epoch/step → data-parity preserved). Validation was a **red herring** — disabling it never stopped the hang. Not observed on Perlmutter (its older pre-recipe trajectory code; different fabric).
-
-## What was tried and what worked (short)
-
-LiC / LiC_simpler explored ~two dozen training-distribution variants before landing on the current recipe. Lessons worth keeping for anyone who'd re-litigate them:
-
-**Did not work (all on LiC_simpler):**
-- Isotropic Gaussian on `x_0` (any σ): the tails leak into neighbouring wedges; the SO(3)-equivariant model cannot satisfy those targets simultaneously and collapses to the C_6v-averaged radial compromise. Loss still drops during the collapse — easy to miss without watching the field.
-- Annealed Gaussian σ (large → small): accelerates the same collapse.
-- Truncated 3D balls / `(1−|x|/a)^n` distributions: even <0.2% out-of-wedge tail still drifts over 10k epochs. "Finite support inside one wedge" must be exact, not approximate.
-- Tensor-product / non-equivariant heads: head capacity was never the bottleneck — sampling distribution was.
-
-**Did work:**
-- **Backbone `.eval()` override** and **time-embedding base fix** (see Latent-bug log) — both are load-bearing; without either, the velocity field is time-independent or stochastic-feature-biased.
-- **Midpoint reparameterization + Δ_partner conditioning + UMA-block unfreeze + multi-block time-FiLM** — the v0→v6 LiC sweep documented below; carried over to MP20Bat with full backbone unfreeze and 4-block time-FiLM. This is the released training scheme.
-
-## Mode 1 architecture sweep — LiC, n=342 test trajectories, MIC distance, K=25 EMA
-
-All runs same LiC test set / K / EMA; ranked by median test Li-error:
-
-| Version | Architecture delta from previous | Median | P95 | Max | Med-z |
-|---|---|---|---|---|---|
-| **v0** | Frozen UMA, head_depth=1, no Δ_P (pre-product-conditional baseline) | 0.135 Å | 0.220 | 0.317 | 118 mÅ |
-| **v1** | + product-conditional + head_depth=3 + time-FiLM/unfreeze blocks[-1] + EMA 0.99 + GlobalAttn off | 0.045 | 0.159 | 0.310 | 30 mÅ |
-| **v2** | + UMA-force injection in head (autograd through energy block) | 0.037 | 0.166 | 0.325 | 21 mÅ |
-| **v3** | + unfreeze + time-FiLM also at blocks[-2] | 0.029 | 0.166 | 0.278 | 8 mÅ |
-| v4 | + force-residual at output: `v_out = v_raw − α·F`, α learnable scalar (init 0.1) | 0.029 | 0.160 | 0.271 | 8 mÅ |
-| v5 | + Gaussian perturbation σ=0.05 Å on x_t before backbone forward | 0.033 | 0.168 | **0.252** | 12 mÅ |
-| **v6** | + ForceFiLM at every TimeFiLMBackbone injection point (alongside existing time-FiLM) | **0.026** | **0.159** | 0.273 | **8 mÅ** |
-
-**Key findings.**
-- **v0 → v1 is the largest jump** (median 3× lower, z 4× lower). The triple `head_depth=3 + unfreeze blocks[-1] + early time-FiLM before that block` did most of the work.
-- **97% of v0's error was in z** (out-of-plane Li height: 118 mÅ vs 20 mÅ in xy). Every lever past v1 mostly drove z down; xy stayed at 20–28 mÅ.
-- v2 force-injection alone gave 1.2×; v3's `blocks[-2]` unfreeze + 2-point time-FiLM beat v2.
-- v4 force-residual barely helps — α drifts to zero; the head can offset residuals via its own pipeline.
-- v5 `x_t`-perturbation is the only lever that improved the 7-ring outliers (~25 mÅ on triplets 109, 164). σ here is wedge-knowledge in disguise — too small does nothing, too large reintroduces wedge-leakage / equivariance collapse. MP20Bat keeps it at 0.05.
-- v6 wins LiC bulk metrics with no new hyperparameter (ForceFiLM is zero-init). Note: v6 is **not** MP20Bat production; `v7_6_2a` removes force injection / eigenmode / Dimer-residual and adds full UMA unfreeze + 4-block time-FiLM + convergent target + CoM-symmetric loss.
-- **7-ring failure is data-distribution, not architecture.** All v1→v6 levers hit the same max/P99 wall — the 12-triplet LiC train set never forces the model to use force (bulk-like samples solvable without it). Richer per-reactant `x_t` coverage is the right next step.
-- **Convergence plateaus at ~5000 epochs** on LiC for every v1+ run. 10000 is kept as a margin for 30M-scale data.
-
-## Accuracy improvement levers (to revisit if Li/C recall is poor or 30M results plateau)
-
-When results disappoint, investigate roughly in this order — cheapest to most expensive in implementation effort, training cost, and risk of breaking what works.
-
-**Tier 1 — hyperparameter sweeps (no code change, hours of GPU time):**
-- `σ_inf` (inference-time perturbation around the start, decoupled from training) — default 0.15 Å on LiC; sweep 0.10–0.30 if saddle diversity is low or trajectories land off-region.
-- `K` (inference Euler steps) — default 50. **Settled on MP20Bat: a null** (K=10→100 flat). Only worth a sweep on a genuinely different dataset.
-- `xt_perturb_sigma` (training-time x_t perturbation; pairs with `xt_target_correction`) — default 0.05 Å on MP20Bat; sweep 0.02–0.10 to widen / narrow the off-line training coverage.
-
-**Tier 2 — architectural (hours of dev, no UMA retraining):**
-- **Selectively unfreeze backbone blocks at low LR** (`1e-5` vs head `1e-3`). Crucial: UMA layer-4 `l≥1` outputs are not directly supervised by pretraining (`MLP_EFS_Head` reads only `l=0`, derives forces via autograd through positions; `l=1`/`l=2` slots inherit gradient only via chain rule back to layer-4 `l=0`). Unfreezing lets them adapt. LiC sweep: `blocks[-1]` (v1) → `blocks[-1,-2]` (v3); MP20Bat: all 4.
-- **Force injection** — compute `F = −∂E/∂x_t` via autograd through UMA's energy block (`saddleflow.utils.forces`); feed as l=1 head feature (v2) and/or per-block ForceFiLM (v6). Incremental LiC wins; OFF in MP20Bat (didn't transfer). Skip the residual variant `v_out = v_raw − α·F` — α drifts to zero (v4).
-- `VelocityHead.depth` 1 → 2 → 3 (`SO3_Linear + UMAGate`). depth=3 is the v1+ default.
-- `GlobalAttn` 0 → 1–4 layers — currently 0; may matter on >24 Å cells.
-- Higher-order integrator (Euler → torchdiffeq RK45) at inference.
-
-**Tier 3 — full UMA finetune** (significant dev + retraining): end-to-end `lr=1e-5` + cosine warmup, or LoRA on the MOLE layers. Defer unless Tier 1/2 fails.
-
-**Tier 4 — distance-sparse `GlobalAttn`** (within 2× UMA cutoff), only if dense attention OOMs.
-
-## Open questions
-
-- **`σ_inf`** — inference-time Gaussian spread around the start. Default 0.15 Å on LiC; sweep `{0.10, 0.15, 0.20, 0.30}` once full-dataset training lands.
-- **`K` (Euler steps)** — settled on MP20Bat (null, see above); still open on other datasets.
-- **Richer `x_t` coverage** — the released scheme trains on a narrow subset of the configurations the inference integrator visits (7-ring failure mode). Future direction: extend training-point sampling without re-introducing the equivariance-collapse pathology that killed isotropic Gaussian.
