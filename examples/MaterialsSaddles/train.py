@@ -11,10 +11,11 @@ Architecture (v6 production default; see CLAUDE.md "Mode 1 architecture sweep"):
   - GlobalAttn off (Mode 1 has the partner direction; UMA's 4-hop MP already
     reaches the whole cell on these systems)
 
-Data is staged automatically under $SCRATCH/MaterialsSaddles/<subset>/ and the
-official splits/<subset>/{train,val,test}.parquet are used (no random
-splitting on our side). On a fresh machine the first launch downloads the
-missing pieces from HuggingFace; subsequent launches reuse the local copy.
+Data is MaterialsSaddles v2 (Hugging Face SciLM/MaterialsSaddles), staged under
+$MATERIALSSADDLES_ROOT (default $SCRATCH/MaterialsSaddles_v2) as
+<subset>/{train,val,test}/*.aselmdb; the split is the directory a file is in (see
+data_prep.py). On a fresh machine the first launch downloads the missing files;
+subsequent launches reuse the local copy.
 
 Launch (single node, single GPU):
     python train.py --output-dir runs/v6
@@ -38,7 +39,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data_prep import (  # noqa: E402
     ALL_SUBSETS, ensure_subset, ensure_subsets, load_local_triplet_splits,
-    load_official_splits,
+    load_official_splits, materials_saddles_root, subset_shards,
 )
 
 from saddleflow.data import MaterialsSaddlesDataset
@@ -68,6 +69,20 @@ class _StartOverrideDataset(torch.utils.data.Dataset):
         return r
 
 
+def _parse_task_map(spec):
+    """'oc22=oc20,oc25=oc20' -> {'oc22': 'oc20', 'oc25': 'oc20'}.  Needed because uma-m-1p1 carries only
+    {omat, oc20, omol, odac, omc} and raises KeyError('oc22'), while uma-s-1p2 also has oc22/oc25."""
+    if not spec: return {}
+    out = {}
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part: continue
+        k, _, v = part.partition("=")
+        if not k or not v: raise ValueError(f"bad --task-name-map entry {part!r}, expected SRC=DST")
+        out[k.strip()] = v.strip()
+    return out
+
+
 class _SaddleOverrideDataset(torch.utils.data.Dataset):
     """Swap each record's saddle for an externally reconverged one."""
 
@@ -86,6 +101,50 @@ class _SaddleOverrideDataset(torch.utils.data.Dataset):
             newt = torch.as_tensor(new, dtype=start.dtype)
             r["saddle_un_pos"] = start + _mic_disp(newt, start, r["cell"])
         return r
+
+class _PairOverrideDataset(torch.utils.data.Dataset):
+    """Round-2 retargeting (LiC recipe on MP20Bat): each triplet carries SEVERAL
+    (x0, target) pairs — x0 = an endpoint the model reached from a (perturbed) start,
+    target = the saddle Sella converged to FROM that endpoint. Both endpoints are set
+    to x0, so the midpoint IS x0; the target is MIC-unwrapped to it.
+
+    Two index spaces. Indices < len(base) behave as before: the base record with one
+    pair drawn at random from the triplet's (weighted) pool — which means a repeated
+    entry only changes the draw probability WITHIN its triplet, never how often the
+    triplet is visited. Indices >= len(base) address `entries` = one slot per weighted
+    pair (base record index, tid, pair index), so a pair repeated 5 times is trained on
+    5 times per epoch, exactly as the duplicated triplets of the LiC round-2 recipe.
+    `train.py` builds the train split from those entry slots when they are given."""
+
+    def __init__(self, base, table, entries=None, mix=False):
+        self.base, self.table = base, table
+        # mix=True: base indices are left ALONE (normal path-start sampling over the whole training set) and
+        # only the `entries` slots serve relabelled pairs, so one model sees both objectives (DAgger-style
+        # aggregation) instead of the pair table REPLACING the dataset.
+        self.mix = mix
+        self.entries = list(entries) if entries else []
+        self.delta_norm_mean = getattr(base, "delta_norm_mean", 2.0)
+
+    def __len__(self):
+        return len(self.base) + len(self.entries)
+
+    def __getitem__(self, i):
+        if i >= len(self.base):
+            rec_idx, tid, k = self.entries[i - len(self.base)]
+            r = self.base[rec_idx]; x0, tgt = self.table[int(tid)][k]
+        else:
+            r = self.base[i]
+            if self.mix: return r
+            pairs = self.table.get(int(r["triplet_id"]))
+            if pairs is None: return r
+            x0, tgt = pairs[int(torch.randint(len(pairs), (1,)))]
+        p = torch.as_tensor(x0, dtype=r["start_pos"].dtype)
+        t = torch.as_tensor(tgt, dtype=r["start_pos"].dtype)
+        r["saddle_un_pos"] = p + _mic_disp(t, p, r["cell"])
+        r["start_pos"] = p
+        r["partner_un_pos"] = p.clone()
+        return r
+
 
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss
 from saddleflow.models import EigenmodeHead, GlobalAttn, VelocityHead
@@ -187,12 +246,54 @@ def parse_args():
                    help="npz with tids/offsets/pos: replace each triplet's saddle with a "
                         "reconverged one (MIC-unwrapped to start_pos); splits are filtered "
                         "to triplets present in the file.")
+    p.add_argument("--pair-override", default=None,
+                   help="npz (tids/offsets/x0/target[/weight]) of (endpoint, Sella-saddle) "
+                        "pairs, several per triplet: round-2 retargeting on the model's own "
+                        "output distribution. x0 := endpoint, saddle := its Sella target; "
+                        "splits are filtered to triplets present in the file.")
+    p.add_argument("--pair-override-mix", action="store_true",
+                   help="train on the WHOLE training set (fresh path starts) AND the relabelled pair slots, "
+                        "instead of letting the pair table replace the dataset -- one model, one stage.")
     p.add_argument("--init-weights", default=None,
                    help="Checkpoint dir to load MODEL WEIGHTS ONLY from (fresh optimizer "
                         "and LR schedule). For pre-train -> fine-tune on a new start dist.")
     p.add_argument("--self-cond-prob", type=float, default=0.0,
                    help="Probability of replacing x0 with the model's own one-shot "
                         "prediction, so it learns to correct its own residual error.")
+    p.add_argument("--path-start-prob", type=float, default=0.0,
+                   help="Probability that a sample starts from a uniform point on the start->saddle line plus "
+                        "N(0, --path-noise-sigma^2) noise (x_1 = saddle); covers the climb from the minimum.")
+    p.add_argument("--max-val-records", type=int, default=0,
+                   help="Subsample the validation split to at most this many records (0 = use all). The "
+                        "validation loop has no batch cap, so a big subset makes it dominate the run: oc20's "
+                        "129k val triplets are 2,152 batches, ~12 h over a run's ten validations against ~9 h "
+                        "of training. Seeded, so every arm sees the same held-out cases.")
+    p.add_argument("--restrict-train-tids", default=None,
+                   help="Keep only the listed triplet ids in the TRAINING split. Either one npz/npy path "
+                        "(applies to every subset) or per-subset 'oc20=a.npz,oc22=b.npz' -- a subset not named "
+                        "keeps its whole split. The file holds a 'tids' array, or is a bare array. Validation "
+                        "and test are left untouched so the loss curve stays comparable across arms. Used to "
+                        "train on a chosen sub-population, or to mix subsets at a chosen ratio.")
+    p.add_argument("--subset-repeat", default=None,
+                   help="Oversample small subsets inside ONE epoch, e.g. 'oc22=8,mp20bat=8,oc20=2'. "
+                        "Each named subset's TRAIN indices are repeated that many times (unnamed = 1x), "
+                        "so a single epoch gives each subset a chosen number of exposures without the "
+                        "huge subset (lemat, 92%% of the data) dictating everyone else's. Validation and "
+                        "test are never repeated, so loss curves stay comparable across arms.")
+    p.add_argument("--task-name-map", default=None,
+                   help="Remap UMA task names, e.g. 'oc22=oc20'. uma-m-1p1 has no oc22/oc25 expert and will "
+                        "raise KeyError without this; uma-s-1p2 does not need it.")
+    p.add_argument("--path-noise-sigma", type=float, default=0.3)
+    p.add_argument("--path-noise-sigma-endpoint", type=float, default=None,
+                   help="Noise width at the ENDPOINT end of the path (u=0, the reactant/product the Dimer-like "
+                        "use case starts from). Defaults to --path-noise-sigma.")
+    p.add_argument("--path-noise-sigma-saddle", type=float, default=None,
+                   help="Noise width at the SADDLE end of the path (u=1). Defaults to --path-noise-sigma. "
+                        "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
+                        "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
+                        "direction predicts which saddle is the target instead of being averaged away.")
+    p.add_argument("--path-u-power", type=float, default=1.0,
+                   help="u = U(0,1)**power along the start->saddle line; >1 biases starts toward the endpoint.")
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
                    help="Probability a TS-denoise sample instead starts from the "
                         "(R+P)/2 midpoint (mixes training and inference distributions).")
@@ -248,6 +349,24 @@ def parse_args():
     p.add_argument("--unfreeze-uma-last", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--unfreeze-uma-last2", action=argparse.BooleanOptionalAction, default=True)
     # v7-5: full unfreeze of all 4 UMA backbone blocks (overrides --unfreeze-uma-last/last2).
+    p.add_argument("--truncate-blocks", type=int, default=0,
+                   help="Keep only the FIRST N message-passing blocks of the pretrained backbone "
+                        "(0 = keep all). Tests whether a large receptive field is needed at all, "
+                        "while PRESERVING pretraining -- unlike --backbone-shape, which must "
+                        "re-initialise. Cost is ~linear in blocks, so N=2 of 10 is ~5x cheaper.")
+    p.add_argument("--grad-accum-steps", type=int, default=1,
+                   help="Micro-batches per optimizer step. Lets a small node count hold the same "
+                        "GLOBAL batch (e.g. 8 nodes x 8/GPU x accum 2 = 128, matching 16 nodes x 8). "
+                        "NOTE the LR scheduler ticks once per MICRO-step per rank, so warmup and "
+                        "total steps scale by world_size * accum -- set --warmup-steps accordingly.")
+    p.add_argument("--backbone-shape", default=None,
+                   help="Train a RANDOMLY-INITIALISED backbone with this shape instead of loading "
+                        "pretrained UMA, e.g. 'layers=2,lmax=6,mmax=4,channels=256,experts=8'. "
+                        "Omitted keys keep the uma-m-1p1 value (10/4/2/128/32). Discards pretraining.")
+    p.add_argument("--random-init", action="store_true",
+                   help="Keep the pretrained backbone's exact shape but re-initialise its weights. "
+                        "The control that makes --backbone-shape interpretable: it separates "
+                        "'depth/width changed' from 'pretraining was thrown away'.")
     p.add_argument("--unfreeze-uma-all", action=argparse.BooleanOptionalAction, default=False,
                    help="v7-5: unfreeze ALL backbone blocks (not just last 2). "
                         "Overrides --unfreeze-uma-last/last2; all blocks land in "
@@ -350,6 +469,35 @@ def main():
         for _k2, _tid2 in enumerate(_t2.tolist()):
             _START_TABLE[int(_tid2)] = _p2[_o2[_k2]:_o2[_k2 + 1]]
         print(f"[train] start-override: {len(_START_TABLE)} stage-1 predictions loaded")
+    _PAIR_TABLE = {}; _PAIR_ENTRIES = []
+    if args.pair_override is not None:
+        import numpy as _np3
+        _z3 = _np3.load(args.pair_override)
+        _t3, _o3, _x3, _s3 = _z3["tids"], _z3["offsets"], _z3["x0"], _z3["target"]
+        _w3 = _z3["weight"] if "weight" in _z3.files else _np3.ones(len(_t3), int)
+        for _k3, _tid3 in enumerate(_t3.tolist()):
+            _pair = (_x3[_o3[_k3]:_o3[_k3 + 1]], _s3[_o3[_k3]:_o3[_k3 + 1]])
+            _PAIR_TABLE.setdefault(int(_tid3), []).extend([_pair] * int(max(1, _w3[_k3])))
+        print(f"[train] pair-override: {len(_t3)} (endpoint, Sella-target) pairs over "
+              f"{len(_PAIR_TABLE)} triplets ({sum(len(v) for v in _PAIR_TABLE.values())} weighted entries)")
+    _RESTRICT_TIDS = {}          # subset -> set of tids; the key None applies to every subset
+    if args.restrict_train_tids is not None:
+        import numpy as _np4
+        def _load_tids(_path):
+            _z4 = _np4.load(_path)
+            _arr4 = _z4["tids"] if hasattr(_z4, "files") else _z4
+            return set(int(_t4) for _t4 in _np4.asarray(_arr4).ravel().tolist())
+        _spec = str(args.restrict_train_tids)
+        if "=" in _spec:
+            for _part in _spec.split(","):
+                _k4, _, _v4 = _part.strip().partition("=")
+                if not _k4 or not _v4:
+                    raise ValueError(f"bad --restrict-train-tids entry {_part!r}, expected SUBSET=PATH")
+                _RESTRICT_TIDS[_k4.strip()] = _load_tids(_v4.strip())
+        else:
+            _RESTRICT_TIDS[None] = _load_tids(_spec)
+        for _k4, _v4 in _RESTRICT_TIDS.items():
+            print(f"[train] restrict-train-tids[{_k4 or 'all subsets'}]: {len(_v4)} triplet ids kept for training")
     _OVERRIDE_TABLE, _OVERRIDE_TIDS = {}, set()
     if args.saddle_override is not None:
         import numpy as _np
@@ -375,8 +523,7 @@ def main():
     # loss); using stale-by-days values is fine.
     from pathlib import Path as _Path
     canonical_stats_root = _Path(os.environ.get(
-        "SADDLEFLOW_MATERIALS_SADDLES_ROOT",
-        os.path.expandvars("$SCRATCH/MaterialsSaddles"),
+        "SADDLEFLOW_MATERIALS_SADDLES_ROOT", str(materials_saddles_root()),
     ))
 
     offset = 0
@@ -393,7 +540,11 @@ def main():
             sdir,
             default_task_name=args.default_task_name,
             stats_cache=stats_path_for_ds,
+            task_name_map=_parse_task_map(args.task_name_map),
         )
+        if args.shards_dir is None and list(ds.shards) != subset_shards(s):
+            raise SystemExit(f"[train] {s}: dataset file order differs from data_prep.subset_shards; "
+                             f"the split tids would point at the wrong triplets")
         print(f"[train] {s}: {len(ds)} records ({ds.num_triplets} triplets × 2 sides), "
               f"across {len(ds.shards)} shards  ⟨‖Δ‖⟩={ds.delta_norm_mean:.3f} Å"
               if ds.delta_norm_mean is not None else
@@ -426,15 +577,40 @@ def main():
             print(f"[train] {s}: --limit-triplets {n} → "
                   f"train={len(train_tids)} val={len(val_tids)} test={len(test_tids)}")
 
-        if args.saddle_override is not None:
-            _keep = _OVERRIDE_TIDS
-            train_tids = [t for t in train_tids if int(t) in _keep]
-            val_tids   = [t for t in val_tids   if int(t) in _keep]
-            test_tids  = [t for t in test_tids  if int(t) in _keep]
+        _keep4 = _RESTRICT_TIDS.get(s, _RESTRICT_TIDS.get(None))
+        if _keep4 is not None:
+            _n0 = len(train_tids)
+            train_tids = [t for t in train_tids if int(t) in _keep4]
+            print(f"[train] {s}: --restrict-train-tids -> train={len(train_tids)} of {_n0}")
+
+        if args.saddle_override is not None or args.pair_override is not None:
+            _keep = _OVERRIDE_TIDS if args.saddle_override is not None else (
+                None if args.pair_override_mix else set(_PAIR_TABLE))
+            if _keep is not None:
+                train_tids = [t for t in train_tids if int(t) in _keep]
+                val_tids   = [t for t in val_tids   if int(t) in _keep]
+                test_tids  = [t for t in test_tids  if int(t) in _keep]
             print(f"[train] {s}: saddle-override -> train={len(train_tids)} "
                   f"val={len(val_tids)} test={len(test_tids)}")
-        train_idxs += sorted([offset + 2*t for t in train_tids]
-                             + [offset + 2*t + 1 for t in train_tids])
+        _rep = 1
+        if args.subset_repeat:
+            for _tok in args.subset_repeat.split(","):
+                if "=" in _tok and _tok.split("=", 1)[0].strip() == s:
+                    _rep = max(1, int(_tok.split("=", 1)[1]))
+        _base_idxs = sorted([offset + 2*t for t in train_tids]
+                            + [offset + 2*t + 1 for t in train_tids])
+        train_idxs += _base_idxs * _rep
+        if _rep > 1:
+            print(f"[train] {s}: --subset-repeat {_rep}x -> {len(_base_idxs)} -> "
+                  f"{len(_base_idxs) * _rep} train slots")
+        if args.pair_override is not None:   # one training slot per weighted pair (see _PairOverrideDataset)
+            # A tid can be in the split without being in the pair table when --saddle-override is also given
+            # (the split filter then keeps the override's tids, which are a much larger set): skip those.
+            for t in train_tids:
+                _pl = _PAIR_TABLE.get(int(t))
+                if not _pl: continue
+                for k in range(len(_pl)):
+                    _PAIR_ENTRIES.append((offset + 2 * int(t) + (k % 2), int(t), k))
         val_idxs   += sorted([offset + 2*t for t in val_tids]
                              + [offset + 2*t + 1 for t in val_tids])
         test_idxs  += sorted([offset + 2*t for t in test_tids]
@@ -454,6 +630,20 @@ def main():
     if args.start_override is not None:
         dataset_full = _StartOverrideDataset(dataset_full, _START_TABLE)
         setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
+    if args.pair_override is not None:
+        _n_base = len(dataset_full)
+        dataset_full = _PairOverrideDataset(dataset_full, _PAIR_TABLE, _PAIR_ENTRIES,
+                                            mix=args.pair_override_mix)
+        setattr(dataset_full, "delta_norm_mean", weighted_delta_norm)
+        _pair_idxs = [_n_base + j for j in range(len(_PAIR_ENTRIES))]
+        if args.pair_override_mix:
+            train_idxs = train_idxs + _pair_idxs
+            print(f"[train] pair-override MIX: {len(train_idxs)} slots = {len(train_idxs)-len(_pair_idxs)} normal "
+                  f"records (fresh path starts, whole training set) + {len(_pair_idxs)} relabelled pair slots")
+        else:
+            train_idxs = _pair_idxs
+            print(f"[train] pair-override: train split expanded to {len(train_idxs)} slots = one per weighted pair "
+                  f"(was {2 * len(_PAIR_TABLE)} record visits with a random within-triplet draw)")
     if state.is_main_process:
         (out_dir / "dataset_stats.json").write_text(json.dumps({
             "delta_norm_mean": weighted_delta_norm,
@@ -464,6 +654,21 @@ def main():
     print(f"[train] combined: {offset} records, weighted ⟨‖Δ‖⟩ = {weighted_delta_norm:.3f} Å")
 
     train_dataset = Subset(dataset_full, train_idxs)
+    if args.max_val_records > 0 and len(val_idxs) > args.max_val_records:
+        import numpy as _np5
+        _n5 = len(val_idxs)
+        val_idxs = sorted(int(i) for i in _np5.random.default_rng(12345).choice(
+            _np5.asarray(val_idxs), args.max_val_records, replace=False))
+        print(f"[train] --max-val-records: validation subsampled {_n5} -> {len(val_idxs)} records")
+    if args.max_val_records > 0 and len(test_idxs) > args.max_val_records:
+        # training.py runs one FULL pass over the test split after the final checkpoint (utils/training.py
+        # ~line 459). It is a diagnostic loss we never use -- models are scored by the Sella protocol -- and
+        # on a mixed oc20+oc22 run it is 275,442 records, ~1 h holding 16 nodes after the run is finished.
+        import numpy as _np6
+        _n6 = len(test_idxs)
+        test_idxs = sorted(int(i) for i in _np6.random.default_rng(12345).choice(
+            _np6.asarray(test_idxs), args.max_val_records, replace=False))
+        print(f"[train] --max-val-records: test split subsampled {_n6} -> {len(test_idxs)} records")
     val_dataset   = Subset(dataset_full, val_idxs) if val_idxs else None
     test_dataset  = Subset(dataset_full, test_idxs) if test_idxs else None
     train_dataset.delta_norm_mean = weighted_delta_norm
@@ -479,14 +684,45 @@ def main():
     print(f"[train] delta_endpoint_channels={args.delta_endpoint_channels}  "
           f"force_field_channels={args.force_field_channels}")
 
-    print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
-    raw_backbone = load_uma_backbone(
-        args.backbone, device=args.device, freeze=True, eval_mode=True,
-        unfreeze_last_block=args.unfreeze_uma_last,
-    )
-    if args.unfreeze_uma_last2:
+    if args.backbone_shape:
+        from saddleflow.utils.backbone import build_uma_backbone_custom
+        _dl = sorted({(args.task_name_map or {}).get(x, x) for x in (args.subsets or ["oc22"])}) \
+            if isinstance(getattr(args, "task_name_map", None), dict) else None
+        print(f"[train] CUSTOM backbone shape {args.backbone_shape!r} (random init, no pretraining)")
+        raw_backbone = build_uma_backbone_custom(
+            args.backbone_shape, dataset_list=_dl, device=args.device)
+    else:
+        print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
+        raw_backbone = load_uma_backbone(
+            args.backbone, device=args.device, freeze=True, eval_mode=True,
+            unfreeze_last_block=args.unfreeze_uma_last,
+        )
+        if args.truncate_blocks and args.truncate_blocks < len(raw_backbone.blocks):
+            import torch.nn as _tnn
+            _keep = int(args.truncate_blocks); _was = len(raw_backbone.blocks)
+            raw_backbone.blocks = _tnn.ModuleList(list(raw_backbone.blocks)[:_keep])
+            if hasattr(raw_backbone, "num_layers"):
+                raw_backbone.num_layers = _keep
+            print(f"[train] --truncate-blocks: kept first {_keep} of {_was} blocks "
+                  f"(pretrained weights preserved); receptive field ~{_keep * 6} A")
+        if args.random_init:
+            import torch.nn as _nn
+            _n = 0
+            for _m in raw_backbone.modules():
+                if hasattr(_m, "reset_parameters"):
+                    _m.reset_parameters(); _n += 1
+            for _p in raw_backbone.parameters():
+                _p.requires_grad_(True)
+            print(f"[train] --random-init: re-initialised {_n} submodules "
+                  f"(pretrained weights discarded; shape unchanged)")
+    if args.unfreeze_uma_last2 and len(raw_backbone.blocks) >= 2:
         for p in raw_backbone.blocks[-2].parameters():
             p.requires_grad_(True)
+    elif args.unfreeze_uma_last2:
+        # 1-block backbones (--backbone-shape layers=1) have no blocks[-2]; blocks[-1] already
+        # covers the whole stack, so this is a no-op rather than an IndexError.
+        print("[train] --unfreeze-uma-last2 skipped: backbone has only "
+              f"{len(raw_backbone.blocks)} block(s)")
     # v7-5: full unfreeze (all 4 blocks). Overrides last/last2 — they're the
     # default-True trailing flags, so we just unfreeze the rest here.
     if args.unfreeze_uma_all:
@@ -633,6 +869,13 @@ def main():
             ts_denoise_sigma_max=float(args.ts_denoise_sigma_max),
             self_cond_prob=float(args.self_cond_prob),
             mixed_start_prob=float(args.mixed_start_prob),
+            path_start_prob=float(args.path_start_prob),
+            path_noise_sigma=float(args.path_noise_sigma),
+            path_noise_sigma_endpoint=(None if args.path_noise_sigma_endpoint is None
+                                       else float(args.path_noise_sigma_endpoint)),
+            path_noise_sigma_saddle=(None if args.path_noise_sigma_saddle is None
+                                     else float(args.path_noise_sigma_saddle)),
+            path_u_power=float(args.path_u_power),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -679,6 +922,7 @@ def main():
         num_workers=args.num_workers,
         learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay,
+        grad_accum_steps=args.grad_accum_steps,
         mixed_precision=args.mixed_precision, seed=args.seed,
         log_every=args.log_every, save_every_epochs=args.save_every_epochs,
         save_every_steps=args.save_every_steps,
@@ -729,6 +973,14 @@ def main():
             "mixed_start_prob": float(args.mixed_start_prob),
             "saddle_override": args.saddle_override,
             "start_override": args.start_override,
+            "pair_override": args.pair_override,
+            "task_name_map": args.task_name_map,
+            "restrict_train_tids": args.restrict_train_tids,
+            "path_noise_sigma_endpoint": args.path_noise_sigma_endpoint,
+            "path_noise_sigma_saddle": args.path_noise_sigma_saddle,
+            "path_start_prob": args.path_start_prob,
+            "path_noise_sigma": args.path_noise_sigma,
+            "path_u_power": args.path_u_power,
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
