@@ -164,7 +164,7 @@ def parse_args():
     # v7-6: PBC-correct convergent v_target with hybrid schedule.
     p.add_argument("--xt-target-correction", action=argparse.BooleanOptionalAction, default=False,
                    help="v7-6: replace the straight-line constant velocity target "
-                        "with v_target = MIC(saddle − x_t)/(1 − t) for t ≤ 1 − t_floor "
+                        "with v_target = (saddle − x_t)/(1 − t), unwrapped, for t ≤ 1 − t_floor "
                         "(off-line-corrected, convergent vector field), AND keep the "
                         "v7-5 constant target with no perturbation for t > 1 − t_floor "
                         "(near-saddle on-line regime). Pair with --xt-perturb-sigma > 0 "

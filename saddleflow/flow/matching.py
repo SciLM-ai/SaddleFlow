@@ -125,7 +125,7 @@ class FlowMatchingConfig:
     # The fix uses a hybrid schedule split at `xt_target_correction_t_floor`:
     #   * t ≤ 1 − t_floor (bulk of training, 90% of t-space when floor=0.1):
     #         x_t  = on_line + Gaussian noise (when xt_perturb_sigma > 0)
-    #         v_t  = MIC(saddle − x_t, cell) / (1 − t)        # convergent
+    #         v_t  = (saddle_un − x_t_un) / (1 − t)           # convergent, unwrapped frame
     #     denominator is always ≥ t_floor → no singularity, no clamping.
     #   * t >  1 − t_floor (last bit, near-saddle):
     #         x_t  = on_line   (no perturbation)
@@ -691,7 +691,7 @@ class FlowMatchingLoss(nn.Module):
             # off-line-corrected regime or the on-line-original regime.
             #   * t ≤ 1 − t_floor (typically 0.9): corrected regime
             #     - perturb x_t off-line (when --xt-perturb-sigma > 0)
-            #     - v_target = MIC(saddle − x_t, cell) / (1 − t)   [denom ≥ t_floor]
+            #     - v_target = (saddle_un − x_t_un) / (1 − t)   [unwrapped; denom ≥ t_floor]
             #   * t >  1 − t_floor: original regime (v7-5 behaviour)
             #     - do NOT perturb (the constant target is wrong off-line —
             #       would teach parallel-to-line at exactly the time-FiLM
