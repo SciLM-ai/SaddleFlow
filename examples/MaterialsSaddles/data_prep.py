@@ -40,12 +40,13 @@ TRIPLETS_PER_FILE = 50_000
 
 # Triplet counts of the v2 release (verified against every file when it was written).
 # They pin the file lists and double as a completeness / consistency check. lemat train excludes the 2 triplets
-# with broken forces that the release dropped (lemat_train_0213 and lemat_train_0479 hold 49,999 each).
+# with broken forces that the release dropped (lemat_train_0213 and lemat_train_0479 hold 49,999 each); mp20bat
+# train excludes the 2 one-atom triplets dropped on 2026-10-08.
 EXPECTED_TRIPLETS = {
     "lemat":   {"train": 28_223_514, "val": 1_533_392, "test": 1_566_009},
     "oc20":    {"train": 2_133_114,  "val": 123_751,   "test": 110_853},
     "oc22":    {"train": 139_175,    "val": 6_557,     "test": 6_861},
-    "mp20bat": {"train": 31_046,     "val": 1_454,     "test": 1_531},
+    "mp20bat": {"train": 31_044,     "val": 1_454,     "test": 1_531},
 }
 ALL_SUBSETS: tuple[str, ...] = tuple(EXPECTED_TRIPLETS.keys())
 
