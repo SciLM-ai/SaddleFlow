@@ -67,8 +67,8 @@ python examples/MaterialsSaddles/train.py --all-subsets --output-dir <out> \
   narrower is safe. Ship the training σ with the weights.
 - **x_t perturbation (0.05 Å)** is not redundant with the start noise: ε enters `x_t` scaled by `(1 − t)` and fades near
   the saddle, where the model's own endpoints land off the line.
-- **Convergent target** (`--xt-target-correction`, `t_floor = 0.1`): `v = MIC(S − x_t)/(1 − t)` for `t ≤ 0.9`,
-  `S − x0` above (perturbation off there).
+- **Convergent target** (`--xt-target-correction`, `t_floor = 0.1`): `v = (S − x_t)/(1 − t)` for `t ≤ 0.9`, with S and
+  x_t unwrapped to the start (not a minimum-image difference); `S − x0` above (perturbation off there).
 - **Huber δ = 0.05** approximates the median of a multi-modal target where MSE averages the modes.
 - **Backbone LR 3e-3 on UMA-M** (1e-2, the UMA-S optimum, diverges on UMA-M); head/FiLM LR 1e-3.
 - **`--task-name-map oc22=oc20`**: `uma-m-1p1` has no `oc22` mixture-of-experts entry and raises `KeyError('oc22')`.
