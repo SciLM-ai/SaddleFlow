@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "saddleflow"
 version = "0.0.1"
-description = "Flow-matching generation of transition-state structures for periodic materials, given a reactant–product pair."
+description = "Flow-matching generation of transition-state structures for periodic materials."
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11, <3.14"
-authors = [{name = "Anonymous"}]
+authors = [{name = "Ilgar Baghishov"}, {name = "Sung Hoon Jung"}, {name = "Graeme Henkelman"}]
 dependencies = [
     # Pinned against fairchem-core 2.19.0+ (other_codes/fairchem @ fairchem_core-2.19.0-23-g263bf0f52).
     # Constraints below mirror fairchem-core/pyproject.toml so pip resolves a single env.
@@ -38,6 +38,11 @@ extras = ["pymatgen>=2025.1.9"]
 # NOTE: on NVIDIA HPC SDK toolchains build with `CC=gcc CXX=g++ pip install ...`
 # — the default `nvc` rejects Sella's -fno-strict-overflow.
 eval = ["sella>=2.5"]
+# Same dependency, named for users of saddleflow.search / `saddleflow search`.
+search = ["sella>=2.5"]
+
+[project.scripts]
+saddleflow = "saddleflow.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["saddleflow"]

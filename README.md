@@ -2,16 +2,56 @@
 
 Generative AI for **transition-state structures** in periodic materials.
 
-Given a reactant–product pair `(R, P)`, SaddleFlow uses flow matching to propose the saddle structure connecting them. The target use case is high-throughput reaction screening for batteries, catalysts, and bulk materials, where many `(R, P)` pairs are cheap to enumerate but each NEB / Dimer search to find the saddle is expensive.
+SaddleFlow uses flow matching on a fine-tuned [UMA](https://huggingface.co/facebook/UMA) backbone to propose
+saddle points. The released model is unconditional, like a Dimer search: from a single minimum plus noise it
+flows to a nearby first-order saddle, which Sella then converges in 25–61 force calls instead of 196–352
+(MaterialsSaddles paper). A conditional recipe that also takes the product, like NEB, is in
+[`examples/MP20Bat/`](examples/MP20Bat/).
 
-## Status
+## Use the pretrained model
 
-- Working end-to-end on the MaterialsSaddles `mp20bat` subset (~34,742 NEB-CI saddles from Materials Project battery structures).
-- Two smaller worked examples on Li-on-graphene, useful for quick experimentation: defective sheet (`examples/LiC/`) and pristine sheet (`examples/LiC_simpler/`).
-- Core training scheme is product-conditional flow matching: `x_0 = (R + P)/2` (PBC-correct midpoint), `x_1 = saddle`, with the velocity head reading a per-atom Δ_partner = MIC(partner − x_t) at every flow step.
-- A later sweep improves substantially on that recipe — a two-stage *unconditional* cascade reaches a max-atom-displacement median of 0.12 Å in 57 force calls, against 0.29 Å / 128 for the paper recipe and 0.62 Å / 202 for the `(R + P)/2` baseline. Details and the full model table are in [`CLAUDE.md`](CLAUDE.md), "MP20Bat 2026-08 sweep".
+The weights are on the Hugging Face Hub at [`SciLM/SaddleFlow`](https://huggingface.co/SciLM/SaddleFlow) (accept
+the license there, then `hf auth login`).
 
-See [`CLAUDE.md`](CLAUDE.md) for the full methods specification, and [`examples/MP20Bat/`](examples/MP20Bat/) for the production training + evaluation pipeline.
+```bash
+pip install "saddleflow[search] @ git+https://github.com/SciLM-ai/SaddleFlow"
+```
+
+```python
+from ase.io import read
+from saddleflow import SaddleFlow, SaddleFlowSearch, find_saddles
+
+sf = SaddleFlow.from_pretrained()                              # SciLM/SaddleFlow, GPU if available
+atoms = read("reactant.traj")
+guesses = sf.propose(atoms, n=8, seed=0, task_name="omat")     # 8 ase.Atoms, one per noise draw
+
+# Converge them with Sella on UMA-S-1.2 and keep the distinct first-order saddles.
+from fairchem.core import FAIRChemCalculator
+from fairchem.core.calculate.pretrained_mlip import get_predict_unit
+calc = FAIRChemCalculator(get_predict_unit("uma-s-1p2", device="cuda"), task_name="omat")
+saddles = find_saddles(atoms, calc, n=8, model=sf, seed=0)
+
+# Or use it like an ASE optimizer: atoms ends on a verified first-order saddle.
+atoms.calc = calc
+SaddleFlowSearch(atoms, sf, seed=0).run(fmax=0.01)
+```
+
+From the command line: `saddleflow propose reactant.traj -o proposals.traj --n 8` and
+`saddleflow search reactant.traj -o saddles.traj --n 8 --task omat`.
+
+Use `task_name="omat"` for bulk materials and `"oc20"` or `"oc22"` for adsorbates on catalyst surfaces. The start
+noise defaults to the training value (0.3 Å) and cannot be raised; each proposal is five flow passes of four
+Euler steps. `examples/MaterialsSaddles/export_pretrained.py` turns a training checkpoint into this format, and
+`check_pretrained.py` checks that it reproduces recorded evaluation endpoints.
+
+## Repository
+
+- `examples/MaterialsSaddles/`: training, evaluation and export of the released model on all four
+  MaterialsSaddles subsets.
+- `examples/MP20Bat/`: the conditional recipe on the `mp20bat` subset.
+- `examples/LiC/`, `examples/LiC_simpler/`: small Li-on-graphene examples for quick experiments.
+
+See [`CLAUDE.md`](CLAUDE.md) for the method and the training recipe.
 
 ## Installation
 
@@ -37,7 +77,7 @@ pip install -e '.[eval]'
 
 It is not needed to train or to sample.
 
-## Quickstart — sample a saddle from a trained checkpoint
+## Sample from your own conditional checkpoint
 
 ```python
 import torch
@@ -125,10 +165,11 @@ Then keep records with `nneg == 1`. Reported per model: distance moved (rmsd/max
 - [ASE](https://wiki.fysik.dtu.dk/ase/) — atomic simulation environment.
 - [PyTorch](https://pytorch.org) + [HuggingFace `accelerate`](https://huggingface.co/docs/accelerate) — training loop, multi-GPU / multi-node scaling.
 
-## Author
+## Authors
 
-Anonymous (double-blind submission).
+Ilgar Baghishov, Sung Hoon Jung and Graeme Henkelman (The University of Texas at Austin).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+The code is MIT — see [`LICENSE`](LICENSE). The released weights are a fine-tuned version of Meta's UMA-M-1.1
+and are distributed under the FAIR Chemistry License v1 on the Hugging Face model page.
