@@ -22,6 +22,12 @@ dependencies = [
     "safetensors>=0.4",
 ]
 
+[project.urls]
+Homepage = "https://github.com/SciLM-ai/SaddleFlow"
+Repository = "https://github.com/SciLM-ai/SaddleFlow"
+Model = "https://huggingface.co/SciLM/SaddleFlow"
+Dataset = "https://huggingface.co/datasets/SciLM/MaterialsSaddles"
+
 [project.optional-dependencies]
 # Sella converges proposals to verified saddles (saddleflow.search, `saddleflow search`). It pulls in jax.
 search = ["sella>=2.5"]
