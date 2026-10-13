@@ -19,7 +19,7 @@
 #
 # Prereq (one-time): saddleflow is pip-installed in the conda env so
 # `import saddleflow` works from anywhere on the compute nodes.
-#     pip install -e /global/cfs/cdirs/m1883/ilgar/codes/SaddleFlow
+#     pip install -e '/global/cfs/cdirs/m1883/ilgar/codes/SaddleFlow[train]'
 #
 # Submission:
 #     cd /global/cfs/cdirs/m1883/ilgar/codes/SaddleFlow/examples/MaterialsSaddles
