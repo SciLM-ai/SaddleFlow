@@ -45,7 +45,7 @@ def main(argv=None):
         from fairchem.core.calculate.pretrained_mlip import get_predict_unit
 
         from .search import find_saddles
-        unit = get_predict_unit(a.uma, device=str(model.device))
+        unit = get_predict_unit(a.uma, device=model.device.type)          # fairchem takes "cuda" or "cpu"
         for frame in frames:
             task = a.task or frame.info.get("task_name") or "omat"
             calc = FAIRChemCalculator(unit, task_name=task)

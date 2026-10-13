@@ -10,12 +10,37 @@ flows to a nearby first-order saddle, which Sella then converges in 25–61 forc
 
 ## Use the pretrained model
 
-The weights are on the Hugging Face Hub at [`SciLM/SaddleFlow`](https://huggingface.co/SciLM/SaddleFlow) (accept
-the license there, then `hf auth login`).
+### Install
 
 ```bash
 pip install "saddleflow[search] @ git+https://github.com/SciLM-ai/SaddleFlow"
+python -c "import torch; print(torch.cuda.is_available())"   # should print True
 ```
+
+**Linux on ARM (aarch64), e.g. NVIDIA GH200:** PyPI has only CPU builds of torch for aarch64, so the line above
+silently installs one. Install the CUDA build first, then SaddleFlow:
+
+```bash
+pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu129
+pip install "saddleflow[search] @ git+https://github.com/SciLM-ai/SaddleFlow"
+```
+
+`torch==2.13.0` matches the newest supported fairchem-core (2.23); with fairchem-core 2.19–2.21 use `torch==2.8.0`
+from the same index.
+
+**Access.** The weights are gated: accept the license at [`SciLM/SaddleFlow`](https://huggingface.co/SciLM/SaddleFlow)
+and, to converge proposals with Sella, at [`facebook/UMA`](https://huggingface.co/facebook/UMA); then run
+`hf auth login`. The first `from_pretrained()` downloads 5.6 GB.
+
+**Hardware.** One GPU. On one GH200 a proposal (20 network evaluations) takes about 1.8 s on its own, and 16–64
+proposals batched together run at 2–3 per second for 40–80-atom cells. GPU memory is about 6 GB for one proposal,
+12–15 GB for 16, and 26–34 GB for 64 (`batch_size` sets how many run together). CPU works but is slow. fairchem
+compiles kernels on first use and caches them under `~/.triton` and `~/.cache`; on clusters with a small home
+quota, set `TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR`, and `XDG_CACHE_HOME` to a scratch directory.
+
+### Run
+
+[`examples/quickstart/`](examples/quickstart/) runs all of this on a real 61-atom battery cell.
 
 ```python
 from ase.io import read
@@ -53,29 +78,23 @@ Euler steps. `examples/MaterialsSaddles/export_pretrained.py` turns a training c
 
 See [`CLAUDE.md`](CLAUDE.md) for the method and the training recipe.
 
-## Installation
+## Install for training and development
 
 ```bash
 conda create -n saddleflow python=3.12 -y
 conda activate saddleflow
-pip install -e .
+pip install -e '.[train,search]'
 ```
 
-That pulls `fairchem-core`, `torch~=2.8`, `ase`, `e3nn`, `accelerate`, `lmdb`, etc. per `pyproject.toml`.
+`train` adds what the training and evaluation scripts in `examples/` need (accelerate, wandb, matplotlib, pyarrow,
+lmdb); `search` adds Sella for the saddle-search evaluation below, which is not needed to train or to sample. The
+paper model was trained with fairchem-core 2.19 (`pip install 'fairchem-core==2.19.*'` to match it). On aarch64,
+install a CUDA build of torch first, as above.
 
-Use **Python 3.12** — fairchem-core 2.19 builds cleanly on 3.12 but has had wheel issues on 3.11/3.13 on some platforms.
+Use **Python 3.12** — fairchem-core builds cleanly on 3.12 but has had wheel issues on 3.11/3.13 on some platforms.
 
-First UMA load downloads the `uma-s-1p2` checkpoint from HuggingFace and requires a valid `HF_TOKEN` (or a `huggingface-cli login`).
-
-To run the saddle-search evaluation (below) you also need [Sella](https://github.com/zadorlab/sella):
-
-```bash
-pip install -e '.[eval]'
-# On NVIDIA HPC SDK toolchains the default `nvc` rejects Sella's build flags:
-#   CC=gcc CXX=g++ pip install -e '.[eval]'
-```
-
-It is not needed to train or to sample.
+First UMA load downloads the `uma-s-1p2` checkpoint from HuggingFace and requires a valid `HF_TOKEN` (or a
+`hf auth login`). If pip builds Sella from source with NVIDIA's `nvc` compiler, set `CC=gcc CXX=g++`.
 
 ## Sample from your own conditional checkpoint
 
