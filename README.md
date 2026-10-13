@@ -6,7 +6,7 @@ SaddleFlow uses flow matching on a fine-tuned [UMA](https://huggingface.co/faceb
 saddle points. The released model is unconditional, like a Dimer search: from a single minimum plus noise it
 flows to a nearby first-order saddle, which Sella then converges in 25–61 force calls instead of 196–352
 (MaterialsSaddles paper). A conditional recipe that also takes the product, like NEB, is in
-[`examples/MP20Bat/`](examples/MP20Bat/).
+[`examples/MP20Bat/`](https://github.com/SciLM-ai/SaddleFlow/tree/main/examples/MP20Bat/).
 
 ## Use the pretrained model
 
@@ -40,7 +40,7 @@ quota, set `TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR`, and `XDG_CACHE_HOME` t
 
 ### Run
 
-[`examples/quickstart/`](examples/quickstart/) runs all of this on a real 61-atom battery cell.
+[`examples/quickstart/`](https://github.com/SciLM-ai/SaddleFlow/tree/main/examples/quickstart/) runs all of this on a real 61-atom battery cell.
 
 ```python
 from ase.io import read
@@ -76,7 +76,7 @@ Euler steps. `examples/MaterialsSaddles/export_pretrained.py` turns a training c
 - `examples/MP20Bat/`: the conditional recipe on the `mp20bat` subset.
 - `examples/LiC/`, `examples/LiC_simpler/`: small Li-on-graphene examples for quick experiments.
 
-See [`CLAUDE.md`](CLAUDE.md) for the method and the training recipe.
+See [`CLAUDE.md`](https://github.com/SciLM-ai/SaddleFlow/blob/main/CLAUDE.md) for the method and the training recipe.
 
 ## Install for training and development
 
@@ -139,14 +139,14 @@ cd $SCRATCH/SaddleFlow_mp20bat            # so SLURM logs land on scratch
 sbatch $WORK/codes/SaddleFlow/examples/MP20Bat/run.sh
 ```
 
-This trains on the full `mp20bat` subset (~34,742 triplets) for 60 epochs with 4 nodes × 3 A100s, then auto-runs a 50-case post-training eval. Heavy outputs (checkpoints, eval `.npz`, `.traj` files) all land under `$SCRATCH/SaddleFlow_mp20bat/runs/<TIMESTAMP>/`. See [`examples/MP20Bat/README.md`](examples/MP20Bat/README.md) for the full pipeline (training → full-test-set eval at K=10 → K=10 vs K=50 stability → paper-style parity figures).
+This trains on the full `mp20bat` subset (~34,742 triplets) for 60 epochs with 4 nodes × 3 A100s, then auto-runs a 50-case post-training eval. Heavy outputs (checkpoints, eval `.npz`, `.traj` files) all land under `$SCRATCH/SaddleFlow_mp20bat/runs/<TIMESTAMP>/`. See [`examples/MP20Bat/README.md`](https://github.com/SciLM-ai/SaddleFlow/blob/main/examples/MP20Bat/README.md) for the full pipeline (training → full-test-set eval at K=10 → K=10 vs K=50 stability → paper-style parity figures).
 
-**For full-dataset / large-scale training (all four MaterialsSaddles subsets — lemat + oc20 + oc22 + mp20bat = 34 M triplets — at 128+ nodes), use [`examples/MaterialsSaddles/`](examples/MaterialsSaddles/) instead.** Its `run.sh` uses srun-native SPMD (each SLURM task = one rank, env-var DDP), which scales reliably past 128 nodes. The MP20Bat launcher above is the proven 4-node paper config; its `accelerate launch --num_machines=N` pattern is fragile at large scale — see [`CLAUDE.md`](CLAUDE.md) "Training infrastructure" for why.
+**For full-dataset / large-scale training (all four MaterialsSaddles subsets — lemat + oc20 + oc22 + mp20bat = 34 M triplets — at 128+ nodes), use [`examples/MaterialsSaddles/`](https://github.com/SciLM-ai/SaddleFlow/tree/main/examples/MaterialsSaddles/) instead.** Its `run.sh` uses srun-native SPMD (each SLURM task = one rank, env-var DDP), which scales reliably past 128 nodes. The MP20Bat launcher above is the proven 4-node paper config; its `accelerate launch --num_machines=N` pattern is fragile at large scale — see [`CLAUDE.md`](https://github.com/SciLM-ai/SaddleFlow/blob/main/CLAUDE.md) "Training infrastructure" for why.
 
 For a quick sanity-check on small data:
 
-- [`examples/LiC_simpler/`](examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. **It passes:** with the backbone unfrozen and per-block time-FiLM, all 48 sampled trajectories end in one of the six saddle petals — a six-fold orbit from one training saddle, with hexatic order **0.98–1.00** over two independent runs. That recipe is the script's default; a frozen backbone reaches only 0.91 (see its [README](examples/LiC_simpler/README.md)).
-- [`examples/LiC/`](examples/LiC/) — defective graphene: 12 training saddles, 167 held-out ones (each Sella-reconverged at fmax 0.005 and verified index-1), and 10 bond midpoints that look like saddles but are not. An unconditioned model carries a Li thrown anywhere on the sheet to the nearest saddle; ~4 h on one GPU. Its [README](examples/LiC/README.md) reproduces the trajectory figure.
+- [`examples/LiC_simpler/`](https://github.com/SciLM-ai/SaddleFlow/tree/main/examples/LiC_simpler/) — **start here.** One Li hop on pristine graphene (1 triplet), ~20 min on one GPU. The site is 6-fold symmetric and the data contains only *one* of the six equivalent saddles, so whether the model recovers all six is a visual pass/fail on the physics. **It passes:** with the backbone unfrozen and per-block time-FiLM, all 48 sampled trajectories end in one of the six saddle petals — a six-fold orbit from one training saddle, with hexatic order **0.98–1.00** over two independent runs. That recipe is the script's default; a frozen backbone reaches only 0.91 (see its [README](https://github.com/SciLM-ai/SaddleFlow/blob/main/examples/LiC_simpler/README.md)).
+- [`examples/LiC/`](https://github.com/SciLM-ai/SaddleFlow/tree/main/examples/LiC/) — defective graphene: 12 training saddles, 167 held-out ones (each Sella-reconverged at fmax 0.005 and verified index-1), and 10 bond midpoints that look like saddles but are not. An unconditioned model carries a Li thrown anywhere on the sheet to the nearest saddle; ~4 h on one GPU. Its [README](https://github.com/SciLM-ai/SaddleFlow/blob/main/examples/LiC/README.md) reproduces the trajectory figure.
 
 Both use an *unconditioned* model rather than the `(R, P)`-conditioned scheme below: on graphene the midpoint of R and P already sits on the saddle, so conditioning would leave the flow nothing to learn.
 
@@ -190,5 +190,5 @@ Ilgar Baghishov, Sung Hoon Jung and Graeme Henkelman (The University of Texas at
 
 ## License
 
-The code is MIT — see [`LICENSE`](LICENSE). The released weights are a fine-tuned version of Meta's UMA-M-1.1
+The code is MIT — see [`LICENSE`](https://github.com/SciLM-ai/SaddleFlow/blob/main/LICENSE). The released weights are a fine-tuned version of Meta's UMA-M-1.1
 and are distributed under the FAIR Chemistry License v1 on the Hugging Face model page.
