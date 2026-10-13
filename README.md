@@ -13,7 +13,7 @@ flows to a nearby first-order saddle, which Sella then converges in 25–61 forc
 ### Install
 
 ```bash
-pip install "saddleflow[search] @ git+https://github.com/SciLM-ai/SaddleFlow"
+pip install "saddleflow[search]"
 python -c "import torch; print(torch.cuda.is_available())"   # should print True
 ```
 
@@ -22,7 +22,7 @@ silently installs one. Install the CUDA build first, then SaddleFlow:
 
 ```bash
 pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu129
-pip install "saddleflow[search] @ git+https://github.com/SciLM-ai/SaddleFlow"
+pip install "saddleflow[search]"
 ```
 
 `torch==2.13.0` matches the newest supported fairchem-core (2.23); with fairchem-core 2.19–2.21 use `torch==2.8.0`
