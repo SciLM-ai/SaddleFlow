@@ -86,6 +86,9 @@ class FlowMatchingConfig:
     # Single-ended conditioning: feed the head only the displacement to the START endpoint (the reactant);
     # the product slot of the two-endpoint input is zero. Needs delta_endpoint_channels > 0.
     start_only_condition: bool = False
+    # Local TS-denoise (LiC-style for many-atom cells): if > 0, the TS-denoise noise goes only on the k mobile atoms
+    # that move most between the start and the saddle (the reacting atoms), instead of on every mobile atom.
+    ts_denoise_local_k: int = 0
     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
@@ -206,6 +209,11 @@ def sample_endpoints(
             sig = sig + u * (config.ts_denoise_sigma_max - sig)
         eps = gaussian_perturbation(mobile, sig, generator=generator,
                                     dtype=r_saddle.dtype)
+        if config.ts_denoise_local_k > 0:
+            disp = (r_saddle - r_start).norm(dim=-1).masked_fill(~mobile, -1.0)
+            k = min(config.ts_denoise_local_k, int(mobile.sum()))
+            keep = torch.zeros_like(mobile); keep[torch.topk(disp, k).indices] = True
+            eps = eps * keep.unsqueeze(-1).to(eps.dtype)
         x0 = r_saddle + eps
         x1 = r_saddle
         t = torch.rand((), generator=generator).item()

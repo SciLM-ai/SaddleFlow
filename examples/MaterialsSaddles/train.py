@@ -292,6 +292,8 @@ def parse_args():
                         "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
                         "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
                         "direction predicts which saddle is the target instead of being averaged away.")
+    p.add_argument("--ts-denoise-local-k", type=int, default=0,
+                   help="TS-denoise noise only on the k atoms that move most start->saddle (0 = all mobile atoms).")
     p.add_argument("--start-only-condition", action="store_true",
                    help="Condition the head on the reactant only (product slot zero); the new fuse layer starts as identity.")
     p.add_argument("--path-u-min", type=float, default=0.0,
@@ -883,6 +885,7 @@ def main():
             path_u_power=float(args.path_u_power),
             path_u_min=float(args.path_u_min),
             start_only_condition=bool(args.start_only_condition),
+            ts_denoise_local_k=int(args.ts_denoise_local_k),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -990,6 +993,7 @@ def main():
             "path_u_power": args.path_u_power,
             "path_u_min": args.path_u_min,
             "start_only_condition": bool(args.start_only_condition),
+            "ts_denoise_local_k": int(args.ts_denoise_local_k),
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
