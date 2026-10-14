@@ -300,6 +300,8 @@ def parse_args():
                    help="TS-denoise noise only on the k atoms that move most start->saddle (0 = all mobile atoms).")
     p.add_argument("--start-only-condition", action="store_true",
                    help="Condition the head on the reactant only (product slot zero); the new fuse layer starts as identity.")
+    p.add_argument("--path-exact-prob", type=float, default=0.0,
+                   help="Probability that a path start has no noise (exactly on the start-saddle line).")
     p.add_argument("--path-u-min", type=float, default=0.0,
                    help="Smallest u of a path start (0 = original recipe; > 0 = no starts at the bare endpoint).")
     p.add_argument("--path-u-power", type=float, default=1.0,
@@ -888,6 +890,7 @@ def main():
                                      else float(args.path_noise_sigma_saddle)),
             path_u_power=float(args.path_u_power),
             path_u_min=float(args.path_u_min),
+            path_exact_prob=float(args.path_exact_prob),
             start_only_condition=bool(args.start_only_condition),
             ts_denoise_local_k=int(args.ts_denoise_local_k),
             line_start_prob=float(args.line_start_prob),
@@ -999,6 +1002,7 @@ def main():
             "path_noise_sigma": args.path_noise_sigma,
             "path_u_power": args.path_u_power,
             "path_u_min": args.path_u_min,
+            "path_exact_prob": float(args.path_exact_prob),
             "start_only_condition": bool(args.start_only_condition),
             "ts_denoise_local_k": int(args.ts_denoise_local_k),
             "line_start_prob": float(args.line_start_prob), "line_u_sigma": float(args.line_u_sigma),

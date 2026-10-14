@@ -83,6 +83,9 @@ class FlowMatchingConfig:
     # Smallest u a path start may have: u = path_u_min + (1 - path_u_min) * U(0,1)**path_u_power.  0 keeps the
     # original recipe; > 0 removes the starts at the bare endpoint + noise.
     path_u_min: float = 0.0
+    # Probability that a path start carries NO noise (the point lies exactly on the start -> saddle line);
+    # otherwise the usual path_noise_sigma. 0 keeps the original recipe, 1 is noise-free path starts.
+    path_exact_prob: float = 0.0
     # Single-ended conditioning: feed the head only the displacement to the START endpoint (the reactant);
     # the product slot of the two-endpoint input is zero. Needs delta_endpoint_channels > 0.
     start_only_condition: bool = False
@@ -194,6 +197,8 @@ def sample_endpoints(
         s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint
         s_sad = config.path_noise_sigma if config.path_noise_sigma_saddle is None else config.path_noise_sigma_saddle
         sigma_u = s_end + (s_sad - s_end) * u
+        if config.path_exact_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_exact_prob:
+            sigma_u = 0.0
         eps = gaussian_perturbation(mobile, sigma_u, generator=generator, dtype=r_saddle.dtype)
         x0 = r_start + u * (r_saddle - r_start) + eps      # r_saddle is MIC-unwrapped to r_start: the line is the short path
         t = torch.rand((), generator=generator).item()
