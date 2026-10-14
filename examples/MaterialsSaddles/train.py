@@ -292,6 +292,8 @@ def parse_args():
                         "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
                         "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
                         "direction predicts which saddle is the target instead of being averaged away.")
+    p.add_argument("--start-only-condition", action="store_true",
+                   help="Condition the head on the reactant only (product slot zero); the new fuse layer starts as identity.")
     p.add_argument("--path-u-min", type=float, default=0.0,
                    help="Smallest u of a path start (0 = original recipe; > 0 = no starts at the bare endpoint).")
     p.add_argument("--path-u-power", type=float, default=1.0,
@@ -779,6 +781,7 @@ def main():
         dimer_force_channels=head_dimer_C,
         x_input_channel_factor=x_input_factor,
         endpoint_n_layers_per_side=n_ep_layers,
+        delta_fuse_identity=bool(args.start_only_condition),
     ).to(args.device)
     if args.force_residual and not args.inject_force:
         raise SystemExit("--force-residual requires --inject-force")
@@ -879,6 +882,7 @@ def main():
                                      else float(args.path_noise_sigma_saddle)),
             path_u_power=float(args.path_u_power),
             path_u_min=float(args.path_u_min),
+            start_only_condition=bool(args.start_only_condition),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -985,6 +989,7 @@ def main():
             "path_noise_sigma": args.path_noise_sigma,
             "path_u_power": args.path_u_power,
             "path_u_min": args.path_u_min,
+            "start_only_condition": bool(args.start_only_condition),
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",

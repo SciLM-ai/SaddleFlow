@@ -137,6 +137,7 @@ class VelocityHead(nn.Module):
         time_embed_dim: int = 64,
         time_mlp_hidden: int = 128,
         delta_endpoint_channels: int = 0,
+        delta_fuse_identity: bool = False,
         force_field_channels: int = 0,
         force_residual: bool = False,
         endpoint_features_enabled: bool = False,
@@ -213,6 +214,13 @@ class VelocityHead(nn.Module):
             # Training learns useful weights from the (R, P) endpoint signals.
             nn.init.zeros_(self.delta_proj.weight)
             nn.init.zeros_(self.delta_proj.bias)
+            if delta_fuse_identity:
+                # Fine-tuning an unconditioned head: start delta_fuse as a pass-through of the UMA features
+                # (identity on the first sphere_channels inputs, zero on the delta channels) so the loaded
+                # weights give exactly the unconditioned model at step 0.
+                with torch.no_grad():
+                    self.delta_fuse.weight.zero_(); self.delta_fuse.bias.zero_()
+                    self.delta_fuse.weight[:, :, :sphere_channels] = torch.eye(sphere_channels)
 
         if force_field_channels > 0:
             # Mode 1 v2: inject UMA's autograd-derived force at x_t. The force

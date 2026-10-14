@@ -83,6 +83,9 @@ class FlowMatchingConfig:
     # Smallest u a path start may have: u = path_u_min + (1 - path_u_min) * U(0,1)**path_u_power.  0 keeps the
     # original recipe; > 0 removes the starts at the bare endpoint + noise.
     path_u_min: float = 0.0
+    # Single-ended conditioning: feed the head only the displacement to the START endpoint (the reactant);
+    # the product slot of the two-endpoint input is zero. Needs delta_endpoint_channels > 0.
+    start_only_condition: bool = False
     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
@@ -766,6 +769,8 @@ class FlowMatchingLoss(nn.Module):
                 partner = sample["partner_un_pos"]
                 delta_R = mic_displacement(start_pos, x_t, sample["cell"])
                 delta_P = mic_displacement(partner, x_t, sample["cell"])
+                if self.config.start_only_condition:
+                    delta_P = torch.zeros_like(delta_R)
                 delta_partner_list.append(torch.stack([delta_R, delta_P], dim=1))
 
             if want_endpoint_features:
