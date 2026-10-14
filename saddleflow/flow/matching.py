@@ -80,6 +80,9 @@ class FlowMatchingConfig:
     # u is drawn as U(0,1)**path_u_power: 1.0 is uniform along the path, > 1 biases the start toward the
     # ENDPOINT (u -> 0), which is where the Dimer-like use case actually starts; < 1 biases toward the saddle.
     path_u_power: float = 1.0
+    # Smallest u a path start may have: u = path_u_min + (1 - path_u_min) * U(0,1)**path_u_power.  0 keeps the
+    # original recipe; > 0 removes the starts at the bare endpoint + noise.
+    path_u_min: float = 0.0
     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
@@ -167,7 +170,7 @@ def sample_endpoints(
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
     if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
-        u = float(torch.rand((), generator=generator)) ** config.path_u_power
+        u = config.path_u_min + (1.0 - config.path_u_min) * float(torch.rand((), generator=generator)) ** config.path_u_power
         s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint
         s_sad = config.path_noise_sigma if config.path_noise_sigma_saddle is None else config.path_noise_sigma_saddle
         sigma_u = s_end + (s_sad - s_end) * u

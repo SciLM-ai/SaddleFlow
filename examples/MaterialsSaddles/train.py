@@ -292,6 +292,8 @@ def parse_args():
                         "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
                         "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
                         "direction predicts which saddle is the target instead of being averaged away.")
+    p.add_argument("--path-u-min", type=float, default=0.0,
+                   help="Smallest u of a path start (0 = original recipe; > 0 = no starts at the bare endpoint).")
     p.add_argument("--path-u-power", type=float, default=1.0,
                    help="u = U(0,1)**power along the start->saddle line; >1 biases starts toward the endpoint.")
     p.add_argument("--mixed-start-prob", type=float, default=0.0,
@@ -876,6 +878,7 @@ def main():
             path_noise_sigma_saddle=(None if args.path_noise_sigma_saddle is None
                                      else float(args.path_noise_sigma_saddle)),
             path_u_power=float(args.path_u_power),
+            path_u_min=float(args.path_u_min),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -981,6 +984,7 @@ def main():
             "path_start_prob": args.path_start_prob,
             "path_noise_sigma": args.path_noise_sigma,
             "path_u_power": args.path_u_power,
+            "path_u_min": args.path_u_min,
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
