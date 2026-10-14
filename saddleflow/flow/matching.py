@@ -89,6 +89,13 @@ class FlowMatchingConfig:
     # Local TS-denoise (LiC-style for many-atom cells): if > 0, the TS-denoise noise goes only on the k mobile atoms
     # that move most between the start and the saddle (the reacting atoms), instead of on every mobile atom.
     ts_denoise_local_k: int = 0
+    # Line starts: the training point lies EXACTLY on the straight line start -> saddle, at fraction u drawn from a
+    # half-Gaussian N(0, line_u_sigma^2) on [0, 1) (most samples near the start), with t ~ U(0, line_t_max)
+    # independent of u; the target is the exact velocity (saddle - x)/(1 - t) that reaches the saddle at t = 1.
+    # Built by choosing x0 = start + (u - t)/(1 - t) (saddle - start), so (1 - t) x0 + t saddle is that point.
+    line_start_prob: float = 0.0
+    line_u_sigma: float = 0.3
+    line_t_max: float = 0.9
     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
@@ -175,6 +182,13 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
+    if config.line_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.line_start_prob:
+        u = 1.0
+        while u >= 1.0:
+            u = abs(float(torch.randn((), generator=generator))) * config.line_u_sigma
+        t = float(torch.rand((), generator=generator)) * config.line_t_max
+        x0 = r_start + ((u - t) / (1.0 - t)) * (r_saddle - r_start)
+        return x0, r_saddle, t, mobile
     if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
         u = config.path_u_min + (1.0 - config.path_u_min) * float(torch.rand((), generator=generator)) ** config.path_u_power
         s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint

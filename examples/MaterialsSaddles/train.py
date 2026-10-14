@@ -292,6 +292,10 @@ def parse_args():
                         "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
                         "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
                         "direction predicts which saddle is the target instead of being averaged away.")
+    p.add_argument("--line-start-prob", type=float, default=0.0,
+                   help="Probability of a line start: a point exactly on start->saddle at u ~ |N(0, line-u-sigma)|, t ~ U(0, line-t-max), exact target.")
+    p.add_argument("--line-u-sigma", type=float, default=0.3)
+    p.add_argument("--line-t-max", type=float, default=0.9)
     p.add_argument("--ts-denoise-local-k", type=int, default=0,
                    help="TS-denoise noise only on the k atoms that move most start->saddle (0 = all mobile atoms).")
     p.add_argument("--start-only-condition", action="store_true",
@@ -886,6 +890,9 @@ def main():
             path_u_min=float(args.path_u_min),
             start_only_condition=bool(args.start_only_condition),
             ts_denoise_local_k=int(args.ts_denoise_local_k),
+            line_start_prob=float(args.line_start_prob),
+            line_u_sigma=float(args.line_u_sigma),
+            line_t_max=float(args.line_t_max),
             loss_type=str(args.loss_type),
             huber_delta=float(args.huber_delta),
             maxd_weight=float(args.maxd_weight),
@@ -994,6 +1001,8 @@ def main():
             "path_u_min": args.path_u_min,
             "start_only_condition": bool(args.start_only_condition),
             "ts_denoise_local_k": int(args.ts_denoise_local_k),
+            "line_start_prob": float(args.line_start_prob), "line_u_sigma": float(args.line_u_sigma),
+            "line_t_max": float(args.line_t_max),
             "init_weights": args.init_weights,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
