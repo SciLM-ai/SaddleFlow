@@ -85,10 +85,10 @@ trained model the two agree: 93.9 % reached on both counts for the reference run
 About 5 % of throws end on a red cross. Those ten midpoints look exactly like
 saddle sites, because the other 179 midpoints all carry a saddle within 0.22 Å.
 But they are not stationary points. The force on the Li there is 0.06–0.28 eV/Å,
-and a saddle optimiser started from one always leaves. A model that sees only
-geometry cannot tell them apart from real saddles. Removing this tail needs
-information beyond geometry, such as relabelling the model's own endpoints with
-a saddle optimiser. That is beyond this example.
+and a saddle optimiser started from one leaves the center. The geometry-only
+baseline has learned false attraction regions there. This is not a fundamental
+impossibility of learning the PES from geometry; it motivates testing richer
+training support and explicit PES conditioning, described below.
 
 ## Why the model is not conditioned on R and P
 
@@ -112,3 +112,110 @@ saddle.
 
 All 179 saddles were reconverged with Sella at fmax 0.005 eV/Å and verified as
 first-order saddles. Li is atom 126; atoms 0–125 are the frozen carbons.
+
+## Coverage and source-memory study
+
+Michael: for the separate, oracle-free 12/48-saddle x source-conditioning study,
+see [experiments/source_study/README.md](experiments/source_study/README.md). It provides a fixed nested split, four
+matched training runs, and shared evaluation with a common 131-saddle holdout.
+
+## Opt-in force and scalar-curvature inputs
+
+Michael: these are architecture inputs, **not** a force/MMF loss or recovery
+dataset. The defaults remain ordinary FM on the 12 training saddles, with
+fresh sigma=0.25 A Li noise, uniform t, batch 4, 16000 epochs (96000 updates),
+head depth 1, head/FiLM LR 1e-3, backbone LR 1e-2, warmup 100, EMA .999, FP32.
+Both flags are off by default and can be used independently.
+
+Michael: three matched baseline-recipe jobs, from pretrained UMA (no old FM
+checkpoint initialization):
+
+```bash
+sbatch examples/LiC/experiments/force_conditioning/run_conditioning.sh
+sbatch examples/LiC/experiments/force_conditioning/run_conditioning.sh --inject-force
+sbatch examples/LiC/experiments/force_conditioning/run_conditioning.sh --inject-force --curvature-conditioning
+```
+
+Michael: `--inject-force` supplies detached frozen-UMA forces at the actual
+current x_t to the velocity head (`--force-field-channels 32`). Carbon force
+inputs are masked to zero. `--curvature-conditioning` supplies
+`[lambda1, lambda2, lambda2-lambda1]` from the symmetrized Li-only 3x3 numerical
+Hessian at the same x_t. Six central-FD probes perturb only Li, by
+`--curvature-fd-eps 0.002` A; carbon positions/cell are untouched. Probes across
+the batch are chunked with `--physics-batch-size 32`. No target eigenmode, false
+bridge coordinates, or test labels enter the observations.
+
+The scalar MLP (`--curvature-mlp-hidden 64`) uses fixed asinh scaling in units
+of 1 eV/A^2, then applies invariant scalar FiLM to the head's equivariant
+features. The last layer is zero-initialized. The force-fusion geometry block
+starts as identity, with a zero force projection but nonzero force-fusion
+columns, so gradients can activate the force path. Optional branches preserve
+the common head's initialization/RNG. Construction is now seeded explicitly
+before training; historical baseline weights are not reproduced bit-for-bit.
+No extra velocity depth, force residual, mode predictor, or MMF loss is enabled.
+
+Michael: the depth-1 baseline head has **41601 parameters**, including its time
+MLP (128 channels). Curvature-only adds 16896 parameters; force-only adds
+61696; both together have **120193**. Depth/width of the velocity trunk and
+the trainable UMA backbone are unchanged. The curvature scale gate has a direct
+nonlinear path into velocity even at depth 1. Force-only at depth 1 is more
+restrictive: its explicit force-vector contribution is linear for fixed time,
+and the injected l=0 force magnitude has no nonlinear gate into l=1 until a
+deeper head is used. The nonlinear trainable backbone can still learn complex
+geometry-dependent velocity features. Keep depth 1 for this first intervention;
+if needed, repeat ALL arms with `--head-depth 3` rather than increasing only the
+conditioned model's capacity. A null depth-1 result would not prove PES inputs
+are useless in larger systems or richer heads.
+
+Michael: observations are needed at **both training and sampling**. Costs per
+state are force-only 1, curvature-only 6, both 7 UMA geometries. For batch 4,
+the combined arm uses 28 per update, about **2.688 million** over the full
+96000-update recipe. A 20-step rollout uses about 140 per source; batches reduce
+GPU launch overhead, not the geometry count. There is no eigendecomposition
+backpropagation or differentiation through the oracle. This is an expensive
+oracle-conditioning proof of concept, not an oracle-free inference method.
+Training logs include per-batch geometry counts and mean lambda1/lambda2/gap.
+
+Michael: the batch launcher allows the usual A100/A40/B200/A6000/RTXPro6000 GPUs
+and writes `/scratch/gqs7zr/saddleflow/lic_conditioning_JOBID.out`, `.err`, and
+`lic_conditioning_JOBID/`. Its wall-time request is 24 hours; the full curvature
+run has NOT been GPU-timed yet. Override the allocation as appropriate and use
+the existing checkpoint/resume controls if needed, e.g. `--save-every-steps
+12000`. Training defaults/checkpoint cadence otherwise match the baseline.
+`--init-weights`/`--resume-from` require a matching conditioning architecture;
+an unconditioned EMA cannot simply be loaded into a head with added parameters.
+
+Michael: the checkpoint configuration reconstructs the exact inputs for the
+existing inference commands:
+
+```bash
+python examples/LiC/rollout_eval/robustness_shells.py \
+  --ckpt /scratch/gqs7zr/saddleflow/lic_conditioning_JOBID/checkpoint_final \
+  --radii 0,0.25,0.43,0.6,0.8,1.0 --start-times 0 --bridge-noise-sigma 0
+python examples/LiC/random_throw.py \
+  --ckpt /scratch/gqs7zr/saddleflow/lic_conditioning_JOBID/checkpoint_final --grid 64
+```
+
+Michael: a short batch check of the ten exact false bridges using the force-only
+run's 48000-step EMA checkpoint is available with:
+
+```bash
+sbatch examples/LiC/experiments/force_conditioning/run_conditioning_inference.sh
+```
+
+It writes `lic_conditioning_infer_JOBID.out` and `.err` under
+`/scratch/gqs7zr/saddleflow/`, with numerical results and `report.txt` in
+`lic_conditioning_21363449/false_exact_step48000/`. It uses architectural
+conditioning but no extra force guidance, and reports geometry-only outcomes.
+The launcher disables inherited CPU binding and preserves Slurm's GPU mask.
+Pass `--ckpt` and `--out-dir` to evaluate a different checkpoint; remaining
+Python CLI arguments are forwarded unchanged.
+
+The shared LiC loader/velocity evaluator serves both scripts; input oracles are
+queried at each current state, and saved archives record conditioning geometry
+counts. `--no-uma` in the shell script skips ONLY post-hoc endpoint scoring;
+it cannot disable architectural inputs that the model was trained to require.
+`compare_saddle_search.py` also charges conditioning probes to its PES budgets.
+The older recovery/PES-direction fine-tuning runners are separate fixed-architecture
+experiments, not converted to this new conditioning recipe. The one-Sella-kick
+restart experiment explicitly requires the original unconditioned model.

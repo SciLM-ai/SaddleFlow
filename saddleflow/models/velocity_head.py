@@ -145,6 +145,11 @@ class VelocityHead(nn.Module):
         endpoint_n_layers_per_side: int = 1,
         energy_conditioning: bool = False,
         energy_mlp_hidden: int = 64,
+        curvature_conditioning: bool = False,
+        curvature_mlp_hidden: int = 64,
+        identity_force_init: bool = False,
+        source_channels: int = 0,
+        source_conditioning: bool = False,
     ):
         super().__init__()
         assert depth >= 1
@@ -159,6 +164,11 @@ class VelocityHead(nn.Module):
         self.time_embed_dim = time_embed_dim
         self.delta_endpoint_channels = delta_endpoint_channels
         self.force_field_channels = force_field_channels
+        self.curvature_conditioning = bool(curvature_conditioning)
+        self.source_channels = int(source_channels)
+        self.source_conditioning = bool(source_conditioning)
+        if self.source_channels < 0 or (self.source_conditioning and not self.source_channels):
+            raise ValueError("Michael: source conditioning requires positive source_channels")
         # v7-5: when the caller passes a multi-layer concat of trainable-UMA
         # block outputs (X_T features), `x_input_channel_factor` says how many
         # blocks were stacked. Head then projects (N, num_sph, factor*C)
@@ -219,10 +229,21 @@ class VelocityHead(nn.Module):
             # is a per-atom l=1 vector (eV/Å) — most directly DFT-supervised
             # signal in the entire stack. Same projection-and-fuse pattern as
             # delta_endpoint; zero-init so v2 head ≡ v1 head at init.
-            self.force_proj = SO3_Linear(1, force_field_channels, lmax=input_lmax)
-            self.force_fuse = SO3_Linear(
-                sphere_channels + force_field_channels, sphere_channels, lmax=input_lmax,
-            )
+            # LiC's matched conditioning ablation preserves the common head's
+            # initialization/RNG and starts with an identity geometry path.
+            # Keep the historical initialization for existing general recipes.
+            with torch.random.fork_rng(devices=[], enabled=identity_force_init):
+                self.force_proj = SO3_Linear(1, force_field_channels, lmax=input_lmax)
+                self.force_fuse = SO3_Linear(
+                    sphere_channels + force_field_channels, sphere_channels, lmax=input_lmax,
+                )
+            if identity_force_init:
+                with torch.no_grad():
+                    self.force_fuse.weight[:, :, :sphere_channels].copy_(
+                        torch.eye(sphere_channels).expand(input_lmax + 1, -1, -1)
+                    )
+                # Keep the F columns nonzero: zeroing BOTH projection and
+                # fusion would permanently kill the force-input gradients.
             nn.init.zeros_(self.force_proj.weight)
             nn.init.zeros_(self.force_proj.bias)
 
@@ -282,6 +303,28 @@ class VelocityHead(nn.Module):
             self.layers.append(SO3_Linear(sphere_channels, sphere_channels, lmax=1))
             self.layers.append(UMAGate(sphere_channels, lmax=1))
         self.final = SO3_Linear(sphere_channels, 1, lmax=1)
+        if self.source_channels:
+            # Both source-study arms have identical capacity/initialization.
+            # The unconditioned arm supplies zeros, never target information.
+            with torch.random.fork_rng(devices=[]):
+                self.source_proj = SO3_Linear(1, self.source_channels, lmax=input_lmax)
+                self.source_fuse = SO3_Linear(sphere_channels+self.source_channels, sphere_channels, lmax=input_lmax)
+            with torch.no_grad():
+                self.source_fuse.weight[:, :, :sphere_channels].copy_(
+                    torch.eye(sphere_channels).expand(input_lmax+1, -1, -1))
+                self.source_fuse.bias.zero_()
+                self.source_proj.weight.zero_()
+                self.source_proj.bias.zero_()
+        if self.curvature_conditioning:
+            # Independent scalar FiLM on [lambda1, lambda2, lambda2-lambda1].
+            # Added after the common trunk; fork preserves its RNG stream.
+            with torch.random.fork_rng(devices=[]):
+                self.curvature_mlp = nn.Sequential(
+                    nn.Linear(3, curvature_mlp_hidden), nn.SiLU(),
+                    nn.Linear(curvature_mlp_hidden, 2 * sphere_channels),
+                )
+            nn.init.zeros_(self.curvature_mlp[-1].weight)
+            nn.init.zeros_(self.curvature_mlp[-1].bias)
 
     def _inject_delta(self, x: torch.Tensor, delta_endpoint: torch.Tensor) -> torch.Tensor:
         """Build the per-atom Δ irrep tensor and fuse into UMA features.
@@ -321,13 +364,17 @@ class VelocityHead(nn.Module):
         force_field: (N, 3) per-atom force in eV/Å (from compute_uma_forces).
         Returns: (N, num_sph, sphere_channels) — same shape as input x.
         """
+        return self._inject_vector(x, force_field, self.force_proj, self.force_fuse)
+
+    @staticmethod
+    def _inject_vector(x, vector, projection, fusion):
         N, num_sph, _ = x.shape
         irreps = torch.zeros(N, num_sph, 1, device=x.device, dtype=x.dtype)
-        irreps[:, 0, 0] = torch.linalg.norm(force_field, dim=-1)
-        irreps[:, 1:4, 0] = force_field
-        force_feats = self.force_proj(irreps)
+        irreps[:, 0, 0] = torch.linalg.norm(vector, dim=-1)
+        irreps[:, 1:4, 0] = vector
+        force_feats = projection(irreps)
         fused = torch.cat([x, force_feats], dim=-1)
-        return self.force_fuse(fused)
+        return fusion(fused)
 
     def _inject_dimer_force(
         self, x: torch.Tensor, dimer_force: torch.Tensor,
@@ -371,6 +418,8 @@ class VelocityHead(nn.Module):
         endpoint_features: torch.Tensor | None = None,
         dimer_force: torch.Tensor | None = None,
         energy_scalars: torch.Tensor | None = None,
+        curvature_scalars: torch.Tensor | None = None,
+        source_delta: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -431,6 +480,18 @@ class VelocityHead(nn.Module):
             x = self._inject_dimer_force(x, dimer_force)
         if endpoint_features is not None:
             x = self._inject_endpoints(x, endpoint_features)
+        if self.source_channels:
+            if self.source_conditioning:
+                if source_delta is None or source_delta.shape != (len(x), 3):
+                    raise ValueError("Michael: source-conditioned velocity requires MIC(x0-x_t), shape (N,3)")
+                source_delta = source_delta.to(x)
+            else:
+                if source_delta is not None:
+                    raise ValueError("Michael: unconditioned source-study arm must not receive source data")
+                source_delta = x.new_zeros(len(x), 3)
+            x = self._inject_vector(x, source_delta, self.source_proj, self.source_fuse)
+        elif source_delta is not None:
+            raise ValueError("Michael: source_delta supplied without a source-input branch")
 
         x_l01 = get_l_component_range(x, l_min=0, l_max=1)  # (N, 4, C)
 
@@ -465,6 +526,19 @@ class VelocityHead(nn.Module):
                 e_bias_pa, e_gate_pa = e_bias.expand(n, -1), e_gate.expand(n, -1)
             t_bias_per_atom = t_bias_per_atom + e_bias_pa
             t_gate_per_atom = t_gate_per_atom * e_gate_pa
+
+        if self.curvature_conditioning:
+            if curvature_scalars is None or curvature_scalars.ndim != 2 or curvature_scalars.shape[1] != 3:
+                raise ValueError("curvature conditioning requires (B,3) [lambda1,lambda2,eigengap]")
+            # Fixed 1 eV/A^2 reference units; no held-out normalization fit.
+            values = torch.asinh(curvature_scalars.detach().to(x_l01))
+            c_bias, c_scale = self.curvature_mlp(values).chunk(2, dim=-1)
+            if batch_idx is not None:
+                c_bias, c_scale = c_bias[batch_idx], c_scale[batch_idx]
+            t_bias_per_atom = t_bias_per_atom + c_bias
+            t_gate_per_atom = t_gate_per_atom * (1.0 + c_scale)
+        elif curvature_scalars is not None:
+            raise ValueError("curvature_scalars supplied to a head without curvature conditioning")
 
         h_l0 = (x_l01[:, 0, :] + t_bias_per_atom).unsqueeze(1)  # (N, 1, C)
         h_l1 = x_l01[:, 1:, :] * t_gate_per_atom.unsqueeze(1)   # (N, 3, C)

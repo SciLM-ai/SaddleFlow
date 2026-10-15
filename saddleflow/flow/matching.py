@@ -85,6 +85,35 @@ class FlowMatchingConfig:
             raise ValueError(
                 f"only mode=1 is supported in this release, got mode={self.mode}"
             )
+        if self.force_constraint_enabled:
+            if self.force_constraint_weight < 0:
+                raise ValueError("force_constraint_weight must be non-negative")
+            if self.force_constraint_epsilon is None or self.force_constraint_epsilon <= 0:
+                raise ValueError(
+                    "force_constraint_epsilon must be supplied as a positive eV/A value "
+                    "when force_constraint_enabled=True"
+                )
+            if self.force_constraint_samples_per_batch <= 0:
+                raise ValueError(
+                    "force_constraint_samples_per_batch must be positive when "
+                    "force_constraint_enabled=True"
+                )
+            if self.force_constraint_every_n_batches <= 0:
+                raise ValueError("force_constraint_every_n_batches must be positive")
+            if not 0.0 <= self.force_constraint_min_time < 1.0:
+                raise ValueError("force_constraint_min_time must lie in [0, 1)")
+            if self.force_constraint_metric != "rms":
+                raise ValueError(
+                    "only the atom-wise RMS force metric is currently supported; "
+                    f"got {self.force_constraint_metric!r}"
+                )
+            if (
+                self.force_constraint_stopgrad_max_gate is not None
+                and self.force_constraint_stopgrad_max_gate < 0
+            ):
+                raise ValueError(
+                    "force_constraint_stopgrad_max_gate must be non-negative or None"
+                )
 
     # Subtract per-system CoM from BOTH v_pred AND v_target before MSE
     # (over mobile atoms, only for systems with no frozen atoms — same
@@ -122,6 +151,34 @@ class FlowMatchingConfig:
     # Requires force_head to be provided and the head built with energy_conditioning.
     energy_conditioning: bool = False
 
+    # Optional training-time UMA stationarity constraint.  The normal
+    # flow-matching loss always remains the primary objective.  When enabled,
+    # a random subset of each batch receives UMA force evaluation at the
+    # algebraic terminal estimate
+    #     S_hat = wrap(x_t + (1 - t) v_pred).
+    #
+    # The default is a differentiable dead-band force loss.  With
+    # `force_constraint_stopgrad=True`, UMA instead supplies a detached
+    # hard-example gate.  That gate increases the usual supervised FM loss
+    # for physically suspicious examples but cannot rotate its gradient.
+    # `epsilon` is intentionally explicit: it must be calibrated for the
+    # model endpoint distribution being constrained rather than guessed here.
+    force_constraint_enabled: bool = False
+    force_constraint_weight: float = 0.0
+    force_constraint_epsilon: float | None = None
+    force_constraint_samples_per_batch: int = 0
+    force_constraint_every_n_batches: int = 1
+    # The one-shot estimate is a faithful sampler proxy only late in this LiC
+    # denoising flow.  The generic default preserves the original all-time
+    # behavior; callers may restrict force supervision to late t.
+    force_constraint_min_time: float = 0.0
+    force_constraint_metric: str = "rms"
+    force_constraint_stopgrad: bool = False
+    # The continuous detached gate is
+    # clamp(relu(f_rms / epsilon - 1), max=stopgrad_max_gate).  A finite cap
+    # prevents one pathological UMA evaluation from dominating a batch.
+    force_constraint_stopgrad_max_gate: float | None = 10.0
+
 
 def sample_endpoints(
     sample: dict,
@@ -130,20 +187,36 @@ def sample_endpoints(
 ) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
     """Build one training example `(x_0, x_1, t, mobile_mask)`.
 
-    `x_0` is the (R, P) midpoint; the partner-displacement vector is
-    computed inside `FlowMatchingLoss.forward` because it depends on `x_t`,
-    not just `(x_0, x_1)`. `partner_un_pos` is already MIC-unwrapped
-    relative to `start`, so the arithmetic mean is the PBC-correct
-    geodesic midpoint. Re-parameterises the L2-Bayes-optimal predictor
-    from `E[saddle] − start ≈ midpoint − start` (large) to
-    `E[saddle] − midpoint ≈ 0`, forcing the head to use its features to
-    predict the *residual* deviation of the saddle from the midpoint
-    instead of rediscovering the midpoint itself.
+    By default, `x_0` is the (R, P) midpoint; the partner-displacement vector
+    is computed inside `FlowMatchingLoss.forward` because it depends on
+    `x_t`, not just `(x_0, x_1)`. `partner_un_pos` is already MIC-unwrapped
+    relative to `start`, so the arithmetic mean is the PBC-correct geodesic
+    midpoint. A sample can instead supply ``flow_source_pos`` to request one
+    exact, precomputed source state (for example, a data-aggregation recovery
+    state). That optional field takes precedence over every stochastic start
+    recipe, including TS-denoising noise.
     """
     r_start = sample["start_pos"]
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
+
+    # Some training adapters may provide a deliberately chosen source state
+    # rather than asking the TS-denoising recipe to draw new Gaussian noise.
+    # This is useful for data aggregation: a model can be shown an exact
+    # off-support state that it previously mapped to a bad endpoint, together
+    # with a known valid terminal structure.  The adapter is responsible for
+    # storing ``saddle_un_pos`` in the minimum-image frame of this source.
+    #
+    # Keeping this as an optional sample field makes it inert for every
+    # existing dataset and objective.  It also remains valid for general
+    # atomic systems: both fixed and mobile atoms are carried in the supplied
+    # coordinate tensors, while the normal loss still masks fixed atoms.
+    explicit_source = sample.get("flow_source_pos")
+    if explicit_source is not None:
+        t = torch.rand((), generator=generator).item()
+        return explicit_source, r_saddle, t, mobile
+
     _use_midpoint_start = (
         config.mixed_start_prob > 0.0
         and float(torch.rand((), generator=generator)) < config.mixed_start_prob
@@ -305,6 +378,7 @@ class FlowMatchingLoss(nn.Module):
         dimer_residual_alpha_init: float = 0.0,
         multi_layer_xt_indices: list[int] | None = None,
         multi_layer_endpoint_indices: list[int] | None = None,
+        physics_conditioner=None,
     ):
         """Args:
             backbone: TRAINABLE UMA backbone (typically `TimeFiLMBackbone`-
@@ -346,6 +420,15 @@ class FlowMatchingLoss(nn.Module):
         self.backbone = backbone
         self.global_attn = global_attn
         self.velocity_head = velocity_head
+        # Optional detached current-state observations, not a registered model.
+        # LiC supplies a small callable; the default/general path is unchanged.
+        self.physics_conditioner = physics_conditioner
+        if getattr(velocity_head, "curvature_conditioning", False) and physics_conditioner is None:
+            raise ValueError("curvature-conditioned training requires a physics_conditioner")
+        if physics_conditioner is not None and config.self_cond_prob > 0:
+            raise ValueError("physics conditioning is not wired into the optional self-conditioning branch")
+        if getattr(velocity_head, "source_conditioning", False) and config.self_cond_prob > 0:
+            raise ValueError("Michael: source conditioning is not wired into the optional self-conditioning branch")
         self.force_head = force_head
         # `tasks` is a dict of non-Module objects — store as a plain attribute,
         # not a submodule. nn.Module.__setattr__ will correctly skip non-Module
@@ -375,6 +458,22 @@ class FlowMatchingLoss(nn.Module):
             for p in frozen_force_backbone.parameters():
                 p.requires_grad_(False)
             frozen_force_backbone.eval()
+
+        # The training-time force constraint deliberately uses a separate,
+        # frozen pretrained UMA copy.  It should never follow the trainable
+        # backbone as it adapts to flow matching: it is a stable physical
+        # regularizer, not another learned component of the flow model.
+        if self.config.force_constraint_enabled:
+            if force_head is None or frozen_force_backbone is None:
+                raise ValueError(
+                    "force_constraint_enabled=True requires force_head and a "
+                    "separate frozen_force_backbone"
+                )
+            if force_tasks is None:
+                raise ValueError(
+                    "force_constraint_enabled=True requires UMA force task metadata"
+                )
+        self._force_constraint_batches_seen = 0
 
         if (eigenmode_head is None) and self.eigenmode_loss_weight > 0:
             raise ValueError(
@@ -528,6 +627,20 @@ class FlowMatchingLoss(nn.Module):
             self.frozen_force_backbone.eval()
         return self
 
+    def _should_run_force_constraint(self) -> bool:
+        """Apply the expensive differentiable UMA term on its configured cadence.
+
+        The counter advances only in training mode.  Validation therefore
+        reports the ordinary supervised flow-matching loss without allocating a
+        second-order UMA graph, and resuming a run simply restarts the harmless
+        cadence phase.
+        """
+        if not self.training or not self.config.force_constraint_enabled:
+            return False
+        batch_number = self._force_constraint_batches_seen
+        self._force_constraint_batches_seen += 1
+        return batch_number % self.config.force_constraint_every_n_batches == 0
+
     @property
     def device(self) -> torch.device:
         return next(self.velocity_head.parameters()).device
@@ -573,6 +686,8 @@ class FlowMatchingLoss(nn.Module):
         self,
         batch: list[dict],
         generator: torch.Generator | None = None,
+        *,
+        return_training_state: bool = False,
     ) -> dict:
         """Compute the flow-matching loss over a list of sample dicts.
 
@@ -591,6 +706,11 @@ class FlowMatchingLoss(nn.Module):
         v_targets: list[torch.Tensor] = []
         t_values: list[float] = []
         fixed_list: list[torch.Tensor] = []
+        # Retain these per-system tensors for the optional force constraint.
+        # They stay outside the normal FM loss path when the option is off.
+        x_t_list: list[torch.Tensor] = []
+        source_delta_list = []
+        saddle_label_list: list[torch.Tensor] = []
         delta_partner_list: list[torch.Tensor] = []  # only used in Mode 1
         eigenmode_targets: list[torch.Tensor] = []   # only when aux loss > 0
         # Collect R and P AtomicData per sample so we can run UMA on the
@@ -715,6 +835,12 @@ class FlowMatchingLoss(nn.Module):
             v_targets.append(v_target)
             t_values.append(t)
             fixed_list.append(sample["fixed"])
+            x_t_list.append(x_t)
+            if getattr(self.velocity_head, "source_conditioning", False):
+                source_delta = mic_displacement(x0, x_t, sample["cell"])
+                source_delta[sample["fixed"]] = 0.
+                source_delta_list.append(source_delta)
+            saddle_label_list.append(x1)
 
             _denoise = (self.config.ts_denoise_sigma > 0.0
                         or self.config.ts_denoise_sigma_rel_hi > 0.0)
@@ -834,8 +960,9 @@ class FlowMatchingLoss(nn.Module):
         any_backbone_trainable = any(
             p.requires_grad for p in self.backbone.parameters()
         )
-        need_grad = any_backbone_trainable or (self.force_head is not None)
-        if self.force_head is not None:
+        need_force_graph = self.force_head is not None and self.physics_conditioner is None
+        need_grad = any_backbone_trainable or need_force_graph
+        if need_force_graph:
             # CRITICAL: positions must require grad BEFORE backbone forward,
             # so the autograd graph captures pos → energy.
             batch_data["pos"].requires_grad_(True)
@@ -856,6 +983,15 @@ class FlowMatchingLoss(nn.Module):
         # No autograd backward into the frozen backbone (its params are
         # requires_grad=False), only through positions.
         force_field_all: torch.Tensor | None = None
+        physics = None
+        head_physics = {}
+        if source_delta_list:
+            head_physics["source_delta"] = torch.cat(source_delta_list).to(device)
+        if self.physics_conditioner is not None:
+            physics = self.physics_conditioner(x_t_list, batch, device)
+            force_field_all = physics["force_field"]
+            if getattr(self.velocity_head, "curvature_conditioning", False):
+                head_physics["curvature_scalars"] = physics["curvature_scalars"]
         # Only compute/inject forces when the model actually consumes them. With
         # energy-conditioning the force_head is present purely to compute endpoint
         # energies (done earlier), so force_field must stay None here.
@@ -865,7 +1001,7 @@ class FlowMatchingLoss(nn.Module):
             or self._compute_dimer_force
             or getattr(self.velocity_head, "force_residual", False)
         )
-        if wants_force and self.force_head is not None and self.frozen_force_backbone is not None:
+        if self.physics_conditioner is None and wants_force and self.force_head is not None and self.frozen_force_backbone is not None:
             from ..utils.forces import compute_uma_forces
             # Vanilla UMA forward — no time-FiLM, no force-FiLM. The frozen
             # backbone is plain UMA, not TimeFiLMBackbone.
@@ -903,7 +1039,7 @@ class FlowMatchingLoss(nn.Module):
         # Legacy path: if we DON'T have a frozen force backbone but DO have
         # a force_head, derive forces from the trainable backbone's features
         # (this matches the v7-3 behaviour). Then run the v6 second pass.
-        if wants_force and self.force_head is not None and self.frozen_force_backbone is None:
+        if self.physics_conditioner is None and wants_force and self.force_head is not None and self.frozen_force_backbone is None:
             from ..utils.forces import compute_uma_forces
             forces = compute_uma_forces(
                 batch_data, feat, self.force_head, self.force_tasks,
@@ -983,6 +1119,7 @@ class FlowMatchingLoss(nn.Module):
             endpoint_features=endpoint_features_all,
             dimer_force=(dimer_force_all if self._compute_dimer_force_feature else None),
             energy_scalars=energy_scalars_all,
+            **head_physics,
         )
 
         # v7-4: output-side Dimer nudge with per-atom α from DimerAlphaMLP.
@@ -1029,6 +1166,45 @@ class FlowMatchingLoss(nn.Module):
         else:
             velocity_loss = sq_err.sum() * 0.0
 
+        # The optional stop-gradient UMA mode needs the ordinary supervised FM
+        # loss for each system it sampled for force evaluation.  Keep this
+        # separate from `velocity_loss`: the latter deliberately remains the
+        # existing atom-weighted batch objective, while this is a per-system
+        # mean suitable for hard-example reweighting.  Do not allocate this
+        # extra graph for the default/direct-force paths.
+        per_system_fm_loss = None
+        if self.config.force_constraint_stopgrad:
+            if self.config.loss_type == "huber":
+                all_error_norm = sq_err.clamp(min=1e-12).sqrt()
+                d = self.config.huber_delta
+                per_atom_fm_loss = torch.where(
+                    all_error_norm <= d,
+                    0.5 * all_error_norm.pow(2) / d,
+                    all_error_norm - 0.5 * d,
+                )
+            else:
+                per_atom_fm_loss = sq_err
+            per_atom_fm_loss = per_atom_fm_loss * mobile.to(per_atom_fm_loss.dtype)
+            per_system_fm_sum = torch.zeros(B, device=device, dtype=velocity_loss.dtype)
+            per_system_fm_sum.index_add_(0, batch_idx, per_atom_fm_loss)
+            per_system_mobile_count = torch.zeros(B, device=device, dtype=velocity_loss.dtype)
+            per_system_mobile_count.index_add_(0, batch_idx, mobile.to(velocity_loss.dtype))
+            per_system_fm_loss = per_system_fm_sum / per_system_mobile_count.clamp_min(1.0)
+            per_system_fm_loss = torch.where(
+                per_system_mobile_count > 0,
+                per_system_fm_loss,
+                per_system_fm_loss * 0.0,
+            )
+            if self.config.maxd_weight > 0.0:
+                per_system_max_sq_error = torch.zeros(B, device=device, dtype=sq_err.dtype)
+                per_system_max_sq_error = per_system_max_sq_error.index_reduce_(
+                    0, batch_idx, sq_err.masked_fill(~mobile, 0.0), "amax", include_self=False,
+                )
+                per_system_fm_loss = (
+                    per_system_fm_loss
+                    + self.config.maxd_weight * per_system_max_sq_error
+                )
+
         # v7-3: sign-invariant cos² eigenmode loss (per system, over the full
         # 3N_b vector, mobile atoms only).
         eigenmode_loss = torch.tensor(0.0, device=device, dtype=velocity_loss.dtype)
@@ -1053,13 +1229,155 @@ class FlowMatchingLoss(nn.Module):
             if valid.any():
                 eigenmode_loss = (1.0 - cos_sq[valid]).mean()
 
-        loss = velocity_loss + self.eigenmode_loss_weight * eigenmode_loss
+        # ---------------------------------------------------------------
+        # Optional algebraic endpoint force constraint.
+        #
+        # No ODE rollout happens here.  For the rectified-flow path, the
+        # current velocity prediction implies the terminal configuration
+        #
+        #     S_hat = wrap(x_t + (1 - t) v_pred).
+        #
+        # In direct mode, UMA is frozen but evaluated with create_graph=True,
+        # so the force loss reaches v and then the flow model.  In stop-gradient
+        # mode, UMA evaluates detached positions with create_graph=False and
+        # supplies only a detached hard-example gate for the normal supervised
+        # FM loss.  Only a uniform random subset is evaluated.  The ordinary
+        # FM objective above still uses every batch element.
+        # ---------------------------------------------------------------
+        force_constraint_loss = velocity_loss * 0.0
+        force_constraint_ran = False
+        force_constraint_num_samples = 0
+        force_constraint_num_eligible = 0
+        force_constraint_f_rms_mean = velocity_loss.detach() * 0.0
+        force_constraint_f_rms_median = velocity_loss.detach() * 0.0
+        force_constraint_f_rms_max = velocity_loss.detach() * 0.0
+        force_constraint_f_max_mean = velocity_loss.detach() * 0.0
+        force_constraint_violation_fraction = velocity_loss.detach() * 0.0
+        force_constraint_endpoint_rmsd = velocity_loss.detach() * 0.0
+        force_constraint_gate_mean = velocity_loss.detach() * 0.0
+        force_constraint_gate_max = velocity_loss.detach() * 0.0
+        force_constraint_mode = (
+            "stopgrad_gate" if self.config.force_constraint_stopgrad else "direct_force"
+        )
 
-        return {
+        if self._should_run_force_constraint():
+            # Normal FM supervision still covers every random time in [0, 1].
+            # This filter affects only the cheap one-shot UMA proxy, which the
+            # LiC diagnostic showed is reliable only at late flow times.
+            eligible = [
+                index for index, time_value in enumerate(t_values)
+                if time_value >= self.config.force_constraint_min_time
+            ]
+            force_constraint_num_eligible = len(eligible)
+            if eligible:
+                n_selected = min(len(eligible), self.config.force_constraint_samples_per_batch)
+                selected_local = torch.randperm(len(eligible), device=device)[:n_selected].tolist()
+                selected = [eligible[index] for index in selected_local]
+
+                # `v` is flattened over all systems.  Slice each selected system
+                # back out, preserving its direct graph connection to the head.
+                offsets: list[tuple[int, int]] = []
+                offset = 0
+                for sample in batch:
+                    next_offset = offset + int(sample["Z"].shape[0])
+                    offsets.append((offset, next_offset))
+                    offset = next_offset
+
+                terminals: list[torch.Tensor] = []
+                labels: list[torch.Tensor] = []
+                selected_samples: list[dict] = []
+                for index in selected:
+                    begin, end = offsets[index]
+                    cell = batch[index]["cell"].to(device)
+                    remaining_time = 1.0 - t_values[index]
+                    terminal = wrap_positions(
+                        x_t_list[index].to(device) + remaining_time * v[begin:end],
+                        cell,
+                    )
+                    terminals.append(terminal)
+                    labels.append(wrap_positions(saddle_label_list[index].to(device), cell))
+                    selected_samples.append(batch[index])
+
+                from ..constr_gen.training_force_constraint import algebraic_endpoint_force_loss
+
+                force_details = algebraic_endpoint_force_loss(
+                    terminals,
+                    labels,
+                    selected_samples,
+                    force_backbone=self.frozen_force_backbone,
+                    force_head=self.force_head,
+                    force_tasks=self.force_tasks,
+                    epsilon=float(self.config.force_constraint_epsilon),
+                    device=device,
+                    stopgrad=self.config.force_constraint_stopgrad,
+                    stopgrad_max_gate=self.config.force_constraint_stopgrad_max_gate,
+                )
+                if self.config.force_constraint_stopgrad:
+                    # UMA's force violation is deliberately detached.  The
+                    # gradient of this extra term is therefore exactly the
+                    # usual supervised FM direction for each selected example,
+                    # scaled by the fixed physical-suspicion gate.
+                    selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
+                    if per_system_fm_loss is None:
+                        raise RuntimeError("stop-gradient force gate needs per-system FM losses")
+                    force_constraint_loss = (
+                        force_details["gate"] * per_system_fm_loss[selected_tensor]
+                    ).mean()
+                else:
+                    force_constraint_loss = force_details["loss"]
+                force_constraint_ran = True
+                force_constraint_num_samples = n_selected
+                force_constraint_f_rms_mean = force_details["force_rms"].detach().mean()
+                force_constraint_f_rms_median = force_details["force_rms"].detach().median()
+                force_constraint_f_rms_max = force_details["force_rms"].detach().max()
+                force_constraint_f_max_mean = force_details["force_max"].detach().mean()
+                force_constraint_violation_fraction = (
+                    force_details["violation"].detach() > 0
+                ).to(velocity_loss.dtype).mean()
+                force_constraint_endpoint_rmsd = force_details["endpoint_rmsd"].detach().mean()
+                force_constraint_gate_mean = force_details["gate"].detach().mean()
+                force_constraint_gate_max = force_details["gate"].detach().max()
+
+        loss = (
+            velocity_loss
+            + self.eigenmode_loss_weight * eigenmode_loss
+            + self.config.force_constraint_weight * force_constraint_loss
+        )
+
+        result = {
             "loss": loss,
             "velocity_loss": velocity_loss.detach(),
             "eigenmode_loss": eigenmode_loss.detach(),
+            "force_constraint_loss": force_constraint_loss.detach(),
+            "force_constraint_ran": force_constraint_ran,
+            "force_constraint_num_samples": force_constraint_num_samples,
+            "force_constraint_num_eligible": force_constraint_num_eligible,
+            "force_constraint_f_rms_mean": force_constraint_f_rms_mean,
+            "force_constraint_f_rms_median": force_constraint_f_rms_median,
+            "force_constraint_f_rms_max": force_constraint_f_rms_max,
+            "force_constraint_f_max_mean": force_constraint_f_max_mean,
+            "force_constraint_violation_fraction": force_constraint_violation_fraction,
+            "force_constraint_endpoint_rmsd": force_constraint_endpoint_rmsd,
+            "force_constraint_gate_mean": force_constraint_gate_mean,
+            "force_constraint_gate_max": force_constraint_gate_max,
+            "force_constraint_mode": force_constraint_mode,
             "mode": self.config.mode,
             "n_batch": B,
             "n_mobile": n_mobile,
         }
+        if return_training_state:
+            # Experimental auxiliary losses can reuse this SAME model forward.
+            # Normal trainers/inference do not request or retain these graphs.
+            counts = [len(sample["Z"]) for sample in batch]
+            result["training_state"] = {
+                "fm_loss": velocity_loss,
+                "positions": x_t_list,
+                "times": t_values,
+                "velocities": list(v.split(counts)),
+                "targets": list(v_target.split(counts)),
+            }
+        if physics is not None:
+            result["conditioning_queries"] = physics["queries"]
+            if physics["curvature_scalars"] is not None:
+                result["conditioning_curvature_mean"] = physics["curvature_scalars"].mean(dim=0).detach()
+        return result

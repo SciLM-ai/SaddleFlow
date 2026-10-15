@@ -32,11 +32,10 @@ import warnings
 import numpy as np
 
 warnings.filterwarnings("ignore")
-from ase import Atoms
 from ase.io import Trajectory
 from fairchem.core import FAIRChemCalculator, pretrained_mlip
-from scipy.sparse.linalg import LinearOperator, eigsh
-from sella import Sella
+
+from saddleflow.classical_saddle_search import MinimumModeEstimator, PESBackend, run_sella
 
 
 def parse_args():
@@ -58,40 +57,24 @@ def parse_args():
     return p.parse_args()
 
 
-def mic(x, y, cell):
+def mic(x, y, cell, pbc):
     """Minimum-image displacement x - y under periodic boundary conditions."""
+    from ase.geometry import find_mic
     d = x - y
-    frac = np.linalg.solve(np.array(cell).T, d.T).T
-    frac -= np.round(frac)
-    return frac @ np.array(cell)
+    return find_mic(d, cell, pbc)[0] if np.any(pbc) else d
 
 
 def hessian_index(atoms, nev, eps=2e-3, tol=1e-2):
-    """Lowest `nev` Hessian eigenvalues via finite-difference Lanczos.
+    """Lowest `nev` FREE-space Hessian eigenvalues.
 
-    Never forms the Hessian: eigsh only needs H@v, and H@v is one central
-    difference of forces along v (2 force calls per matvec).
+    Small spaces use dense central differences. Larger spaces use Lanczos:
+    H@v is one central difference of free forces (2 PES queries per matvec).
     """
-    n = len(atoms)
-    x_center = atoms.get_positions().copy()
-
-    def hv(v):
-        v = v.reshape(n, 3)
-        norm = np.linalg.norm(v)
-        if norm < 1e-12:
-            return np.zeros(3 * n)
-        u = v / norm
-        atoms.set_positions(x_center + eps * u)
-        f_plus = atoms.get_forces()
-        atoms.set_positions(x_center - eps * u)
-        f_minus = atoms.get_forces()
-        atoms.set_positions(x_center)
-        return (-(f_plus - f_minus) / (2 * eps) * norm).ravel()
-
-    op = LinearOperator((3 * n, 3 * n), matvec=hv, dtype=float)
-    w = eigsh(op, k=nev, which="SA", return_eigenvectors=False, maxiter=300, tol=1e-3)
-    eigs = sorted(float(x) for x in w)
-    return eigs, int(sum(1 for x in eigs if x < -tol))
+    pes = PESBackend(atoms, atoms.calc)
+    estimator = MinimumModeEstimator(eps=eps, lanczos_maxiter=300)
+    w, _, _ = estimator.lowest_modes(pes, pes.dofs.pack(atoms.positions), n_modes=nev)
+    eigs = [float(x) for x in w]
+    return eigs, int(sum(x < -tol for x in eigs))
 
 
 def main():
@@ -101,28 +84,35 @@ def main():
     frames = list(Trajectory(args.src))[args.shard::args.nshards]
     rows = []
     for i, frame in enumerate(frames):
-        atoms = Atoms(positions=frame.get_positions(), numbers=frame.get_atomic_numbers(),
-                      cell=frame.get_cell(), pbc=True)
-        atoms.calc = FAIRChemCalculator(predict_unit, task_name=args.task_name)
-        x_start = atoms.get_positions().copy()
+        # ASE copy preserves FixAtoms, actual PBC and charge/spin metadata.
+        atoms = frame.copy()
+        calculator = FAIRChemCalculator(predict_unit, task_name=args.task_name)
+        pes = PESBackend(atoms, calculator)
+        x_start = atoms.positions.copy()
         record = {"tid": int(frame.info.get("tid", -1)), "src": str(frame.info.get("src", "?"))}
         try:
-            dyn = Sella(atoms, order=1, delta0=args.delta0, internal=False, logfile=None)
-            dyn.run(fmax=args.fmax, steps=args.steps)
-            forces = atoms.get_forces()
-            fmax = float(np.linalg.norm(forces, axis=1).max())
-            moved = mic(atoms.get_positions(), x_start, frame.get_cell())
+            result = run_sella(pes, pes.dofs.pack(x_start), fmax_tol=args.fmax,
+                               max_steps=args.steps, max_force_calls=1_000_000, delta0=args.delta0)
+            # Verification is distinct from search cost, and uses FREE forces.
+            pes.max_force_calls = None
+            _, fmax = pes.dofs.force_metrics(pes.forces(result["final"]))
+            moved = mic(result["positions"], x_start, frame.cell, frame.pbc)
             eigs, nneg = None, None
+            verification_calls = 0
             if args.check_index:
-                try:
-                    eigs, nneg = hessian_index(atoms, args.nev)
-                except Exception:
-                    pass
+                before = pes.force_calls
+                estimator = MinimumModeEstimator(lanczos_maxiter=300)
+                values, _, _ = estimator.lowest_modes(pes, result["final"], n_modes=args.nev)
+                eigs = values.tolist()
+                nneg = int(np.sum(values < -0.01))
+                verification_calls = pes.force_calls - before
             record.update(conv=bool(fmax < args.fmax), fmax=fmax,
-                          nfc=int(dyn.get_number_of_steps()),
+                          nfc=result["force_calls"], nsteps=result["steps"],
+                          verification_nfc=verification_calls, status=result["status"],
+                          free_atoms=pes.dofs.n_free,
                           rmsd=float(np.sqrt((moved ** 2).sum(1).mean())),
                           maxd=float(np.sqrt((moved ** 2).sum(1)).max()),
-                          eigs=eigs, nneg=nneg, pos=atoms.get_positions().tolist())
+                          eigs=eigs, nneg=nneg, pos=result["positions"].tolist())
         except Exception as exc:  # a single bad system must not lose the shard
             record.update(conv=False, fmax=float("nan"), nfc=-1, rmsd=float("nan"),
                           maxd=float("nan"), err=str(exc)[:200])

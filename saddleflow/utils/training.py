@@ -70,6 +70,11 @@ class TrainingConfig:
     # optimizer/LR schedule at epoch 0 — for fine-tuning a pre-trained model
     # on a different start distribution (e.g. TS+noise pre-train -> midpoint).
     init_weights: str | None = None
+    # When True, initialise from ``ema.pt`` rather than accelerator's raw
+    # ``model.safetensors``.  Use this when inference/evaluation of the source
+    # checkpoint also uses EMA weights, so fine-tuning starts from the model
+    # whose behavior was actually measured.
+    init_weights_use_ema: bool = False
 
     # --- Benchmark instrumentation (all no-ops at defaults; production unaffected) ---
     # If > 0, stop after this many optimizer steps regardless of num_epochs. Also
@@ -188,6 +193,10 @@ def train(
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "config.json").write_text(json.dumps(asdict(config), indent=2, default=str))
+    # Created only if a loss module actually reports force-constraint events.
+    # JSON Lines keeps one transparent, human-readable record per expensive UMA
+    # evaluation without flooding Slurm stdout on a long run.
+    force_constraint_log = out_dir / "force_constraint_steps.jsonl"
 
     dataloader = DataLoader(
         dataset,
@@ -264,14 +273,50 @@ def train(
     start_epoch = 0
     global_step = 0
     if getattr(config, "init_weights", None):
-        from safetensors.torch import load_file as _load_st
-        _p = Path(config.init_weights) / "model.safetensors"
-        _sd = _load_st(str(_p))
-        _missing, _unexpected = accelerator.unwrap_model(loss_module).load_state_dict(_sd, strict=False)
+        init_dir = Path(config.init_weights)
+        unwrapped_model = accelerator.unwrap_model(loss_module)
+        if config.init_weights_use_ema:
+            # `ema.pt` is a flat list parallel to the original run's trainable
+            # parameter order.  That is also exactly the order in
+            # `unwrapped_model.parameters()` after filtering requires_grad.
+            # This is the only correct fine-tuning initializer when source
+            # inference used EMA rather than the raw last optimizer iterate.
+            ema_path = init_dir / "ema.pt"
+            if not ema_path.exists():
+                raise FileNotFoundError(f"init EMA checkpoint has no {ema_path}")
+            saved_shadow = torch.load(ema_path, map_location="cpu")["shadow"]
+            destination = [p for p in unwrapped_model.parameters() if p.requires_grad]
+            if len(saved_shadow) != len(destination):
+                raise RuntimeError(
+                    f"init EMA has {len(saved_shadow)} trainable tensors but this model has "
+                    f"{len(destination)}. Rebuild the source architecture exactly before "
+                    "using EMA fine-tuning."
+                )
+            with torch.no_grad():
+                for parameter, source in zip(destination, saved_shadow):
+                    parameter.copy_(source.to(parameter.device, dtype=parameter.dtype))
+            source_description = str(ema_path)
+            load_description = f"loaded {len(saved_shadow)} EMA tensors"
+        else:
+            from safetensors.torch import load_file as _load_st
+            model_path = init_dir / "model.safetensors"
+            checkpoint_state = _load_st(str(model_path))
+            missing, unexpected = unwrapped_model.load_state_dict(checkpoint_state, strict=False)
+            source_description = str(model_path)
+            load_description = (
+                f"loaded {len(checkpoint_state)} raw tensors "
+                f"(missing={len(missing)}, unexpected={len(unexpected)})"
+            )
+
+        # EMA was constructed before the initializer was applied.  Reset its
+        # shadow to the loaded starting model; otherwise a new fine-tuning run
+        # would blend its final weights with the pre-initialisation random state.
+        with torch.no_grad():
+            for shadow, parameter in zip(ema.shadow, ema._params_ref):
+                shadow.copy_(parameter.detach())
         if accelerator.is_main_process:
-            print(f"[train] init-weights from {_p}: loaded {len(_sd)} tensors "
-                  f"(missing={len(_missing)}, unexpected={len(_unexpected)}); "
-                  f"fresh optimizer + LR schedule from epoch 0")
+            print(f"[train] init-weights from {source_description}: {load_description}; "
+                  "fresh optimizer + LR schedule from epoch 0; EMA reset to initializer")
     if config.resume_from:
         accelerator.load_state(config.resume_from)
         ema_path = Path(config.resume_from) / "ema.pt"
@@ -353,6 +398,43 @@ def train(
             epoch_loss += loss_val
             epoch_n += 1
 
+            # The force term may run less often than the normal FM loss.  When
+            # it does run, retain every requested diagnostic rather than only a
+            # sparse `log_every` snapshot.  This is rank-0's local batch in a
+            # distributed job; the regular scalar loss above remains reduced
+            # across ranks as before.
+            if accelerator.is_main_process and out.get("force_constraint_ran", False):
+                force_record = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "loss/fm": float(out["velocity_loss"].item()),
+                    "loss/force": float(out["force_constraint_loss"].item()),
+                    "loss/total": float(loss_val),
+                    "force_constraint/mode": out["force_constraint_mode"],
+                    "force_rollout/f_rms_mean": float(out["force_constraint_f_rms_mean"].item()),
+                    "force_rollout/f_rms_median": float(out["force_constraint_f_rms_median"].item()),
+                    "force_rollout/f_rms_max": float(out["force_constraint_f_rms_max"].item()),
+                    "force_rollout/f_max_mean": float(out["force_constraint_f_max_mean"].item()),
+                    "force_rollout/violation_fraction": float(
+                        out["force_constraint_violation_fraction"].item()
+                    ),
+                    "force_rollout/gate_mean": float(
+                        out["force_constraint_gate_mean"].item()
+                    ),
+                    "force_rollout/gate_max": float(
+                        out["force_constraint_gate_max"].item()
+                    ),
+                    "force_rollout/num_samples": int(out["force_constraint_num_samples"]),
+                    "force_rollout/num_eligible_late_time_samples": int(
+                        out["force_constraint_num_eligible"]
+                    ),
+                    "force_rollout/endpoint_rmsd_to_label": float(
+                        out["force_constraint_endpoint_rmsd"].item()
+                    ),
+                }
+                with force_constraint_log.open("a") as handle:
+                    handle.write(json.dumps(force_record) + "\n")
+
             # Per-step wall-clock between consecutive sync points (the gather above
             # forces a CUDA sync via .item()), so this includes data loading and
             # collectives — the honest end-to-end step cost. Only kept in the
@@ -372,8 +454,27 @@ def train(
             if accelerator.is_main_process and global_step % config.log_every == 0:
                 lr = scheduler.get_last_lr()[0]
                 mode = int(out.get("mode", -1))
-                print(f"[train] ep {epoch:4d} step {global_step:7d} mode {mode} "
-                      f"loss {loss_val:.4f}  lr {lr:.2e}  n_mobile {out['n_mobile']}")
+                message = (f"[train] ep {epoch:4d} step {global_step:7d} mode {mode} "
+                           f"loss {loss_val:.4f}  lr {lr:.2e}  n_mobile {out['n_mobile']}")
+                if "conditioning_queries" in out:
+                    message += f"  Michael: conditioning PES={out['conditioning_queries']}"
+                    if "conditioning_curvature_mean" in out:
+                        values = out["conditioning_curvature_mean"].cpu().tolist()
+                        message += f"  mean lambda1/lambda2/gap={','.join(f'{v:.4f}' for v in values)}"
+                if out.get("force_constraint_ran", False):
+                    constraint_label = (
+                        "gated_fm" if out["force_constraint_mode"] == "stopgrad_gate"
+                        else "force"
+                    )
+                    message += (
+                        f"  fm {out['velocity_loss'].item():.4f}"
+                        f"  {constraint_label} {out['force_constraint_loss'].item():.4f}"
+                        f"  f_rms {out['force_constraint_f_rms_mean'].item():.5f}"
+                        f"  violation {out['force_constraint_violation_fraction'].item():.2f}"
+                        f"  gate {out['force_constraint_gate_mean'].item():.2f}"
+                        f"  eligible {out['force_constraint_num_eligible']}"
+                    )
+                print(message)
             global_step += 1
             # Optional intra-epoch checkpoint. Only writes on main_process; the
             # `accelerator.save_state` call inside _save_checkpoint is itself

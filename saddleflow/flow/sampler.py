@@ -40,6 +40,8 @@ def sample_saddles(
     dimer_residual_alpha_mlp: nn.Module | None = None,
     xt_capture=None,
     endpoint_capture=None,
+    force_guidance: dict | None = None,
+    return_guidance_trace: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Euler-integrate `n_perturbations` trajectories from x_0 = (R, P) midpoint to t=1.
 
@@ -72,10 +74,21 @@ def sample_saddles(
             tensor of intermediate positions (including the initial perturbed starts).
         partner_pos: (N, 3) MIC-unwrapped partner positions (R or P). Required;
             same atom ordering as `reactant['start_pos']`.
+        force_guidance: Optional plain dictionary enabling algebraic endpoint
+            force guidance.  It is inference-only and works for any `(N, 3)`
+            structure.  Required keys are supplied as ordinary values:
+            `guide_steps`, `force_tol`, `fd_eps`, `endpoint_step`,
+            `max_endpoint_step`, `alpha`, `max_backtracks`, and
+            `backtrack_factor`.  It requires `force_head`, `force_tasks`, and
+            a separate frozen `frozen_force_backbone`.
+        return_guidance_trace: If True, return one plain tensor dictionary per
+            guidance step in addition to the normal sampler output.
 
     Returns:
         `(n_perturbations, N, 3)` candidate saddle positions, wrapped into the unit cell.
-        If `return_trajectory` is True, returns a tuple `(final, trajectory)`.
+        If `return_trajectory` is True, returns `(final, trajectory)`.  When
+        `return_guidance_trace` is also True, the trace is appended as a final
+        return value.  With only `return_guidance_trace`, returns `(final, trace)`.
     """
     if device is None:
         device = next(velocity_head.parameters()).device
@@ -91,6 +104,34 @@ def sample_saddles(
     spin = int(reactant["spin"])
     mobile = ~fixed
     N = r_R.shape[0]
+
+    # Force guidance is intentionally a plain dictionary rather than a config
+    # class.  Sampling scripts can enable it without involving training code.
+    guidance = force_guidance or {}
+    guidance_enabled = bool(guidance.get("enabled", force_guidance is not None))
+    guide_steps = {int(step) for step in guidance.get("guide_steps", ())}
+    if guidance_enabled:
+        if force_head is None or force_tasks is None or frozen_force_backbone is None:
+            raise ValueError(
+                "force_guidance needs force_head, force_tasks, and a separate "
+                "frozen_force_backbone containing pretrained UMA weights."
+            )
+        invalid_steps = sorted(step for step in guide_steps if step < 0 or step >= K - 1)
+        if invalid_steps:
+            raise ValueError(
+                f"force_guidance steps must satisfy 0 <= step < K-1; got {invalid_steps} for K={K}."
+            )
+        force_tol = float(guidance.get("force_tol", 0.01))
+        fd_eps = float(guidance.get("fd_eps", 0.001))
+        endpoint_step = float(guidance.get("endpoint_step", 0.02))
+        max_endpoint_step = float(guidance.get("max_endpoint_step", 0.05))
+        guidance_alpha = float(guidance.get("alpha", 0.5))
+        max_backtracks = int(guidance.get("max_backtracks", 3))
+        backtrack_factor = float(guidance.get("backtrack_factor", 0.5))
+        if not 0.0 <= guidance_alpha <= 1.0:
+            raise ValueError("force_guidance alpha must lie in [0, 1].")
+    else:
+        guide_steps = set()
 
     # Validate that the head is configured for partner conditioning, which the
     # released training scheme always uses.
@@ -117,7 +158,7 @@ def sample_saddles(
             "force_head was not provided to sample_saddles."
         )
     head_uses_energy = getattr(velocity_head, "energy_conditioning", False)
-    if (not head_v2) and (not head_uses_energy) and force_head is not None:
+    if (not head_v2) and (not head_uses_energy) and force_head is not None and not guidance_enabled:
         raise ValueError(
             "force_head was provided but velocity_head has force_field_channels==0 "
             "and energy_conditioning is off."
@@ -168,6 +209,7 @@ def sample_saddles(
     else:
         x_init = r_R
     x = wrap_positions(x_init.unsqueeze(0) + eps_stack, cell)  # (n_perturbations, N, 3)
+    source_positions = x.detach().clone() if getattr(velocity_head, "source_conditioning", False) else None
 
     if return_trajectory:
         traj = torch.empty(K + 1, n_perturbations, N, 3, device=device, dtype=x.dtype)
@@ -175,6 +217,28 @@ def sample_saddles(
 
     fixed_all = fixed.repeat(n_perturbations)  # (n_perturbations * N,)
     dt = 1.0 / K
+    guidance_trace: list[dict] = []
+
+    if guidance_enabled:
+        # This uses the frozen pretrained UMA energy model, separately from a
+        # possibly fine-tuned SaddleFlow backbone.  It accepts a full batch of
+        # arbitrary N-atom structures and returns a matching force batch.
+        from ..constr_gen import uma_forces
+
+        def force_function(positions: torch.Tensor) -> torch.Tensor:
+            return uma_forces(
+                positions,
+                Z=Z,
+                cell=cell,
+                task_name=task_name,
+                charge=charge,
+                spin=spin,
+                fixed=fixed,
+                force_backbone=frozen_force_backbone,
+                force_head=force_head,
+                force_tasks=force_tasks,
+                device=device,
+            )
 
     # v7-2b: featurise R and P through UMA in static mode ONCE before the K-step
     # loop, then reuse the cached features at every step. Tile each per atom by
@@ -391,6 +455,11 @@ def sample_saddles(
                 scale_per_atom = scale_sys[batch_idx].unsqueeze(-1)
                 dimer_force_all_inf = F_at - scale_per_atom * eig_pred
 
+            source_kwargs = {}
+            if source_positions is not None:
+                source_delta = mic_displacement(source_positions, x, cell)
+                source_delta[:, fixed] = 0.
+                source_kwargs["source_delta"] = source_delta.reshape(-1, 3)
             v = velocity_head(
                 h, t_tensor, batch_idx,
                 delta_endpoint=delta_partner_all,
@@ -398,6 +467,7 @@ def sample_saddles(
                 endpoint_features=endpoint_features_all_inf,
                 dimer_force=(dimer_force_all_inf if head_dimer_feature else None),
                 energy_scalars=energy_scalars_all,
+                **source_kwargs,
             )
             # v7-4: per-atom α from DimerAlphaMLP applied to per-atom F_dimer.
             if use_dimer_residual and dimer_force_all_inf is not None:
@@ -406,11 +476,50 @@ def sample_saddles(
 
             v = apply_output_projections(v, fixed_all, batch_idx, num_systems=n_perturbations)
             v = v.view(n_perturbations, N, 3)
+
+            if guidance_enabled and step in guide_steps:
+                # Straight-flow terminal estimate, then a small correction that
+                # is accepted only if frozen UMA lowers mobile-atom force RMS.
+                from ..constr_gen import guide_terminal_estimates
+
+                terminal_estimate = wrap_positions(x + (1.0 - t_scalar) * v, cell)
+                corrected_terminal, guide_info = guide_terminal_estimates(
+                    terminal_estimate,
+                    mobile_mask=mobile,
+                    cell=cell,
+                    force_function=force_function,
+                    force_tol=force_tol,
+                    fd_eps=fd_eps,
+                    endpoint_step=endpoint_step,
+                    max_endpoint_step=max_endpoint_step,
+                    max_backtracks=max_backtracks,
+                    backtrack_factor=backtrack_factor,
+                )
+                endpoint_delta = mic_displacement(corrected_terminal, terminal_estimate, cell)
+                endpoint_delta[:, fixed, :] = 0.0
+                v = v + guidance_alpha * endpoint_delta / (1.0 - t_scalar)
+
+                # Reapply the sampler's standard fixed-atom / CoM projection
+                # after adding the external velocity correction.
+                v = apply_output_projections(
+                    v.reshape(-1, 3), fixed_all, batch_idx, num_systems=n_perturbations
+                ).view(n_perturbations, N, 3)
+                if return_guidance_trace:
+                    guidance_trace.append({
+                        "step": step,
+                        "t": t_scalar,
+                        **{key: value.detach().cpu() for key, value in guide_info.items()},
+                    })
+
             x = wrap_positions(x + dt * v, cell)
 
             if return_trajectory:
                 traj[step + 1] = x
 
+    if return_trajectory and return_guidance_trace:
+        return x, traj, guidance_trace
     if return_trajectory:
         return x, traj
+    if return_guidance_trace:
+        return x, guidance_trace
     return x

@@ -22,6 +22,13 @@ Run from the repository root, after train.py:
 The full Li path of every throw goes to <run>/random_throw/throw.npz; draw it
 with plot_throws.py.
 """
+import sys
+from pathlib import Path
+
+# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+_LIC = Path(__file__).resolve().parent  # examples/LiC
+sys.path[:0] = [str(_LIC / 'rollout_eval')]
+
 import argparse
 import json
 from pathlib import Path
@@ -29,14 +36,15 @@ from pathlib import Path
 import numpy as np
 import torch
 from ase.io import Trajectory
-from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 
 from saddleflow.data import atoms_to_sample_dict
-from saddleflow.flow.matching import apply_output_projections, build_atomic_data
 from saddleflow.data.transforms import wrap_positions
-from saddleflow.models import GlobalAttn, VelocityHead
-from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
-from saddleflow.utils import load_ema_weights, load_uma_backbone
+try:
+    from force_guided_sampling import load_flow_model, model_velocity
+    from conditioning import conditioning_queries
+except ModuleNotFoundError:
+    from examples.LiC.rollout_eval.force_guided_sampling import load_flow_model, model_velocity
+    from examples.LiC.rollout_eval.conditioning import conditioning_queries
 
 LI = 126
 
@@ -46,8 +54,8 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ckpt", required=True, help="checkpoint dir (config.json read from its parent)")
-    p.add_argument("--train-traj", default=str(here / "train_set.traj"))
-    p.add_argument("--test-traj", default=str(here / "test_set.traj"))
+    p.add_argument("--train-traj", default=None)
+    p.add_argument("--test-traj", default=None)
     p.add_argument("--n", type=int, default=2000, help="number of random starts")
     p.add_argument("--grid", type=int, default=0,
                    help="If >0, ignore --n/--z-jitter and start from a regular GRIDxGRID "
@@ -98,6 +106,9 @@ def main():
     ckpt = Path(args.ckpt)
     cfg = json.loads((ckpt.parent / "config.json").read_text())
     ex = cfg.get("extras", {})
+    try: from conditioning import catalog_paths
+    except ModuleNotFoundError: from examples.LiC.rollout_eval.conditioning import catalog_paths
+    args.train_traj, args.test_traj = catalog_paths(ex, args.train_traj, args.test_traj)
     attn_layers = int(ex.get("attn_layers", 0)); attn_heads = int(ex.get("attn_heads", 8))
     head_depth = int(ex.get("head_depth", 1)); delta_C = int(ex.get("delta_endpoint_channels", 0) or 0)
     tfilm = bool(ex.get("early_time_film", False))
@@ -118,34 +129,7 @@ def main():
     print(f"[throw] saddles: {len(tr_sad)} train + {len(te_sad)} test = {len(all_sad)}; "
           f"Li adsorption height z = {z0:.3f} A")
 
-    backbone = load_uma_backbone("uma-s-1p2", device=dev, freeze=True, eval_mode=True)
-    # The EMA loader matches trainable params by count AND order, so the
-    # unfreeze pattern here must reproduce training exactly.
-    unfreeze_blocks = ex.get("unfreeze_uma_blocks")
-    if unfreeze_blocks:
-        for i in unfreeze_blocks:
-            for p_ in backbone.blocks[i].parameters():
-                p_.requires_grad_(True)
-        print(f"[throw] UMA blocks {sorted(unfreeze_blocks)} unfrozen (from config)")
-    elif uma_unfrozen:
-        for blk in backbone.blocks:
-            for p_ in blk.parameters():
-                p_.requires_grad_(True)
-    sc, lmax = backbone.sphere_channels, backbone.lmax
-    if tfilm:
-        idx = [int(x) for x in str(ex.get("early_time_film_blocks", "0,1,2,3")).split(",")]
-        backbone = TimeFiLMBackbone(backbone, inject_block_indices=idx, inject_force=False).to(dev)
-    attn = GlobalAttn(sphere_channels=sc, lmax=lmax, num_heads=attn_heads,
-                      num_layers=attn_layers).to(dev)
-    head = VelocityHead(sphere_channels=sc, input_lmax=lmax, depth=head_depth).to(dev)
-    mods = [backbone, attn, head] if (uma_unfrozen or tfilm) else [attn, head]
-    if not args.use_ema and (uma_unfrozen or tfilm):
-        raise SystemExit("--no-ema cannot restore an unfrozen/time-FiLM backbone; "
-                         "the raw-weights loader only handles global_attn and "
-                         "velocity_head. Drop --no-ema.")
-    load_ema_weights(str(ckpt), mods, device=dev, use_ema=args.use_ema)
-    for m in mods:
-        m.eval()
+    _, _, backbone, attn, head = load_flow_model(ckpt, dev, use_ema=args.use_ema)
 
     rng = np.random.default_rng(args.seed)
     base = ref.get_positions().copy()
@@ -165,7 +149,6 @@ def main():
     starts[:, LI, 2] = z
 
     sample = atoms_to_sample_dict(ref)
-    fixed = sample["fixed"].to(dev)
     cell_t = sample["cell"]
     finals = np.zeros((args.n, 3), dtype=np.float64)
     # Full Li path per throw, so trajectories can be drawn later without re-running.
@@ -176,19 +159,10 @@ def main():
             x = torch.tensor(starts[s0:s1], dtype=torch.float32)
             x = torch.stack([wrap_positions(x[i], cell_t) for i in range(len(x))])
             paths[s0:s1, 0] = x[:, LI, :].numpy()
+            source_kwargs = {"source_positions": x.clone()} if getattr(head, "source_conditioning", False) else {}
             for k in range(args.K):
                 t = k / args.K
-                dl = [build_atomic_data(x[i], sample["Z"], cell_t, sample["task_name"],
-                                        sample["charge"], sample["spin"], sample["fixed"])
-                      for i in range(len(x))]
-                b = data_list_collater(dl, otf_graph=True).to(dev)
-                tt = torch.full((len(x),), float(t), dtype=torch.float32, device=dev)
-                feat = (backbone(b, tt, b.batch)
-                        if "TimeFiLM" in type(backbone).__name__ else backbone(b))
-                h = attn(feat["node_embedding"], b.batch)
-                v = head(h, tt, b.batch)
-                v = apply_output_projections(v, fixed.repeat(len(x)), b.batch, len(x))
-                v = v.view(len(x), -1, 3).cpu()
+                v = model_velocity(x, t, sample, backbone, attn, head, dev, **source_kwargs)
                 x = torch.stack([wrap_positions(x[i] + v[i].float() / args.K, cell_t)
                                  for i in range(len(x))])
                 paths[s0:s1, k + 1] = x[:, LI, :].numpy()
@@ -204,7 +178,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(out_dir / "throw.npz", starts=starts[:, LI, :], finals=finals, paths=paths,
              d_start=d_start, d_end=d_end, d_end_train=d_end_tr, d_end_test=d_end_te,
-             train_saddles=tr_sad, test_saddles=te_sad, cell=cell)
+             train_saddles=tr_sad, test_saddles=te_sad, cell=cell,
+             conditioning_pes_calls=np.asarray(conditioning_queries(head)))
+    print(f"[throw] Michael: online conditioning PES geometries={conditioning_queries(head)}; no force-guidance correction")
     qs = [0, 1, 5, 10, 50, 90, 95, 99, 100]
     print(f"\n[throw] {args.n} random starts, K={args.K}")
     print("  distance to the nearest dataset saddle (A):")
