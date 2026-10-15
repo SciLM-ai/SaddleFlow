@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import os
 import torch
 from ase import Atoms
 from ase.constraints import FixAtoms
@@ -64,6 +65,57 @@ def parse_args():
     return p.parse_args()
 
 
+def _velocity(model, x, t, record, cell, delta_channels, device):
+    """One evaluation of the velocity field at (x, t). Factored out of run_flow so higher-order
+    integrators can evaluate it at predicted points."""
+    with torch.no_grad():
+        t_tensor = torch.tensor([t], device=device)
+        data = build_atomic_data(x, record["Z"], cell, record["task_name"],
+                                 record["charge"], record["spin"], record["fixed"])
+        batch = data_list_collater([data], otf_graph=True).to(device)
+        is_filmed = "TimeFiLM" in type(model.backbone).__name__
+        feat = (model.backbone(batch, t_tensor, batch.batch) if is_filmed else model.backbone(batch))
+        h = feat["node_embedding"]
+        if model.global_attn is not None:
+            h = model.global_attn(h, batch.batch)
+        if delta_channels > 0:
+            delta = torch.stack([
+                mic_displacement(record["start_pos"], x, cell),
+                mic_displacement(record["partner_un_pos"], x, cell),
+            ], dim=1).to(device)
+            v = model.velocity_head(h, t_tensor, batch.batch, delta_endpoint=delta)
+        else:
+            v = model.velocity_head(h, t_tensor, batch.batch)
+        return apply_output_projections(v, record["fixed"].to(device), batch.batch, 1).cpu().float()
+
+
+def run_flow_ho(model, x, record, cell, n_steps, delta_channels, device, scheme="heun"):
+    """Higher-order explicit integration of dx/dt = v(x,t) over t in [0,1].
+    heun = 2nd-order (2 field evals/step), rk4 = 4th-order (4 evals/step). Euler is the n_steps->inf
+    limit of neither -- if a K sweep is flat, the ODE is already solved and these cannot help; they
+    only reduce integration error, not the fact that v's t=1 endpoint may sit short of the saddle.
+    wrap_positions is applied once per completed step, matching run_flow (and it is fp32-pinned --
+    see the autocast coordinate bug)."""
+    h = 1.0 / n_steps
+    a = float(os.environ.get('SF_VSCALE', '1.0'))
+    with torch.no_grad():
+        for step in range(n_steps):
+            t = step * h
+            if scheme == "heun":
+                k1 = _velocity(model, x, t, record, cell, delta_channels, device)
+                k2 = _velocity(model, wrap_positions(x + h * k1, cell), t + h, record, cell, delta_channels, device)
+                x = wrap_positions(x + a * (h / 2.0) * (k1 + k2), cell)
+            elif scheme == "rk4":
+                k1 = _velocity(model, x, t, record, cell, delta_channels, device)
+                k2 = _velocity(model, wrap_positions(x + (h / 2) * k1, cell), t + h / 2, record, cell, delta_channels, device)
+                k3 = _velocity(model, wrap_positions(x + (h / 2) * k2, cell), t + h / 2, record, cell, delta_channels, device)
+                k4 = _velocity(model, wrap_positions(x + h * k3, cell), t + h, record, cell, delta_channels, device)
+                x = wrap_positions(x + a * (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4), cell)
+            else:
+                raise ValueError(scheme)
+    return x
+
+
 def run_flow(model, x, record, cell, n_steps, delta_channels, device):
     """Forward-Euler integration of the velocity field from x over n_steps."""
     with torch.no_grad():
@@ -88,7 +140,7 @@ def run_flow(model, x, record, cell, n_steps, delta_channels, device):
             else:
                 v = model.velocity_head(h, t_tensor, batch.batch)
             v = apply_output_projections(v, record["fixed"].to(device), batch.batch, 1).cpu()
-            x = wrap_positions(x + v.float() / n_steps, cell)
+            x = wrap_positions(x + float(os.environ.get('SF_VSCALE', '1.0')) * v.float() / n_steps, cell)
     return x
 
 

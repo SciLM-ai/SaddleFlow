@@ -70,6 +70,28 @@ class FlowMatchingConfig:
     # the (R+P)/2 midpoint, so the model sees BOTH generic denoising directions and
     # the specific reaction-coordinate direction that inference actually supplies.
     mixed_start_prob: float = 0.0
+    # Path start (2026-09-11): with probability `path_start_prob` a sample starts from a point drawn uniformly
+    # on the straight (MIC-unwrapped) line start -> saddle -- R -> S or P -> S, since the dataset doubles every
+    # triplet -- plus isotropic N(0, path_noise_sigma^2) on the mobile atoms; x_1 = saddle.  u = 1 is TS-denoise,
+    # u = 0 is the "reactant + noise" start used for Dimer-like search, so the whole climb along the reaction
+    # coordinate is covered, which TS + isotropic noise never does in a high-dimensional cell.
+    path_start_prob: float = 0.0
+    path_noise_sigma: float = 0.3
+    # u is drawn as U(0,1)**path_u_power: 1.0 is uniform along the path, > 1 biases the start toward the
+    # ENDPOINT (u -> 0), which is where the Dimer-like use case actually starts; < 1 biases toward the saddle.
+    path_u_power: float = 1.0
+    # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
+    #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
+    # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
+    # the SADDLE.  Either left None falls back to the constant `path_noise_sigma`, so old configs are unchanged.
+    #   both = 0.5        -> constant tube (the P3 recipe)
+    #   endpoint 0        -> cone with its apex ON the minimum: near the minimum every sample lies on its own
+    #                        triplet's ray to its own saddle, so the perturbation DIRECTION becomes predictive
+    #                        of which saddle is the target instead of being averaged away
+    #   endpoint 0.1      -> the same cone with a thin sheath, so the isotropic throw used at inference is not
+    #                        completely off-distribution in radius near u = 0
+    path_noise_sigma_endpoint: float | None = None
+    path_noise_sigma_saddle: float | None = None
     # Self-conditioning: with this probability, replace x0 by the model's OWN
     # one-shot prediction (x0 + v(x0, t=0)) before building the training pair,
     # so the model learns to correct the error distribution it actually makes.
@@ -132,7 +154,7 @@ class FlowMatchingConfig:
     # The fix uses a hybrid schedule split at `xt_target_correction_t_floor`:
     #   * t ≤ 1 − t_floor (bulk of training, 90% of t-space when floor=0.1):
     #         x_t  = on_line + Gaussian noise (when xt_perturb_sigma > 0)
-    #         v_t  = MIC(saddle − x_t, cell) / (1 − t)        # convergent
+    #         v_t  = (saddle_un − x_t_un) / (1 − t)           # convergent, unwrapped frame
     #     denominator is always ≥ t_floor → no singularity, no clamping.
     #   * t >  1 − t_floor (last bit, near-saddle):
     #         x_t  = on_line   (no perturbation)
@@ -216,6 +238,16 @@ def sample_endpoints(
     if explicit_source is not None:
         t = torch.rand((), generator=generator).item()
         return explicit_source, r_saddle, t, mobile
+
+    if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
+        u = float(torch.rand((), generator=generator)) ** config.path_u_power
+        s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint
+        s_sad = config.path_noise_sigma if config.path_noise_sigma_saddle is None else config.path_noise_sigma_saddle
+        sigma_u = s_end + (s_sad - s_end) * u
+        eps = gaussian_perturbation(mobile, sigma_u, generator=generator, dtype=r_saddle.dtype)
+        x0 = r_start + u * (r_saddle - r_start) + eps      # r_saddle is MIC-unwrapped to r_start: the line is the short path
+        t = torch.rand((), generator=generator).item()
+        return x0, r_saddle, t, mobile
 
     _use_midpoint_start = (
         config.mixed_start_prob > 0.0
@@ -780,7 +812,7 @@ class FlowMatchingLoss(nn.Module):
             # off-line-corrected regime or the on-line-original regime.
             #   * t ≤ 1 − t_floor (typically 0.9): corrected regime
             #     - perturb x_t off-line (when --xt-perturb-sigma > 0)
-            #     - v_target = MIC(saddle − x_t, cell) / (1 − t)   [denom ≥ t_floor]
+            #     - v_target = (saddle_un − x_t_un) / (1 − t)   [unwrapped; denom ≥ t_floor]
             #   * t >  1 − t_floor: original regime (v7-5 behaviour)
             #     - do NOT perturb (the constant target is wrong off-line —
             #       would teach parallel-to-line at exactly the time-FiLM

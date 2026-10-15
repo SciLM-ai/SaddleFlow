@@ -7,7 +7,8 @@ Convention:
       ``$SCRATCH/MaterialsSaddles/<subset>/*.aselmdb``         (the data)
       ``$SCRATCH/MaterialsSaddles/splits/<subset>/{train,val,test}.parquet``
   * If both already exist with the expected file counts they are reused; otherwise
-    the missing pieces are pulled from HuggingFace ``AnonymouScientist/MaterialsSaddles``.
+    the missing pieces are pulled from HuggingFace ``SciLM/MaterialsSaddles`` at the first-release
+    revision this example was built on (``REVISION`` below).
 
 Each parquet column is just ``ms_id`` (uint32). One row per ASE-LMDB row, so each
 triplet contributes 3 ``ms_id`` rows that are guaranteed to be in the same split
@@ -29,13 +30,16 @@ from typing import Iterable
 # Sourced from the dataset README; used as a sanity check before deciding the
 # local copy is "complete".
 EXPECTED_SHARDS = {
-    "lemat":   256,
-    "oc20":    96,
-    "oc22":    32,
-    "mp20bat": 32,
+    "lemat":   64,
+    "oc20":    64,
+    "oc22":    64,
+    "mp20bat": 64,
 }
 
-REPO_ID = "AnonymouScientist/MaterialsSaddles"
+REPO_ID = "SciLM/MaterialsSaddles"
+# The first (pre-deduplication) release, whose official parquet splits this example uses. The current
+# main branch holds the deduplicated, element-set-split release read by examples/MaterialsSaddles.
+REVISION = "0000e616901feb99a7a50e5f8a0947c4d9e8e8f7"
 
 
 def materials_saddles_root() -> Path:
@@ -104,6 +108,7 @@ def ensure_subset(subset: str = "mp20bat", *, accelerator_state=None) -> Path:
         print(f"[data_prep] downloading {patterns} from {REPO_ID} → {root}")
         snapshot_download(
             repo_id=REPO_ID,
+            revision=REVISION,
             repo_type="dataset",
             local_dir=str(root),
             allow_patterns=patterns,

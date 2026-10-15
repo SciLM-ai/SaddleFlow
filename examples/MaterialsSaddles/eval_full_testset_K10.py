@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import random
 import sys
@@ -121,11 +122,43 @@ def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
     force_residual = bool(extras.get("force_residual", False))
     mode = int(extras.get("mode", 1))
 
-    raw_backbone = load_uma_backbone(
-        backbone_name, device=device, freeze=True, eval_mode=True,
-        unfreeze_last_block=unfreeze_last,
-    )
-    if unfreeze_last2:
+    # A model trained with --backbone-shape has a non-UMA geometry, so rebuilding the pretrained
+    # default fails with size mismatches on every head tensor. Take the shape from the checkpoint's
+    # extras when present, else from SF_BACKBONE_SHAPE (needed for checkpoints written before the
+    # shape was recorded there).
+    _shape = (extras.get("backbone_shape") if isinstance(extras, dict) else None) \
+             or os.environ.get("SF_BACKBONE_SHAPE")
+    if _shape:
+        from saddleflow.utils.backbone import build_uma_backbone_custom
+        _dl = os.environ.get("SF_BACKBONE_DATASETS", "oc22").split(",")
+        raw_backbone = build_uma_backbone_custom(_shape, dataset_list=_dl, device=device)
+    else:
+        raw_backbone = load_uma_backbone(
+            backbone_name, device=device, freeze=True, eval_mode=True,
+            unfreeze_last_block=unfreeze_last,
+        )
+        # A checkpoint trained with --truncate-blocks N contains only the first N blocks, so the
+        # full 10-block backbone built above would fail on missing keys. N comes from extras when
+        # recorded, else SF_TRUNCATE_BLOCKS, else the length of the recorded time-FiLM block list
+        # (train.py sets it to range(N) for truncated runs).
+        _nb = (extras.get("truncate_blocks") if isinstance(extras, dict) else None) \
+              or os.environ.get("SF_TRUNCATE_BLOCKS")
+        if not _nb and inject_str:
+            _cand = len([x for x in str(inject_str).split(",") if x.strip() != ""])
+            if 0 < _cand < len(raw_backbone.blocks):
+                _nb = _cand
+        if _nb:
+            import torch.nn as _tnn
+            _nb = int(_nb)
+            if 0 < _nb < len(raw_backbone.blocks):
+                _was = len(raw_backbone.blocks)
+                raw_backbone.blocks = _tnn.ModuleList(list(raw_backbone.blocks)[:_nb])
+                if hasattr(raw_backbone, "num_layers"):
+                    raw_backbone.num_layers = _nb
+                print(f"[load] truncated backbone to first {_nb} of {_was} blocks")
+    # A 1-block backbone (--backbone-shape layers=1) has no blocks[-2]; blocks[-1] already
+    # covers the stack, so skip rather than IndexError.
+    if unfreeze_last2 and len(raw_backbone.blocks) >= 2:
         for p in raw_backbone.blocks[-2].parameters():
             p.requires_grad_(True)
     if bool(extras.get("unfreeze_uma_all", False)):

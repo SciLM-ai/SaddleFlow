@@ -57,3 +57,82 @@ def load_uma_backbone(
     if eval_mode:
         backbone.eval()
     return backbone
+
+def build_uma_backbone_custom(
+    shape: str,
+    dataset_list=None,
+    device: str = "cuda",
+):
+    """Build a RANDOMLY-INITIALISED eSCN-MD MoE backbone with a custom shape.
+
+    Motivation (2026-09-19, user-set): transition states are local, so a large
+    receptive field may be unnecessary and extra depth only makes exact
+    equivariance harder to maintain numerically.  A shallow/wide model with
+    higher angular resolution tests that directly.  UMA-M is 10 layers, lmax 4,
+    mmax 2, 128 channels, 32 experts; a MACE-like shape is 2 layers with larger
+    lmax/mmax and more channels.
+
+    NOTE this discards UMA's pretraining entirely -- there is no way to widen a
+    pretrained tensor.  Whether that matters is itself untested in this project
+    (no random-init control has ever been run), which is why a same-shape
+    random-init UMA-M control should be trained alongside.
+
+    `shape` is "layers=2,lmax=6,mmax=4,channels=256,experts=8"; omitted keys keep
+    the UMA-M value.  Non-shape settings are copied from uma-m-1p1 so the only
+    difference is the geometry of the network.
+
+    Because the experts are random anyway, `dataset_list` can name the subset
+    natively (e.g. ["oc22"]) -- no oc22->oc20 remap is needed, which removes the
+    routing confound that applies to every pretrained run.
+    """
+    import torch.nn as nn  # noqa: F401
+    from fairchem.core.models.uma.escn_moe import eSCNMDMoeBackbone
+
+    # Defaults MATCH uma-m-1p1 so any override is a deliberate, visible deviation.
+    # NOTE on `experts`: UMA routes the MoE by DATASET, so on a single subset the mixing
+    # coefficients are constant and 32 experts collapse into one fixed linear combination --
+    # extra parameters, zero extra expressivity per forward (they do cost Adam/EMA state).
+    # Cutting them is therefore safe for single-subset runs and WRONG for multi-subset
+    # training, where the routing is the whole point. Raise back to 32 before training on
+    # more than one subset.
+    cfg = {"layers": 10, "lmax": 4, "mmax": 2, "channels": 128, "experts": 32}
+    for tok in [t for t in shape.split(",") if t.strip()]:
+        k, v = tok.split("=", 1)
+        k = k.strip()
+        if k not in cfg:
+            raise SystemExit(f"--backbone-shape: unknown key {k!r}; allowed {sorted(cfg)}")
+        cfg[k] = int(v)
+
+    ch = cfg["channels"]
+    backbone = eSCNMDMoeBackbone(
+        max_num_elements=100,
+        sphere_channels=ch,
+        lmax=cfg["lmax"],
+        mmax=cfg["mmax"],
+        num_layers=cfg["layers"],
+        hidden_channels=ch,
+        edge_channels=ch,
+        num_experts=cfg["experts"],
+        cutoff=6.0,
+        max_neighbors=300,
+        distance_function="gaussian",
+        num_distance_basis=128,
+        norm_type="rms_norm_sh",
+        act_type="gate",
+        ff_type="spectral",   # UMA-M uses spectral; "grid" materialises a 128-point
+                              # spherical grid per edge and inflates activations ~5x -> OOM
+        otf_graph=True,
+        always_use_pbc=False,
+        use_dataset_embedding=True,
+        dataset_list=list(dataset_list) if dataset_list else ["oc22"],
+        regress_forces=False,   # deliberate: we consume node_embedding only and discard UMA's
+        direct_forces=False,    # output heads, so building the force/stress graph is wasted work
+        chg_spin_emb_type="rand_emb",  # match uma-m-1p1 (inert on oc22, where charge=spin=0 always,
+        cs_emb_grad=True,              # but a free variable to remove; matters on omol)
+    ).to(device)
+    for prm in backbone.parameters():
+        prm.requires_grad_(True)
+    n = sum(p.numel() for p in backbone.parameters())
+    print(f"[backbone] CUSTOM random-init shape {cfg} -> {n/1e6:.1f}M params, "
+          f"datasets={list(dataset_list) if dataset_list else ['oc22']}")
+    return backbone
