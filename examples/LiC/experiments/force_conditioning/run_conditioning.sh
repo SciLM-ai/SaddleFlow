@@ -10,8 +10,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_conditioning_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_conditioning_%j.err
+#SBATCH --no-requeue
 
-# Michael: flags opt in; no flags runs the ordinary baseline recipe.
+# Flags opt in; no flags runs the ordinary baseline recipe.
 # sbatch examples/LiC/experiments/force_conditioning/run_conditioning.sh --inject-force --curvature-conditioning
 set -euo pipefail
 LIC_COND_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
@@ -24,5 +25,5 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_COND_OUT/matplotlib_cache"
-echo "[batch] Michael: job=$SLURM_JOB_ID; output=$LIC_COND_OUT; baseline settings unless CLI overrides them"
+echo "[batch] job=$SLURM_JOB_ID; output=$LIC_COND_OUT; baseline settings unless CLI overrides them"
 srun --unbuffered "$LIC_COND_PYTHON" -u examples/LiC/train.py --output-dir "$LIC_COND_OUT" --device cuda "$@"

@@ -460,7 +460,7 @@ class FlowMatchingLoss(nn.Module):
         if physics_conditioner is not None and config.self_cond_prob > 0:
             raise ValueError("physics conditioning is not wired into the optional self-conditioning branch")
         if getattr(velocity_head, "source_conditioning", False) and config.self_cond_prob > 0:
-            raise ValueError("Michael: source conditioning is not wired into the optional self-conditioning branch")
+            raise ValueError("source conditioning is not wired into the optional self-conditioning branch")
         self.force_head = force_head
         # `tasks` is a dict of non-Module objects — store as a plain attribute,
         # not a submodule. nn.Module.__setattr__ will correctly skip non-Module

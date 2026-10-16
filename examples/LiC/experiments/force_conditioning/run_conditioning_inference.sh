@@ -10,8 +10,9 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_conditioning_infer_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_conditioning_infer_%j.err
+#SBATCH --no-requeue
 
-# Michael: defaults reproduce the 48k-checkpoint exact-false-bridge check.
+# Defaults reproduce the 48k-checkpoint exact-false-bridge check.
 # Extra CLI arguments are forwarded; --ckpt/--out-dir/--K can override defaults.
 set -euo pipefail
 LIC_INFER_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
@@ -29,7 +30,7 @@ export MPLCONFIGDIR="$LIC_INFER_OUT/matplotlib_cache"
 unset SLURM_CPU_BIND_TYPE SLURM_CPU_BIND_LIST
 export SLURM_CPU_BIND=none
 # Preserve Slurm's CUDA_VISIBLE_DEVICES instead of hard-coding a GPU index.
-echo "[batch] Michael: job=${SLURM_JOB_ID:?Submit with sbatch}; checkpoint=$LIC_INFER_CKPT; default output=$LIC_INFER_OUT"
+echo "[batch] job=${SLURM_JOB_ID:?Submit with sbatch}; checkpoint=$LIC_INFER_CKPT; default output=$LIC_INFER_OUT"
 srun --cpu-bind=none --unbuffered "$LIC_INFER_PYTHON" -u examples/LiC/rollout_eval/force_guided_sampling.py \
   --ckpt "$LIC_INFER_CKPT" --out-dir "$LIC_INFER_OUT" --device cuda \
   --false-saddles-only --K 20 --batch-size 10 "$@"

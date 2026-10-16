@@ -1,4 +1,4 @@
-"""Michael: matched E0/E1/E2 continuation, not minimum-action or MMF rollout training.
+"""Matched E0/E1/E2 continuation, not minimum-action or MMF rollout training.
 
 First run --calibrate-only. Then train E0, E1, E2 in separate invocations with
 the SAME calibration directory. Only the auxiliary direction changes.
@@ -9,7 +9,7 @@ this file. Checkpoints remain compatible with the existing LiC EMA samplers.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -159,10 +159,10 @@ def alignment_audit(saddles, backends, args, deadband, directory):
                 cosine_mmf=alignment(target, teacher["vector"][pes.dofs.free].cpu().numpy()),
                 force_to_target_rms=teacher["force_rms"]/(np.linalg.norm(target)/pes.dofs.n_free**0.5),
                 lambda1=float(teacher["eigs"][0]), eigengap=float(np.diff(teacher["eigs"])[0])))
-        print(f"[audit] Michael: parent {parent+1}/{len(saddles)}; {len(rows)} bridge states", flush=True)
+        print(f"[audit] parent {parent+1}/{len(saddles)}; {len(rows)} bridge states", flush=True)
     data = {key: np.asarray([row[key] for row in rows]) for key in rows[0]}
     np.savez_compressed(directory / "alignment_audit.npz", **data)
-    lines = ["Michael: training-only PES teacher alignment", "="*110,
+    lines = ["training-only PES teacher alignment", "="*110,
              "Cosines are undefined for zero vectors. Active uses the empirical training-saddle maximum.",
              "time bin    N  active%  F cos50  F cos10  F opposed%  MMF cos50  MMF cos10  MMF opposed%  F_RMS50  lambda1_50  gap50"]
     for lo in np.arange(0, 1, 0.25):
@@ -187,7 +187,7 @@ def calibrate(args, model, name, dataset, saddles):
     directory.mkdir(parents=True, exist_ok=True)
     if (directory / "calibration.json").exists():
         raise ValueError("Calibration already exists; reuse it or choose a new directory")
-    print(f"[UMA] Michael: loading separate frozen teacher {name}", flush=True)
+    print(f"[UMA] loading separate frozen teacher {name}", flush=True)
     calculator, batch_evaluate = make_uma_calculator(name, args.device, saddles[0].info.get("task_name", "omat"))
     backends = [PESBackend(atoms, calculator, batch_evaluate) for atoms in saddles]
     with torch.enable_grad():
@@ -233,7 +233,7 @@ def calibrate(args, model, name, dataset, saddles):
                                    E2=weight*means["grad_mmf"]/means["grad_fm"]),
         records=records, lambda_rule="target_ratio * mean(gFM) / mean(mean(gF), mean(gMMF))")
     (directory / "calibration.json").write_text(json.dumps(calibration, indent=2))
-    report = (f"Michael: shared PES calibration\ntraining saddles: {len(saddles)}\n"
+    report = (f"shared PES calibration\ntraining saddles: {len(saddles)}\n"
               f"epsilon_teacher (max): {deadband:.8f} eV/A\nlambda_PES: {weight:.8g}\n"
               f"initial E1 gradient ratio: {calibration['actual_initial_ratios']['E1']:.5f}\n"
               f"initial E2 gradient ratio: {calibration['actual_initial_ratios']['E2']:.5f}\n"
@@ -252,7 +252,7 @@ def save_checkpoint(model, optimizer, scheduler, ema, directory, update, flow_rn
                     cuda_rng=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []),
                directory / "training_state.pt")
     (directory / "meta.json").write_text(json.dumps(dict(global_step=update)))
-    print(f"[save] Michael: update {update} -> {directory}", flush=True)
+    print(f"[save] update {update} -> {directory}", flush=True)
 
 
 def finetune(args, model, groups, source_config, name, dataset, saddles):
@@ -275,7 +275,7 @@ def finetune(args, model, groups, source_config, name, dataset, saddles):
     (out / "config.json").write_text(json.dumps(config, indent=2))
     backends = None
     if args.experiment != "E0":
-        print(f"[UMA] Michael: separate frozen teacher for {args.experiment}", flush=True)
+        print(f"[UMA] separate frozen teacher for {args.experiment}", flush=True)
         calculator, batch_evaluate = make_uma_calculator(name, args.device, saddles[0].info.get("task_name", "omat"))
         backends = [PESBackend(atoms, calculator, batch_evaluate) for atoms in saddles]
     # Teacher initialization must not change student RNG relative to E0.
@@ -312,7 +312,7 @@ def finetune(args, model, groups, source_config, name, dataset, saddles):
     save_steps = {int(s) for s in args.save_steps.split(",")}
     if start == 0 and not args.resume_from:
         save_checkpoint(model, optimizer, scheduler, ema, out / "checkpoint_step_00000000", 0, flow_rng, select_rng)
-    print(f"[train] Michael: {args.experiment} {start}/{args.updates}; EMA initializer; fresh Adam unless resumed", flush=True)
+    print(f"[train] {args.experiment} {start}/{args.updates}; EMA initializer; fresh Adam unless resumed", flush=True)
     print(f"[train] head/FiLM LR={args.learning_rate:g}, backbone LR={args.uma_lr:g}; "
           f"lambda={weight:.6g}; teacher deadband={deadband:.6g}; one teacher/batch; no time taper", flush=True)
     began = perf_counter()
@@ -357,7 +357,7 @@ def finetune(args, model, groups, source_config, name, dataset, saddles):
             save_checkpoint(model, optimizer, scheduler, ema, out / f"checkpoint_step_{update+1:08d}",
                             update+1, flow_rng, select_rng)
     save_checkpoint(model, optimizer, scheduler, ema, out / "checkpoint_final", args.updates, flow_rng, select_rng)
-    print(f"[done] Michael: {args.experiment}, exactly {args.updates} continuation updates", flush=True)
+    print(f"[done] {args.experiment}, exactly {args.updates} continuation updates", flush=True)
 
 
 def main():
@@ -371,7 +371,7 @@ def main():
         raise ValueError("Training needs --output-dir")
     torch.manual_seed(args.seed)
     dataset, saddles = training_data(args)
-    print(f"[setup] Michael: {len(saddles)} training saddles; {len(dataset)} records; sigma={args.noise_sigma}", flush=True)
+    print(f"[setup] {len(saddles)} training saddles; {len(dataset)} records; sigma={args.noise_sigma}", flush=True)
     print("[setup] Student executes its UMA backbone, NOT a PES force/Hessian oracle at inference.", flush=True)
     model, groups, config, name = build_student(args)
     if args.calibrate_only:

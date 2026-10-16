@@ -1,6 +1,6 @@
 """Train global/state-dependent MMF mobilities on noisy TRAINING saddles only.
 
-Michael: this is a new small solver policy, not FM-checkpoint fine-tuning.
+This is a new small solver policy, not FM-checkpoint fine-tuning.
 The frozen UMA potential provides forces and numerical minimum modes. The only
 objective is actual-rollout endpoint MSE. No test labels, false bridges, recovery
 sources, force penalty, or learned orientation enter training.
@@ -195,7 +195,7 @@ def main():
                 raise ValueError(f"Resume changed {key}: {old[key]} -> {getattr(args, key)}")
     reference, saddles = load_training_saddles(args.train_traj)
     config_path.write_text(json.dumps(vars(args), indent=2))
-    print(f"[setup] Michael: {len(saddles)} TRAINING saddles; sigma={args.noise_sigma:g} A;"
+    print(f"[setup] {len(saddles)} TRAINING saddles; sigma={args.noise_sigma:g} A;"
           f" Kmax={args.max_steps}; policies={kinds}", flush=True)
     print(f"[setup] h={args.step_size:g} A^2/eV; trust={args.max_step:g} A;"
           f" fmax={args.fmax:g}; eigenvalue margin={args.eigenvalue_tol:g}", flush=True)
@@ -209,7 +209,7 @@ def main():
     histories = {}
     for kind in kinds:
         histories[kind] = train_policy(kind, args, reference, saddles, calculator, batch_evaluate)
-    lines = ["Michael: LiC oracle-MMF mobility training", "=" * 85,
+    lines = ["LiC oracle-MMF mobility training", "=" * 85,
              f"Training parents: {len(saddles)}; noise sigma={args.noise_sigma:g} A; Kmax={args.max_steps}",
              "policy       updates   last MSE(A^2)  mean steps  phys(%)  mean a  mean b  total PES  seconds",
              "-" * 95]

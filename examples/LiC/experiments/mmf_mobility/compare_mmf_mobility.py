@@ -1,6 +1,6 @@
 """Compare raw/global/state MMF at a matched Kmax (default training horizon: 100).
 
-Michael: use --baseline-archive to reuse the EXACT 68 starts and completed
+Use --baseline-archive to reuse the EXACT 68 starts and completed
 Sella/SaddleFlow comparator rows from the previous benchmark. A/B/C are rerun
 with shared physics settings; the old oracle row is never substituted for A.
 NPZ and report are saved before the separate plotting function is called.
@@ -9,7 +9,7 @@ NPZ and report are saved before the separate plotting function is called.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -152,7 +152,7 @@ def imported_comparators(data, budgets, selected_sources):
 def make_report(data):
     cfg = json.loads(str(data["config_json"]))
     methods = list(dict.fromkeys(data["method"].tolist()))
-    lines = ["Michael: LiC learned oracle-MMF translation benchmark", "="*110,
+    lines = ["LiC learned oracle-MMF translation benchmark", "="*110,
              f"Kmax={cfg['max_steps']}; h={cfg['step_size']} A^2/eV; trust radius={cfg['max_step']} A",
              f"UMA={cfg['model']}; FD eps={cfg['fd_eps']} A; identical starts={len(data['starts'])}",
              f"Physical stop/certificate: fmax <= {cfg['fmax']}, lambda1 < -{cfg['eigenvalue_tol']}, lambda2 > {cfg['eigenvalue_tol']}",
@@ -245,7 +245,7 @@ def main():
     archive_path = out / "saddle_search.npz"
     if archive_path.exists():
         raise FileExistsError(f"Use a new output directory: {archive_path}")
-    print(f"[setup] Michael: {len(sources['starts'])} shared starts; Kmax={args.max_steps}; anytime={budgets}", flush=True)
+    print(f"[setup] {len(sources['starts'])} shared starts; Kmax={args.max_steps}; anytime={budgets}", flush=True)
     print("[UMA] loading frozen oracle and warming up center + FD probes", flush=True)
     calculator, batch_evaluate = make_uma_calculator(args.model, args.device, args.task_name)
     warm = PESBackend(reference, calculator, batch_evaluate)

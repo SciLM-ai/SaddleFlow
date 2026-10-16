@@ -1,4 +1,4 @@
-"""Michael: autonomous 20-step E0/E1/E2 sampling, then separate UMA verification.
+"""Autonomous 20-step E0/E1/E2 sampling, then separate UMA verification.
 
 Reuses the previous benchmark's source coordinates, never its model endpoints.
 All requested training checkpoints are reported: no test-based checkpoint
@@ -8,7 +8,7 @@ selection. Numerical results are saved before the existing graphene PDF renderer
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -78,7 +78,7 @@ def check_matching_logs(root):
 
 def make_report(data):
     config = json.loads(str(data["config_json"]))
-    rows = ["Michael: matched PES-direction FM continuation", "="*100,
+    rows = ["matched PES-direction FM continuation", "="*100,
             "All sampling is 20-step autonomous Euler; no force, Hessian, or minimum-mode oracle calls.",
             "Student UMA backbone forwards ARE executed; forces/curvature below are post-hoc measurements.",
             "True means any stored saddle (<0.10 A); false region <0.30 A, with true precedence.",
@@ -137,7 +137,7 @@ def main():
             args.checkpoints[method] = str(checkpoint)
             _, _, backbone, attention, head = load_flow_model(checkpoint, args.device)
             paths, elapsed = [], []
-            print(f"[sample] Michael: {method}; {len(sources['starts'])} identical starts; no PES queries", flush=True)
+            print(f"[sample] {method}; {len(sources['starts'])} identical starts; no PES queries", flush=True)
             # Sampling phase: calculator is NOT referenced anywhere in this loop.
             for first in range(0, len(sources["starts"]), args.batch_size):
                 points = sources["starts"][first:first+args.batch_size]
@@ -173,7 +173,7 @@ def main():
                     print(f"[verify] {method} {i+1}/{len(paths)} endpoints (post-hoc UMA)", flush=True)
             data = save_archive(archive, args, geometry, sources, results, [20])
             (out / "report.txt").write_text(make_report(data))
-            print(f"[save] Michael: {archive}", flush=True)
+            print(f"[save] {archive}", flush=True)
     print(make_report(data), flush=True)
     if not args.no_plot:
         try:
@@ -181,7 +181,7 @@ def main():
         except ModuleNotFoundError:
             from examples.LiC.experiments.pes_and_recovery.plot_pes_directions import render_pdf
         render_pdf(archive)
-    print(f"[done] Michael: replot with python examples/LiC/experiments/pes_and_recovery/plot_pes_directions.py {archive}", flush=True)
+    print(f"[done] replot with python examples/LiC/experiments/pes_and_recovery/plot_pes_directions.py {archive}", flush=True)
 
 
 if __name__ == "__main__":

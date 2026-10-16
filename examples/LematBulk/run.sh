@@ -9,6 +9,7 @@
 #SBATCH -e /pscratch/sd/i/ilgar/SaddleFlow_LematBulk/logs/slurm_%j.err
 #SBATCH -A m1883_g
 #SBATCH -J saddleflow_lematbulk
+#SBATCH --no-requeue
 #
 # lemat-bulk DATASET 1 (both-converged R/S/P triplets) — Mode-1
 # product-conditional flow matching, x0 = (R+P)/2 midpoint. This is the EXACT

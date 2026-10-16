@@ -6,7 +6,7 @@ training sample starts at one of the training saddles with Gaussian noise on the
 Li atom, x_0 = saddle + N(0, sigma^2), and the flow learns to carry it back to
 x_1 = saddle. At inference any Li position on the sheet is a valid start, and
 the flow aims to reach a nearby saddle -- see random_throw.py and README.md.
-Michael: --source-conditioning optionally retains the actual noisy x_0, not
+--source-conditioning optionally retains the actual noisy x_0, not
 the saddle-relative perturbation. experiments/source_study/README.md describes the matched 12/48 study.
 
 Data: `train_set.traj`, flat [R1, S1, P1, R2, S2, P2, ...] frames. Only the
@@ -21,7 +21,7 @@ README.md (16000 epochs, fp32, about 4 h on one GPU):
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/experiments/source_study, examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/experiments/source_study, examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parent  # examples/LiC
 sys.path[:0] = [str(_LIC / 'experiments' / 'source_study'), str(_LIC / 'rollout_eval')]
 
@@ -60,11 +60,11 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--train-traj", default=str(here / "train_set.traj"))
-    p.add_argument("--study-split", help="Michael: immutable source-study split directory, prepared by source_study.py")
+    p.add_argument("--study-split", help="immutable source-study split directory, prepared by source_study.py")
     p.add_argument("--train-saddles", type=int, choices=[12, 48], default=12)
     p.add_argument("--source-conditioning", action=argparse.BooleanOptionalAction, default=False,
-                   help="Michael: retain the actual noisy initial x0 and inject MIC(x0-x_t); no saddle/perturbation target supplied")
-    p.add_argument("--source-channels", type=int, default=32, help="Michael: study arms use the same branch width, with zeros in unconditioned arms")
+                   help="retain the actual noisy initial x0 and inject MIC(x0-x_t); no saddle/perturbation target supplied")
+    p.add_argument("--source-channels", type=int, default=32, help="study arms use the same branch width, with zeros in unconditioned arms")
     p.add_argument("--output-dir", default=None,
                    help="Default: runs/tsdenoise_sigma<sigma> next to this script, with a "
                         "suffix for any architecture flag changed from its default.")
@@ -107,13 +107,13 @@ def parse_args():
     p.add_argument("--early-time-film-blocks", default="-2,-1")
     p.add_argument("--head-depth", type=int, default=1)
     p.add_argument("--inject-force", action=argparse.BooleanOptionalAction, default=False,
-                   help="Michael: feed detached frozen-UMA current-state forces to the velocity head; also needed at inference.")
+                   help="feed detached frozen-UMA current-state forces to the velocity head; also needed at inference.")
     p.add_argument("--force-field-channels", type=int, default=32)
     p.add_argument("--curvature-conditioning", action=argparse.BooleanOptionalAction, default=False,
-                   help="Michael: scalar FiLM from current free-Hessian lambda1, lambda2, eigengap; NOT a curvature loss.")
+                   help="scalar FiLM from current free-Hessian lambda1, lambda2, eigengap; NOT a curvature loss.")
     p.add_argument("--curvature-mlp-hidden", type=int, default=64)
-    p.add_argument("--curvature-fd-eps", type=float, default=.002, help="Michael: Li-only central FD displacement, A.")
-    p.add_argument("--physics-batch-size", type=int, default=32, help="Michael: frozen UMA geometry chunk size, including FD probes.")
+    p.add_argument("--curvature-fd-eps", type=float, default=.002, help="Li-only central FD displacement, A.")
+    p.add_argument("--physics-batch-size", type=int, default=32, help="frozen UMA geometry chunk size, including FD probes.")
     p.add_argument("--attn-layers", type=int, default=0)
     p.add_argument("--attn-heads", type=int, default=8)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -317,13 +317,13 @@ def main():
         args.train_traj = str(split_dir/f"train{args.train_saddles}.traj")
         if not args.max_steps: args.max_steps = 96000
         if physics_enabled or force_constraint_enabled or args.recovery_shell_archive:
-            raise SystemExit("Michael: the matched source study uses plain FM only; no physics inputs/losses or recovery buffer")
+            raise SystemExit("the matched source study uses plain FM only; no physics inputs/losses or recovery buffer")
     elif args.train_saddles != 12:
-        raise SystemExit("Michael: --train-saddles 48 requires --study-split")
+        raise SystemExit("--train-saddles 48 requires --study-split")
     if source_channels < 0 or ((args.study_split or args.source_conditioning) and source_channels < 1):
-        raise SystemExit("Michael: --source-channels must be positive for source-study models")
+        raise SystemExit("--source-channels must be positive for source-study models")
     if args.force_field_channels < 1 or args.curvature_mlp_hidden < 1 or args.physics_batch_size < 1 or args.curvature_fd_eps <= 0:
-        raise SystemExit("Michael: conditioning widths, physics batch size, and FD epsilon must be positive")
+        raise SystemExit("conditioning widths, physics batch size, and FD epsilon must be positive")
     # EMA is positional: added input layers cannot silently inherit an old
     # unconditioned EMA. The first matched ablation uses the baseline recipe
     # from scratch; continuation/resume is supported for matching architectures.
@@ -335,9 +335,9 @@ def main():
                 or (args.curvature_conditioning and int(old.get("curvature_mlp_hidden", 64)) != args.curvature_mlp_hidden)
                 or int(old.get("source_channels", 0)) != source_channels
                 or bool(old.get("source_conditioning", False)) != args.source_conditioning):
-            raise SystemExit("Michael: checkpoint conditioning architecture differs; train the new input branches from scratch first")
+            raise SystemExit("checkpoint conditioning architecture differs; train the new input branches from scratch first")
         if args.study_split and (old.get("study_split_sha256") != split_sha256 or old.get("train_saddle_count") != args.train_saddles):
-            raise SystemExit("Michael: cannot initialize/resume this study arm from a different data split")
+            raise SystemExit("cannot initialize/resume this study arm from a different data split")
     if args.force_constraint_stopgrad and args.force_constraint_stopgrad_max_gate < 0:
         args.force_constraint_stopgrad_max_gate = None
     if args.ts_denoise_sigma <= 0:
@@ -377,8 +377,8 @@ def main():
     if args.study_split:
         batches_per_epoch = (len(dataset)+args.batch_size-1)//args.batch_size
         if args.num_epochs*batches_per_epoch < args.max_steps:
-            raise SystemExit("Michael: --num-epochs is too small for the requested matched --max-steps budget")
-        print(f"[study] Michael: N={args.train_saddles}; source conditioning={args.source_conditioning}; "
+            raise SystemExit("--num-epochs is too small for the requested matched --max-steps budget")
+        print(f"[study] N={args.train_saddles}; source conditioning={args.source_conditioning}; "
               f"identical {source_channels}-channel branch in both arms; budget={args.max_steps} updates; "
               f"common held-out set=131; split SHA256={split_sha256}", flush=True)
     print(f"[train] {len(original_dataset)} original records "
@@ -520,9 +520,9 @@ def main():
             inject_force=args.inject_force, curvature=args.curvature_conditioning,
             fd_eps=args.curvature_fd_eps, probe_batch_size=args.physics_batch_size)
         queries = int(args.inject_force) + 6*int(args.curvature_conditioning)
-        print(f"[train] Michael: force input={args.inject_force}; scalar curvature={args.curvature_conditioning}; "
+        print(f"[train] force input={args.inject_force}; scalar curvature={args.curvature_conditioning}; "
               f"{queries} UMA geometries/state, about {queries*args.batch_size}/batch; also queried at inference.", flush=True)
-        print("[train] Michael: ordinary FM targets/data/time sampling unchanged; no MMF, eigenmode, or extra force loss unless separately requested.", flush=True)
+        print("[train] ordinary FM targets/data/time sampling unchanged; no MMF, eigenmode, or extra force loss unless separately requested.", flush=True)
 
     # The head, attention and FiLM layers are new; the backbone is pretrained, so
     # it gets its own learning rate in a separate parameter group.

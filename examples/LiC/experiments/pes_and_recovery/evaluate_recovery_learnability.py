@@ -1,4 +1,4 @@
-"""Michael: recovery generalization evaluation, not additional training.
+"""Recovery generalization evaluation, not additional training.
 
 Compare initializer and fine-tuned EMA on identical starts. In shell-source
 mode, basin membership means the ORIGINAL baseline endpoint, not the saddle
@@ -11,7 +11,7 @@ No force/Hessian oracle is loaded. Geometric catalog hits are not certification.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -39,9 +39,9 @@ except ModuleNotFoundError:
 def build_starts(split, selected, basin, parent, sigmas, draws, seed):
     known=(split["baseline_outcome"]==2)&(split["baseline_basin"]==basin)&(split["parent"]==parent)
     if not np.all(known[selected]&(split["partition"][selected]==0)):
-        raise ValueError("Michael: selected sources are not the intended training episodes")
+        raise ValueError("selected sources are not the intended training episodes")
     held=np.flatnonzero(known&(split["partition"]==1))
-    if not len(held): raise ValueError("Michael: no withheld sources from this seen basin/parent")
+    if not len(held): raise ValueError("no withheld sources from this seen basin/parent")
     rng=np.random.default_rng(seed)
     starts,population,source_row,sigma_values,draw_ids=[],[],[],[],[]
     for kind,rows in [("trained",selected),("withheld",held)]:
@@ -73,7 +73,7 @@ def build_false_bridge_starts(bridges, seen_basin, basin_choice, sigmas, draws, 
     else:
         basins = np.asarray(sorted({int(s) for s in basin_choice.split(",")}))
     if not len(basins) or np.any((basins < 0) | (basins >= len(bridges))):
-        raise ValueError(f"Michael: --basins must select IDs from 0 to {len(bridges)-1}")
+        raise ValueError(f"--basins must select IDs from 0 to {len(bridges)-1}")
     rng = np.random.default_rng(seed)
     starts, population, source_basin, sigma_values, draw_ids = [], [], [], [], []
     for basin, center in enumerate(bridges):
@@ -101,7 +101,7 @@ def make_bridge_report(data):
     seen = int(data["seen_basin"])
     basins = np.unique(data["source_basin"])
     sigmas = np.unique(data["sigma"])
-    lines = ["Michael: unchanged checkpoint, cross-basin false-bridge evaluation", "="*115,
+    lines = ["unchanged checkpoint, cross-basin false-bridge evaluation", "="*115,
         f"Catalog has {len(data['false_bridges'])} false bridges total; selected IDs={basins.tolist()}.",
         f"Explicit recovery supervision covered baseline-endpoint basin {seen} only, using shell sources, not exact bridge starts.",
         "Other basins received no explicit recovery pairs; this does not claim their entire spatial regions were absent from training.",
@@ -143,7 +143,7 @@ def make_report(data):
     if str(data.get("start_kind", "shell-sources")) == "false-bridges":
         return make_bridge_report(data)
     groups=list(dict.fromkeys(zip(data["population"],data["sigma"])))
-    lines=["Michael: recovery learnability generalization check", "="*115,
+    lines=["recovery learnability generalization check", "="*115,
         f"Trained source rows={data['selected_rows'].tolist()}; withheld rows={data['withheld_rows'].tolist()}.",
         "Both sets originate from the SAME original training saddle; withheld exact source states were never fine-tuned.",
         "Basin IDs refer to original baseline ENDPOINTS. This is within-basin/source generalization, not unseen-basin transfer.",
@@ -187,7 +187,7 @@ def plot_results(archive):
         for ax,title in zip(axes,["Any-true hit (%)","False occupancy (%)"]):
             ax.set_xticks(np.arange(len(groups))+.175,[f"{g}\nsigma={s:g}" for g,s in groups],rotation=35,ha="right",fontsize=8)
             ax.set_ylim(0,105); ax.set_title(title); ax.legend(); ax.grid(axis="y",alpha=.2)
-        fig.suptitle("Michael: " + ("all selected false bridges and fresh jitter" if bridges else "unseen sources and fresh jitter")
+        fig.suptitle("" + ("all selected false bridges and fresh jitter" if bridges else "unseen sources and fresh jitter")
                      + "; geometric evaluation only")
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         # For the bridge test, show every basin's outcome at each noise level.
@@ -210,7 +210,7 @@ def plot_results(archive):
                     ax.set_ylim(0, 105); ax.set_title(f"{method}; sigma={sigma:g} A")
                     ax.set_xlabel("Starting false-bridge basin ID"); ax.set_ylabel("Outcomes (%)")
                     if row == 0: ax.legend(fontsize=8)
-            fig.suptitle("Michael: per-basin geometric outcomes, unchanged checkpoints")
+            fig.suptitle("per-basin geometric outcomes, unchanged checkpoints")
             fig.tight_layout(rect=(0, 0, 1, .96)); pdf.savefig(fig); plt.close(fig)
         views = [(f"{group}, sigma={sigma:g} A", (data["population"] == group) & (data["sigma"] == sigma))
                  for group, sigma in groups]
@@ -224,9 +224,9 @@ def plot_results(archive):
                 draw_endpoint_paths(ax,data["path"][i],data["outcome"][i],data,use)
                 outcome=data["outcome"][i,use]
                 ax.set_title(f"{method}; N={len(use)}\ntrue={100*np.mean(outcome==0):.1f}%; false={100*np.mean(outcome==1):.1f}%")
-            fig.suptitle(f"Michael: {title}; identical starts; no start dots")
+            fig.suptitle(f"{title}; identical starts; no start dots")
             fig.tight_layout(rect=(0,0,1,.94)); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: saved {archive.with_suffix('.pdf')}",flush=True)
+    print(f"[plot] saved {archive.with_suffix('.pdf')}",flush=True)
 
 
 def main():
@@ -247,29 +247,29 @@ def main():
     if args.plot_only: plot_results(args.plot_only); return
     sigmas=[] if args.sigmas == "none" else sorted({float(s) for s in args.sigmas.split(",")})
     if min(args.draws_per_source,args.batch_size)<=0 or any(not np.isfinite(s) or s<=0 for s in sigmas):
-        raise ValueError("Michael: counts and jitter sigmas must be positive")
+        raise ValueError("counts and jitter sigmas must be positive")
     if args.starts == "shell-sources" and args.basins != "all":
-        raise ValueError("Michael: --basins requires --starts false-bridges")
+        raise ValueError("--basins requires --starts false-bridges")
     checkpoint=Path(args.ckpt); root=checkpoint.parent
     config,selection,split=load_learnability_run(checkpoint)
     reference,geometry=load_geometry(config["train_traj"],config["test_traj"])
     for key in ["cell","train_saddles","test_saddles","false_bridges"]:
-        if not np.allclose(split[key],geometry[key]): raise ValueError(f"Michael: geometry differs in {key}")
+        if not np.allclose(split[key],geometry[key]): raise ValueError(f"geometry differs in {key}")
     if args.starts == "false-bridges":
         sources = build_false_bridge_starts(geometry["false_bridges"],config["basin"],args.basins,
                                             sigmas,args.draws_per_source,args.seed)
         held = np.asarray([], dtype=int)
-        print(f"[setup] Michael: {len(geometry['false_bridges'])} catalog false bridges; "
+        print(f"[setup] {len(geometry['false_bridges'])} catalog false bridges; "
               f"selected basins={np.unique(sources['source_basin']).tolist()}; "
               f"recovery-trained basin={config['basin']}; exact + noise sigmas={sigmas}",flush=True)
     else:
         sources,held=build_starts(split,selection["rows"],config["basin"],config["parent"],sigmas,args.draws_per_source,args.seed)
-        print(f"[setup] Michael: {len(selection['rows'])} trained centers; {len(held)} withheld centers {held.tolist()}",flush=True)
-    print(f"[setup] Michael: {len(sources['starts'])} shared starts; two EMA models, K=20, "
+        print(f"[setup] {len(selection['rows'])} trained centers; {len(held)} withheld centers {held.tolist()}",flush=True)
+    print(f"[setup] {len(sources['starts'])} shared starts; two EMA models, K=20, "
           "no training or PES oracle",flush=True)
     if args.dry_run: return
     if args.device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("Michael: no CUDA device here; run this evaluation in a GPU allocation")
+        raise RuntimeError("no CUDA device here; run this evaluation in a GPU allocation")
     output_name = "false_bridges" if args.starts == "false-bridges" else "generalization"
     out=Path(args.out_dir) if args.out_dir else root/output_name; out.mkdir(parents=True,exist_ok=True)
     sample=atoms_to_sample_dict(reference); li=int(geometry["li_index"])
@@ -290,8 +290,8 @@ def main():
               config_json=json.dumps(vars(args)),training_config_json=json.dumps(config))
     archive=out/f"{output_name}.npz"; np.savez_compressed(archive,**data)
     report=make_report(data); (out/"report.txt").write_text(report); print(report,flush=True)
-    print(f"[save] Michael: {archive} and {out/'report.txt'}",flush=True)
-    print(f"[done] Michael: CPU replot: python examples/LiC/experiments/pes_and_recovery/evaluate_recovery_learnability.py --plot-only {archive}",flush=True)
+    print(f"[save] {archive} and {out/'report.txt'}",flush=True)
+    print(f"[done] CPU replot: python examples/LiC/experiments/pes_and_recovery/evaluate_recovery_learnability.py --plot-only {archive}",flush=True)
     if not args.no_plot: plot_results(archive)
 
 

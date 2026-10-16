@@ -1,6 +1,6 @@
 # Matched 100-step oracle-MMF mobility experiment
 
-Michael, this experiment learns a translation policy, not a new flow-matching
+This experiment learns a translation policy, not a new flow-matching
 velocity field. It does not initialize from the TS-denoise checkpoint. UMA stays
 pretrained/frozen; only two global parameters or a small eight-input MLP are
 trained. The TS-denoise checkpoint remains an evaluation comparator.

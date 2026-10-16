@@ -1,4 +1,4 @@
-"""Michael: fixed-probe E2-vs-E0 teacher adoption, with NO training or rollout.
+"""Fixed-probe E2-vs-E0 teacher adoption, with NO training or rollout.
 
 The primary comparison is EMA (the inference weights); raw is diagnostic.
 The original 192 audit probes are reproducibly reconstructed, verified, then
@@ -8,7 +8,7 @@ cached with their teachers ONCE. A second invocation does not query UMA again.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -72,24 +72,24 @@ def reconstruct_probes(run_dir):
     for key in ["init_weights", "noise_sigma", "seed", "fd_eps", "audit_samples_per_saddle", "updates",
                 "batch_size", "learning_rate", "uma_lr", "warmup_steps", "ema_decay", "calibration_dir"]:
         if configs[0].get(key) != configs[1].get(key):
-            raise ValueError(f"Michael: E0/E2 differ in {key}")
+            raise ValueError(f"E0/E2 differ in {key}")
     for key in ["backbone", "attn_layers", "head_depth", "delta_endpoint_channels", "unfreeze_uma_all",
                 "early_time_film", "early_time_film_blocks", "lambda_pes", "teacher_deadband"]:
         if configs[0]["extras"].get(key) != configs[1]["extras"].get(key):
-            raise ValueError(f"Michael: E0/E2 architecture/calibration differ in {key}")
+            raise ValueError(f"E0/E2 architecture/calibration differ in {key}")
     config = configs[0]
     directory = Path(config["calibration_dir"])
     calibration = json.loads((directory/"calibration.json").read_text())
     data_hash = file_hash(config["train_traj"])
     if data_hash != calibration["settings"]["training_data_sha256"]:
-        raise ValueError("Michael: training trajectory changed since the audit")
+        raise ValueError("training trajectory changed since the audit")
     with np.load(directory/"alignment_audit.npz", allow_pickle=False) as archive:
         audit = {key: archive[key] for key in archive.files}
     saddles = read(config["train_traj"], index=":")[1::3]
     free = FreeDOFs(saddles[0]).free
     for atoms in saddles:
         if not np.array_equal(FreeDOFs(atoms).free, free) or not np.array_equal(atoms.numbers, saddles[0].numbers):
-            raise ValueError("Michael: this LiC diagnostic expects a common atom layout/free mask")
+            raise ValueError("this LiC diagnostic expects a common atom layout/free mask")
     rng = torch.Generator().manual_seed(config["seed"]+4000)
     positions, targets, parents, times = [], [], [], []
     for parent, atoms in enumerate(saddles):
@@ -104,10 +104,10 @@ def reconstruct_probes(run_dir):
                   parent=np.asarray(parents), t=np.asarray(times), free_mask=free)
     for key in ["parent", "t"]:
         if not np.array_equal(probes[key], audit[key]):
-            raise ValueError(f"Michael: reconstructed {key} does not exactly match the original audit")
+            raise ValueError(f"reconstructed {key} does not exactly match the original audit")
     hashes = np.asarray([array_hash(x,t,v) for x,t,v in zip(probes["positions"], probes["t"], probes["targets"])])
     if "probe_sha256" in audit and not np.array_equal(hashes, audit["probe_sha256"]):
-        raise ValueError("Michael: original probe hashes do not match")
+        raise ValueError("original probe hashes do not match")
     probes["probe_sha256"] = hashes
     context = dict(run_dir=str(root.resolve()), training_data_sha256=data_hash,
                    audit_sha256=file_hash(directory/"alignment_audit.npz"),
@@ -125,16 +125,16 @@ def cached_teachers(path, probes, saddles, audit, context, device):
         with np.load(path, allow_pickle=False) as archive:
             data = {key: archive[key] for key in archive.files}
         if json.loads(str(data["context_json"])) != context:
-            raise ValueError("Michael: existing immutable cache belongs to different data/settings")
+            raise ValueError("existing immutable cache belongs to different data/settings")
         for key in probes:
             if not np.array_equal(data[key], probes[key]):
-                raise ValueError(f"Michael: cached {key} differs from reconstructed probes")
+                raise ValueError(f"cached {key} differs from reconstructed probes")
         fields = [data[k] for k in PAYLOAD_KEYS]
         if str(data["payload_sha256"]) != array_hash(*fields):
-            raise ValueError("Michael: immutable cache checksum failed")
-        print(f"[cache] Michael: reusing {path}; ZERO new UMA queries", flush=True)
+            raise ValueError("immutable cache checksum failed")
+        print(f"[cache] reusing {path}; ZERO new UMA queries", flush=True)
         return data
-    print(f"[verify] Michael: {len(probes['t'])} probes; parent/time replay exact; "
+    print(f"[verify] {len(probes['t'])} probes; parent/time replay exact; "
           f"original coordinate hashes available={context['original_hashes_available']}", flush=True)
     calculator, batch_evaluate = make_uma_calculator(context["model"], device, saddles[0].info.get("task_name", "omat"))
     backends = [PESBackend(atoms, calculator, batch_evaluate) for atoms in saddles]
@@ -148,7 +148,7 @@ def cached_teachers(path, probes, saddles, audit, context, device):
         forces.append(force); modes.append(q); teachers.append(result["vector"].cpu().numpy())
         scores.append(result["force_rms"]); eigenvalues.append(result["eigs"]); calls.append(result["force_calls"])
         if (i+1)%16 == 0 or i+1 == len(probes["t"]):
-            print(f"[teacher] Michael: {i+1}/{len(probes['t'])}; cumulative PES geometries={sum(calls)}", flush=True)
+            print(f"[teacher] {i+1}/{len(probes['t'])}; cumulative PES geometries={sum(calls)}", flush=True)
     data = dict(probes, force=np.asarray(forces), q=np.asarray(modes), teacher=np.asarray(teachers),
                 force_rms=np.asarray(scores), eigenvalues=np.asarray(eigenvalues), teacher_calls=np.asarray(calls))
     free = data["free_mask"]
@@ -167,7 +167,7 @@ def cached_teachers(path, probes, saddles, audit, context, device):
             ok = np.allclose(value, audit[key], atol=5e-4, rtol=5e-4, equal_nan=True)
             errors[key] = float(np.nanmax(np.abs(value-audit[key])))
         if not ok:
-            raise ValueError(f"Michael: original audit check failed for {key}; cache NOT written")
+            raise ValueError(f"original audit check failed for {key}; cache NOT written")
     data["active"] = reconstructed["active"]
     data["teacher_disagreement"] = np.clip(1-reconstructed["cosine_mmf"],0,2)
     data["context_json"] = json.dumps(context, sort_keys=True)
@@ -177,7 +177,7 @@ def cached_teachers(path, probes, saddles, audit, context, device):
     # 'xb' refuses overwrites even if another process created the cache meanwhile.
     with path.open("xb") as handle:
         np.savez_compressed(handle, **data)
-    print(f"[cache] Michael: verified teacher cache saved once: {path}", flush=True)
+    print(f"[cache] verified teacher cache saved once: {path}", flush=True)
     return data
 
 
@@ -202,7 +202,7 @@ def evaluate_velocities(model, probes, saddles, device, batch_size):
             fixed = torch.cat([s["fixed"] for s in chunk]).to(device)
             v = apply_output_projections(v,fixed,batch.batch,len(chunk))
             values.extend(v.reshape(len(chunk),-1,3).cpu().numpy())
-            print(f"[student] Michael: {end}/{len(probes['t'])} fixed probes", flush=True)
+            print(f"[student] {end}/{len(probes['t'])} fixed probes", flush=True)
     return np.asarray(values)
 
 
@@ -239,7 +239,7 @@ def make_report(data):
     from scipy.stats import spearmanr
     initial_valid = data["active"] & np.isfinite(data["initializer_cosine"])
     initial_cosine = float(data["initializer_cosine"][initial_valid].mean()) if initial_valid.any() else np.nan
-    lines = ["Michael: fixed-probe E2-vs-E0 MMF teacher adoption", "="*120,
+    lines = ["fixed-probe E2-vs-E0 MMF teacher adoption", "="*120,
         "EMA is PRIMARY (inference weights); raw is diagnostic. No training or rollout occurs.",
         "Probes are the original training-distribution audit, not exact samples used in optimizer updates.",
         "Rows use the SAME cached teachers; N_active uses the original force deadband.",
@@ -295,7 +295,7 @@ def main():
     cases = [("initializer",root/"E0/checkpoint_step_00000000","ema")]
     cases += [(f"{e}_{w}",root/e/"checkpoint_final",w) for w in ["ema","raw"] for e in ["E0","E2"]]
     for name,checkpoint,weights in cases:
-        print(f"[model] Michael: {name}; {checkpoint}; {weights}",flush=True)
+        print(f"[model] {name}; {checkpoint}; {weights}",flush=True)
         if weights == "ema":
             load_ema_weights(str(checkpoint),[backbone,attention,head],args.device,use_ema=True)
         else:
@@ -311,7 +311,7 @@ def main():
     report = make_report(results)
     (out/"report.txt").write_text(report)
     print(report,flush=True)
-    print(f"[save] Michael: numerical results and report saved in {out}",flush=True)
+    print(f"[save] numerical results and report saved in {out}",flush=True)
     if not args.no_plot:
         try:
             from plot_pes_adoption import render_pdf

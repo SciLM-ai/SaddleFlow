@@ -1,9 +1,9 @@
-"""Michael: replot E0/E1/E2 archives without models, UMA, or repeated sampling."""
+"""Replot E0/E1/E2 archives without models, UMA, or repeated sampling."""
 
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -30,7 +30,7 @@ def render_pdf(archive_path, output_path=None):
     methods = list(dict.fromkeys(data["method"].tolist()))
     updates = sorted({int(m.split("_s")[1]) for m in methods})
     population = data["source_population"][data["source_index"]]
-    print(f"[plot] Michael: {output_path}", flush=True)
+    print(f"[plot] {output_path}", flush=True)
     with PdfPages(output_path) as pdf:
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         for experiment in ["E0", "E1", "E2"]:
@@ -55,7 +55,7 @@ def render_pdf(archive_path, output_path=None):
                 use = np.ones(len(population), dtype=bool) if group is None else population == group
                 title = f"Fine-tuning update {update}: " + ("all identical starts" if group is None else group)
                 trajectory_page(pdf, data, selected, use, title, show_starts=False, path_limit=300)
-    print(f"[plot] Michael: saved {output_path}", flush=True)
+    print(f"[plot] saved {output_path}", flush=True)
 
 
 if __name__ == "__main__":

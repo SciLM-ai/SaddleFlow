@@ -1,4 +1,4 @@
-# Michael: matched PES-direction fine-tuning
+# Matched PES-direction fine-tuning
 
 The question is whether a frozen physical teacher can reshape an already trained
 FM field. This is not minimum-action optimization, a learned MMF solver, or a
@@ -24,7 +24,7 @@ penalty, recovery data, or false/test-saddle input to training/calibration.
 
 ## Run
 
-From the repository root, Michael:
+From the repository root:
 
 ```bash
 sbatch examples/LiC/experiments/pes_and_recovery/run_pes_directions.sh
@@ -162,9 +162,9 @@ physical fixed points. A null result alone does not establish that support
 mismatch is the cause; the next separate experiment would supervise rollout
 states. No E3 or magnitude-distillation ablation is implemented here.
 
-## Michael: fixed-probe adoption diagnostic (no retraining)
+## Fixed-probe adoption diagnostic (no retraining)
 
-Non-interactive launch for the existing run, Michael:
+Non-interactive launch for the existing run:
 
 ```bash
 sbatch examples/LiC/experiments/pes_and_recovery/run_pes_adoption.sh

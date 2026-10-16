@@ -1,4 +1,4 @@
-# Michael: basin-disjoint recovery FM
+# Basin-disjoint recovery FM
 
 This is a mechanistic, first-fold experiment, not a strict leakage-free claim
 about an unknown saddle catalog. It reuses the original shell archive and the
@@ -19,7 +19,7 @@ the recovery member. No endpoint force penalty or inference guidance is added.
 
 ## Small learnability control
 
-Michael: before interpreting generalization, deliberately fit six seen failures:
+Before interpreting generalization, deliberately fit six seen failures:
 
 ```bash
 sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh --ablation learnability
@@ -85,7 +85,7 @@ python examples/LiC/experiments/pes_and_recovery/train_recovery_learnability.py 
 
 ### Matched six-source R2: optional MMF direction
 
-Michael: create the MMF counterpart to successful plain-FM run 21302150:
+Create the MMF counterpart to successful plain-FM run 21302150:
 
 ```bash
 sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh --ablation learnability --mmf
@@ -132,7 +132,7 @@ FM-only and supports its existing checkpoints.
 
 ### Unseen-source and neighborhood evaluation
 
-Michael: compare the original initializer and the successful learnability EMA
+Compare the original initializer and the successful learnability EMA
 checkpoint, without any more training:
 
 ```bash
@@ -171,7 +171,7 @@ python examples/LiC/experiments/pes_and_recovery/evaluate_recovery_learnability.
 
 ### Cross-basin inference on exact/noisy false bridges
 
-Michael: keep the successful checkpoint UNCHANGED and test all ten catalog
+Keep the successful checkpoint UNCHANGED and test all ten catalog
 false bridges, including the seen basin 0 and the nine other basins:
 
 ```bash
@@ -233,7 +233,7 @@ default to `<checkpoint-parent>/false_bridges/`, separate from that old output.
 
 ### Trajectory-time recovery horizon: matched R1 versus R2
 
-Michael: once the six-source MMF checkpoint has finished, compare it with the
+Once the six-source MMF checkpoint has finished, compare it with the
 successful plain-FM checkpoint using the actual saved failed trajectories:
 
 ```bash
@@ -395,7 +395,7 @@ final checkpoints only.
 
 ## Inference-only Sella endpoint restart
 
-Michael: this experiment uses the **original TS-denoise EMA checkpoint**, not
+This experiment uses the **original TS-denoise EMA checkpoint**, not
 R1/R2. There is no training and no mid-trajectory splice. Default: 68 identical
 original starts (10 exact false bridges, 10 noisy false bridges, 12 noisy
 training saddles, 36 shell starts). Every source first receives a 20-step flow
@@ -406,7 +406,7 @@ above 0.010 eV/A. Catalog labels/parent IDs do not decide repair eligibility.
 sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh --ablation sella-restart
 ```
 
-Michael: the matched branches are:
+The matched branches are:
 
 - `baseline`: original flow proposal only.
 - `restart_none`: flagged endpoint, no displacement, fresh 20-step flow.
@@ -426,7 +426,7 @@ in `kick_norm`/`kick_status`; it is not silently replaced with a random kick.
 evidence that the geometry update was rejected.
 No directional guard, cone sampling, repeated repair, or alpha selection.
 
-Michael: optional larger scale sweep, with identical norms for all controls:
+Optional larger scale sweep, with identical norms for all controls:
 
 ```bash
 sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh --ablation sella-restart \
@@ -440,7 +440,7 @@ its additional queries/time enter the hybrid cost. Final certification always
 reports free fmax <=0.010, lambda1<-0.01, lambda2>0.01. This force tolerance is
 configurable with `--fmax` and differs from the older 0.005 physics benchmark.
 
-Michael: to use the existing shell archive's original sources, while freshly
+To use the existing shell archive's original sources, while freshly
 measuring both the flow and all-Sella alternative:
 
 ```bash
@@ -453,7 +453,7 @@ Remove `--limit-starts` for all t=0 archived sources; full Sella then runs on
 every one of them. The old archive's saved endpoints/forces are NOT reused for
 failure selection or treated as a free timed proposal.
 
-Michael: `report.txt` is printed in the `.out` log. It reports geometric and
+`report.txt` is printed in the `.out` log. It reports geometric and
 physical success overall, for flagged/passed populations, and per baseline
 false-endpoint basin. Timing includes:
 
@@ -471,7 +471,7 @@ loading/warmup and file/PDF I/O are excluded; batching is used for neural flow,
 while independent Sella searches are serial. Compare throughput on this job,
 not single-request latency or historical timings.
 
-Michael: output/log paths retain the existing batch naming:
+Output/log paths retain the existing batch naming:
 `/scratch/gqs7zr/saddleflow/lic_recovery_mmf_JOBID/` and adjacent `.out`/`.err`.
 `sella_restart.npz` and `report.txt` snapshots are saved before the PDF. This
 runner is not resumable, but completed stages/trials can be plotted on CPU:

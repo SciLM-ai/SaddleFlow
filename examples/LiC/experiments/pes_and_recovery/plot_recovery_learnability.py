@@ -1,9 +1,9 @@
-"""Michael: CPU-only learnability curves and trajectories from saved NPZ."""
+"""CPU-only learnability curves and trajectories from saved NPZ."""
 
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -46,7 +46,7 @@ def render_pdf(path, output=None):
         axes[0].set_title("Fixed recovery probes")
         axes[1].set_title("Seen recovery sources: any-true hit (%)"); axes[1].set_ylim(-2,102)
         axes[2].set_title("Fixed clean-noise regression check (%)"); axes[2].set_ylim(-2,102)
-        fig.suptitle("Michael: " + ("recovery FM + detached MMF directional teacher" if mmf else "plain-FM learnability control")
+        fig.suptitle("" + ("recovery FM + detached MMF directional teacher" if mmf else "plain-FM learnability control")
                      + "; no force/index certification")
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         if "probe_teacher_cosine" in data:
@@ -59,7 +59,7 @@ def render_pdf(path, output=None):
                 ax.plot(data["update"][rows],means,style,label=weights)
             ax.set_xlabel("Optimizer update"); ax.set_ylabel("Mean student/MMF cosine on active fixed TRAIN probes")
             ax.set_ylim(-1.05,1.05); ax.grid(alpha=.2); ax.legend()
-            ax.set_title("Michael: teacher adoption; cached oracle, no extra PES evaluation")
+            ax.set_title("teacher adoption; cached oracle, no extra PES evaluation")
             fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         # EMA is primary; raw remains available in curves/NPZ/report.
         rows=np.flatnonzero(data["weights"]=="ema")
@@ -71,10 +71,10 @@ def render_pdf(path, output=None):
                 outcome=data["outcome"][row,use]
                 ax.set_title(f"EMA update {int(data['update'][row])}; N={len(use)}\n"
                              f"any true={100*np.mean(outcome==0):.1f}%; false={100*np.mean(outcome==1):.1f}%")
-            fig.suptitle(f"Michael: {group}; baseline versus latest saved checkpoint\n"
+            fig.suptitle(f"{group}; baseline versus latest saved checkpoint\n"
                          "Blue lines: rollouts; green/red/purple endpoints: true/false/other. No start dots.")
             fig.tight_layout(rect=(0,0,1,.93)); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: saved {output}",flush=True)
+    print(f"[plot] saved {output}",flush=True)
 
 
 if __name__=="__main__":

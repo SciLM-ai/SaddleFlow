@@ -1,4 +1,4 @@
-"""Michael: restart matched recovery students on saved failures at ORIGINAL times.
+"""Restart matched recovery students on saved failures at ORIGINAL times.
 
 Inference only: no training, MMF teacher, or online PES guidance. The baseline
 archive supplies x_k; each student takes K-k Euler steps with the original 1/K.
@@ -7,7 +7,7 @@ archive supplies x_k; each student takes K-k Euler steps with the original 1/K.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -37,34 +37,34 @@ def matched_runs(r1, r2):
     c1,s1,split=load_learnability_run(r1)
     c2,s2,_=load_learnability_run(r2)
     if c1.get("mmf",False) or not c2.get("mmf",False) or c2["extras"]["lambda_pes"] <= 0:
-        raise ValueError("Michael: use plain six-source R1 and its MMF-enabled R2 counterpart")
+        raise ValueError("use plain six-source R1 and its MMF-enabled R2 counterpart")
     keys=["basin","parent","num_sources","batch_size","updates","learning_rate","uma_lr",
           "warmup_steps","lr_schedule","ema_decay","grad_clip","noise_sigma","seed"]
     if any(c1[k] != c2[k] for k in keys):
-        raise ValueError("Michael: R1/R2 training settings are not matched")
+        raise ValueError("R1/R2 training settings are not matched")
     for key in ["init_weights","source_run","train_traj","test_traj"]:
         if Path(c1[key]).resolve() != Path(c2[key]).resolve():
-            raise ValueError(f"Michael: R1/R2 differ in {key}")
+            raise ValueError(f"R1/R2 differ in {key}")
     for key in ["rows","source_split_sha256","init_ema_sha256"]:
         if not np.array_equal(s1[key],s2[key]):
-            raise ValueError(f"Michael: R1/R2 recovery provenance differs in {key}")
+            raise ValueError(f"R1/R2 recovery provenance differs in {key}")
     steps=[json.loads((Path(p)/"meta.json").read_text())["global_step"] for p in [r1,r2]]
-    if steps[0] != steps[1]: raise ValueError("Michael: compare R1/R2 at the same saved optimizer update")
+    if steps[0] != steps[1]: raise ValueError("compare R1/R2 at the same saved optimizer update")
     # Check actual source/time streams, not just matching config files.
     logs=[]
     for p in [r1,r2]:
         rows=[json.loads(line) for line in (Path(p).parent/"training_steps.jsonl").read_text().splitlines()]
         rows=[row for row in rows if row["update"] <= steps[0]]
         if [row["update"] for row in rows] != list(range(1,steps[0]+1)):
-            raise ValueError("Michael: R1/R2 training logs are incomplete")
+            raise ValueError("R1/R2 training logs are incomplete")
         logs.append(rows)
     if [(r["archive_rows"],r["times"]) for r in logs[0]] != [(r["archive_rows"],r["times"]) for r in logs[1]]:
-        raise ValueError("Michael: R1/R2 source/time streams differ")
+        raise ValueError("R1/R2 source/time streams differ")
     if any(r["teacher_calls"] for r in logs[0]) or (steps[0] and not any(r["teacher_calls"] for r in logs[1])):
-        raise ValueError("Michael: R1 should be FM-only; R2 must have actually queried its teacher")
+        raise ValueError("R1 should be FM-only; R2 must have actually queried its teacher")
     root=Path(r2).parent
     if file_hash(root/"mmf_calibration.json") != c2["mmf_calibration_sha256"]:
-        raise ValueError("Michael: R2 calibration changed")
+        raise ValueError("R2 calibration changed")
     return c1,s1,split,steps[0]
 
 
@@ -80,7 +80,7 @@ def select_episodes(split, selected, seen_basin, kind, basins, limit, seed):
     rows=np.flatnonzero(use)
     if limit is not None:
         rows=np.sort(np.random.default_rng(seed).choice(rows,min(limit,len(rows)),replace=False))
-    if not len(rows): raise ValueError("Michael: no saved known-false episodes match this selection")
+    if not len(rows): raise ValueError("no saved known-false episodes match this selection")
     population=np.where(trained[rows],"trained",np.where(split["baseline_basin"][rows] == seen_basin,
                                                       "seen_basin_holdout","unseen_basins"))
     return rows,population
@@ -95,7 +95,7 @@ def report_groups(data):
 
 def make_report(data):
     K=int(data["K"])
-    lines=["Michael: trajectory-time recovery horizon (EMA)","="*130,
+    lines=["trajectory-time recovery horizon (EMA)","="*130,
         f"Selected episodes={len(data['archive_row'])}; trained source rows={data['selected_rows'].tolist()}; "
         f"R1/R2 checkpoint update={int(data['training_update'])}.",
         "Heldout means NOT one of the six supervised sources, regardless of membership in the older larger fold.",
@@ -151,7 +151,7 @@ def plot_results(path):
             for ax,title in zip(axes.flat,["Any-true hit (%)","False occupancy (%)","Median distance to any true (A)","Median distance to any false (A)"]):
                 ax.set_title(title); ax.set_xlabel("Original restart time"); ax.grid(alpha=.2); ax.legend()
             for ax in axes[0]: ax.set_ylim(-2,102)
-            fig.suptitle(f"Michael: {group}, N={use.sum()}; matched states/times, no PES guidance")
+            fig.suptitle(f"{group}, N={use.sum()}; matched states/times, no PES guidance")
             fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         # Whole-population maps by restart time. Gray prefix is the saved failed
         # approach; blue suffix is the student's NEW remaining integration.
@@ -166,10 +166,10 @@ def plot_results(path):
                         ax.plot(segment[:,0],segment[:,1],c=".7",lw=.6,alpha=.35,zorder=1)
                 ax.set_title(f"{method}: true={100*np.mean(data['outcome'][i,j]==0):.1f}%; "
                              f"false={100*np.mean(data['outcome'][i,j]==1):.1f}%")
-            fig.suptitle(f"Michael: restart at t={step/int(data['K']):.2f}; remaining steps={int(data['K'])-step}\n"
+            fig.suptitle(f"restart at t={step/int(data['K']):.2f}; remaining steps={int(data['K'])-step}\n"
                          "Gray: saved baseline prefix. Blue: new student suffix. Endpoint colors: true/false/other. No start dots.")
             fig.tight_layout(rect=(0,0,1,.92)); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: {path.with_suffix('.pdf')}",flush=True)
+    print(f"[plot] {path.with_suffix('.pdf')}",flush=True)
 
 
 def main():
@@ -186,40 +186,40 @@ def main():
     p.add_argument("--plot-only",metavar="NPZ")
     args=p.parse_args()
     if args.plot_only: plot_results(args.plot_only); return
-    if not args.r2_ckpt: p.error("Michael: --r2-ckpt is required for the matched R1/R2 test")
+    if not args.r2_ckpt: p.error("--r2-ckpt is required for the matched R1/R2 test")
     if args.batch_size <= 0 or (args.limit_episodes is not None and args.limit_episodes <= 0):
-        p.error("Michael: counts must be positive")
-    if not np.isfinite(args.replay_tol) or args.replay_tol <= 0: p.error("Michael: replay tolerance must be positive")
+        p.error("counts must be positive")
+    if not np.isfinite(args.replay_tol) or args.replay_tol <= 0: p.error("replay tolerance must be positive")
     config,selection,split,update=matched_runs(args.r1_ckpt,args.r2_ckpt)
     manifest=json.loads((Path(config["source_run"])/"split.json").read_text())["settings"]
     archive_path=Path(manifest["shell_archive"])
     if file_hash(archive_path) != manifest["shell_sha256"] or file_hash(Path(config["init_weights"])/"ema.pt") != str(selection["init_ema_sha256"]):
-        raise ValueError("Michael: original baseline archive or initializer EMA changed")
+        raise ValueError("original baseline archive or initializer EMA changed")
     archive=read_npz(archive_path); original=json.loads(str(archive["configuration_json"]))
     K=int(original["K"])
     if Path(original["ckpt"]).resolve() != Path(config["init_weights"]).resolve() or np.any(archive["start_step"] != 0):
-        raise ValueError("Michael: use saved complete trajectories from the original initializer")
+        raise ValueError("use saved complete trajectories from the original initializer")
     steps=np.asarray(sorted({int(s) for s in args.restart_steps.split(",")}))
     if not len(steps) or np.any((steps < 0)|(steps >= K)):
-        raise ValueError(f"Michael: restart steps must be between 0 and {K-1}")
+        raise ValueError(f"restart steps must be between 0 and {K-1}")
     rows,population=select_episodes(split,selection["rows"],config["basin"],args.episodes,args.basins,args.limit_episodes,args.seed)
     baseline_path=archive["paths"][rows]
     if baseline_path.shape != (len(rows),K+1,3) or not np.isfinite(baseline_path).all():
-        raise ValueError("Michael: selected baseline paths are incomplete")
+        raise ValueError("selected baseline paths are incomplete")
     reference,geometry=load_geometry(config["train_traj"],config["test_traj"])
     for key in ["cell","train_saddles","test_saddles","false_bridges"]:
         if not np.allclose(archive[key],geometry[key]) or not np.allclose(split[key],geometry[key]):
-            raise ValueError(f"Michael: saved geometry differs in {key}")
+            raise ValueError(f"saved geometry differs in {key}")
     if not np.allclose(archive["starts"][rows],split["starts"][rows]) or not np.all(classify(baseline_path[:,-1],geometry)[0] == 1):
-        raise ValueError("Michael: archive rows do not reproduce the selected known-false episodes")
+        raise ValueError("archive rows do not reproduce the selected known-false episodes")
     groups={str(name):int(count) for name,count in zip(*np.unique(population,return_counts=True))}
-    print(f"[setup] Michael: {len(rows)} saved failure episodes; "
+    print(f"[setup] {len(rows)} saved failure episodes; "
           f"groups={groups}; basins={np.unique(split['baseline_basin'][rows]).tolist()}",flush=True)
-    print(f"[setup] Michael: matched R1/R2 update={update}; K={K}; steps={steps.tolist()}; "
+    print(f"[setup] matched R1/R2 update={update}; K={K}; steps={steps.tolist()}; "
           "original t/dt preserved; no training or PES oracle",flush=True)
     if args.dry_run: return
     if args.device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("Michael: run GPU inference in an allocation; --plot-only uses CPU")
+        raise RuntimeError("run GPU inference in an allocation; --plot-only uses CPU")
     out=Path(args.out_dir) if args.out_dir else Path(args.r2_ckpt).parent/"recovery_horizon"
     out.mkdir(parents=True,exist_ok=True)
     sample=atoms_to_sample_dict(reference); names=[]; paths=[]; outcomes=[]; d_true=[]; d_false=[]; dx1=[]
@@ -252,8 +252,8 @@ def main():
         numerical=out/"recovery_horizon.npz"; temporary=out/"recovery_horizon.tmp.npz"
         np.savez_compressed(temporary,**data); temporary.replace(numerical)
         report=make_report(data); (out/"report.txt").write_text(report); print(report,flush=True)
-        print(f"[save] Michael: {numerical} and {out/'report.txt'}",flush=True)
-    print(f"[done] Michael: CPU replot: python examples/LiC/experiments/pes_and_recovery/recovery_horizon.py --plot-only {numerical}",flush=True)
+        print(f"[save] {numerical} and {out/'report.txt'}",flush=True)
+    print(f"[done] CPU replot: python examples/LiC/experiments/pes_and_recovery/recovery_horizon.py --plot-only {numerical}",flush=True)
     if not args.no_plot: plot_results(numerical)
 
 

@@ -10,8 +10,9 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_pes_adoption_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_pes_adoption_%j.err
+#SBATCH --no-requeue
 
-# Michael: existing-checkpoint diagnostic only. No training or optimizer.
+# Existing-checkpoint diagnostic only. No training or optimizer.
 set -euo pipefail
 LIC_ADOPT_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
 LIC_ADOPT_PYTHON="${LIC_ADOPT_PYTHON:-/home/gqs7zr/.conda/envs/saddleflow/bin/python}"
@@ -23,6 +24,6 @@ export PYTHONPATH="$LIC_ADOPT_REPO${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_ADOPT_RUN/fixed_probe_adoption/matplotlib_cache"
-echo "[batch] Michael: fixed-probe teacher adoption; run=$LIC_ADOPT_RUN; no training"
+echo "[batch] fixed-probe teacher adoption; run=$LIC_ADOPT_RUN; no training"
 srun --unbuffered "$LIC_ADOPT_PYTHON" -u examples/LiC/experiments/pes_and_recovery/diagnose_pes_adoption.py \
     --run-dir "$LIC_ADOPT_RUN" --device cuda "$@"

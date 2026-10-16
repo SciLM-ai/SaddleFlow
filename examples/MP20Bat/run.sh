@@ -7,6 +7,7 @@
 #SBATCH -e logs/slurm_%j.err
 #SBATCH -A _replace_me_
 #SBATCH -J saddleflow_mp20bat
+#SBATCH --no-requeue
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ⚠ LEGACY LAUNCHER — DO NOT COPY THIS PATTERN FOR NEW MULTI-NODE JOBS.

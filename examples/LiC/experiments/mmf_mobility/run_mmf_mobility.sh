@@ -10,8 +10,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_mmf_mobility_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_mmf_mobility_%j.err
+#SBATCH --no-requeue
 
-# Michael: sbatch examples/LiC/experiments/mmf_mobility/run_mmf_mobility.sh
+# Sbatch examples/LiC/experiments/mmf_mobility/run_mmf_mobility.sh
 # Additional arguments are training arguments, e.g. --num-updates 400.
 # For resume, set LIC_MMF_OUT_DIR to the original run and pass --resume.
 # The finished historical baseline supplies identical starts and Sella/FM rows.
@@ -32,7 +33,7 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_MMF_OUT_DIR/matplotlib_cache"
 
-echo "[batch] Michael: job=${SLURM_JOB_ID} results=$LIC_MMF_OUT_DIR"
+echo "[batch] job=${SLURM_JOB_ID} results=$LIC_MMF_OUT_DIR"
 echo "[batch] training global/state policies; Kmax=100 by default"
 echo "[batch] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-not set}"
 echo "[batch] baseline=$LIC_MMF_BASELINE"

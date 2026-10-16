@@ -1,4 +1,4 @@
-# Michael: post-hoc LiC kappa audit
+# Post-hoc LiC kappa audit
 
 No training, steering, saddle optimization, or new model rollouts. Frozen UMA
 evaluates existing paths; the diagnostic asks whether isopotential curvature

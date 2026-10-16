@@ -212,14 +212,14 @@ def load_flow_model(checkpoint: Path, device: str, use_ema: bool = True):
     modules = [backbone, attention, velocity_head]
     if not use_ema:
         if extras.get("early_time_film", False) or any(p.requires_grad for p in raw_backbone.parameters()):
-            raise ValueError("Michael: raw loader cannot restore a trainable/time-FiLM backbone; use EMA")
+            raise ValueError("raw loader cannot restore a trainable/time-FiLM backbone; use EMA")
         modules = [attention, velocity_head]
     load_ema_weights(str(checkpoint), modules, device=device, use_ema=use_ema)
     backbone.eval()
     attention.eval()
     velocity_head.eval()
     if extras.get("source_channels", 0):
-        print(f"[model] Michael: source memory={extras.get('source_conditioning', False)}; "
+        print(f"[model] source memory={extras.get('source_conditioning', False)}; "
               "same-size source branch; no target/parent input or extra PES queries", flush=True)
     if extras.get("inject_force", False) or extras.get("curvature_conditioning", False):
         frozen = load_uma_backbone(backbone_name, device=device, freeze=True, eval_mode=True)
@@ -227,7 +227,7 @@ def load_flow_model(checkpoint: Path, device: str, use_ema: bool = True):
         velocity_head._physics_conditioner = make_conditioner(frozen, force_head, force_tasks,
             inject_force=bool(extras.get("inject_force", False)), curvature=bool(extras.get("curvature_conditioning", False)),
             fd_eps=float(extras.get("curvature_fd_eps", .002)), probe_batch_size=int(extras.get("physics_batch_size", 32)))
-        print(f"[model] Michael: online frozen UMA conditioning: force={extras.get('inject_force',False)}, "
+        print(f"[model] online frozen UMA conditioning: force={extras.get('inject_force',False)}, "
               f"scalar curvature={extras.get('curvature_conditioning',False)}; geometry/time only, no target supplied", flush=True)
     return config, backbone_name, backbone, attention, velocity_head
 
@@ -284,7 +284,7 @@ def model_velocity(
     inputs = {}
     if getattr(velocity_head, "source_conditioning", False):
         if source_positions is None or source_positions.shape != positions.shape:
-            raise ValueError("Michael: sampling requires the original x0, retained unchanged at every step")
+            raise ValueError("sampling requires the original x0, retained unchanged at every step")
         source_delta = mic_displacement(source_positions, positions, sample["cell"])
         source_delta[:, sample["fixed"]] = 0.
         inputs["source_delta"] = source_delta.reshape(-1, 3).to(device)

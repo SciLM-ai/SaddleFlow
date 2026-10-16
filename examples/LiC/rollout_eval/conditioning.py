@@ -1,4 +1,4 @@
-"""Michael: detached force/current free-Hessian inputs for the LiC student.
+"""Detached force/current free-Hessian inputs for the LiC student.
 
 No saddle labels, eigenmode targets, auxiliary loss, or learned physics model.
 The same observation routine runs at sampled training x_t and every ODE step.
@@ -34,8 +34,8 @@ def make_conditioner(force_backbone, force_head, force_tasks, *, inject_force=Fa
     symmetrized free Hessian. Cell/carbon positions are NEVER perturbed.
     Captured frozen models are not registered in the student checkpoint.
     """
-    if not inject_force and not curvature: raise ValueError("Michael: enable force or curvature inputs")
-    if fd_eps <= 0 or probe_batch_size < 1: raise ValueError("Michael: FD epsilon/chunk size must be positive")
+    if not inject_force and not curvature: raise ValueError("enable force or curvature inputs")
+    if fd_eps <= 0 or probe_batch_size < 1: raise ValueError("FD epsilon/chunk size must be positive")
     for module in [force_backbone, force_head]:
         module.eval()
         for parameter in module.parameters(): parameter.requires_grad_(False)
@@ -45,7 +45,7 @@ def make_conditioner(force_backbone, force_head, force_tasks, *, inject_force=Fa
         # This is intentionally a LiC helper, not a dense all-system Hessian.
         free = torch.nonzero(~sample["fixed"], as_tuple=False).flatten()
         if len(free) != 1 or int(sample["Z"][free[0]]) != 3:
-            raise ValueError("Michael: scalar-curvature example expects exactly one free Li")
+            raise ValueError("scalar-curvature example expects exactly one free Li")
         li = int(free[0]); x = torch.stack(list(positions)).detach().float()
         force, scalars = None, None
         before = observe.queries
@@ -78,7 +78,7 @@ def make_conditioner(force_backbone, force_head, force_tasks, *, inject_force=Fa
                 H = .5*(raw+raw.transpose(-1, -2))
                 eigs = torch.linalg.eigvalsh(H.double().cpu()).to(device=device, dtype=torch.float32)
                 scalars = torch.stack([eigs[:, 0], eigs[:, 1], eigs[:, 1]-eigs[:, 0]], dim=-1).detach()
-                if not torch.isfinite(scalars).all(): raise ValueError("Michael: nonfinite oracle curvature")
+                if not torch.isfinite(scalars).all(): raise ValueError("nonfinite oracle curvature")
         return dict(force_field=force, curvature_scalars=scalars, queries=observe.queries-before)
 
     observe.queries = 0

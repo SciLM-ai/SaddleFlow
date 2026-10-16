@@ -1,4 +1,4 @@
-"""Michael: saved, endpoint-basin-disjoint recovery sources for the LiC ablation.
+"""Saved, endpoint-basin-disjoint recovery sources for the LiC ablation.
 
 Each shell archive row is one complete rollout episode. We use its START,
 never harvest intermediate path states into separate train/test records.
@@ -9,7 +9,7 @@ No UMA/model calls occur here. This is not a spatial exclusion of entire bridges
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -39,10 +39,10 @@ def load_learnability_run(checkpoint):
     config=json.loads((root/"config.json").read_text())
     selection=read_npz(root/"selection.npz")
     if file_hash(root/"selection.npz") != config["selection_sha256"]:
-        raise ValueError("Michael: learnability training selection changed")
+        raise ValueError("learnability training selection changed")
     split_path=Path(config["source_run"])/"split.npz"
     if file_hash(split_path) != str(selection["source_split_sha256"]):
-        raise ValueError("Michael: source fold changed")
+        raise ValueError("source fold changed")
     return config,selection,read_npz(split_path)
 
 
@@ -54,10 +54,10 @@ def split_failures(archive, train_basins, holdout_fraction, seed, force_epsilon)
     observed = np.unique(archive["nearest_false_index"][known])
     train_basins = np.asarray(train_basins, dtype=int)
     if not len(train_basins) or not np.isin(train_basins, observed).all():
-        raise ValueError("Michael: training basins must be present among mined known-false endpoints")
+        raise ValueError("training basins must be present among mined known-false endpoints")
     held_basins = np.setdiff1d(observed, train_basins)
     if not len(held_basins):
-        raise ValueError("Michael: reserve at least one observed false basin")
+        raise ValueError("reserve at least one observed false basin")
     # -1: not mined; 0: training; 1: unseen episodes in seen basins;
     # 2: withheld false basins; 3: generic high-force episode holdout.
     partition = np.full(len(high), -1, dtype=int)
@@ -95,37 +95,37 @@ def prepare(args, dataset):
     manifest_path = root/"split.json"
     if manifest_path.exists():
         if json.loads(manifest_path.read_text())["settings"] != settings:
-            raise ValueError("Michael: this run already has a different immutable split")
+            raise ValueError("this run already has a different immutable split")
         load_split(root, dataset)
-        print(f"[split] Michael: reusing {manifest_path}", flush=True)
+        print(f"[split] reusing {manifest_path}", flush=True)
         return
     a = read_npz(args.shell_archive)
     if "configuration_json" in a:
         baseline = json.loads(str(a["configuration_json"]))["ckpt"]
         if Path(baseline).resolve() != Path(args.init_weights).resolve():
-            raise ValueError("Michael: initialize from the same checkpoint that mined the archive")
+            raise ValueError("initialize from the same checkpoint that mined the archive")
     if np.any(a["start_step"] != 0):
-        raise ValueError("Michael: use a t=0 archive; this experiment learns complete source-to-parent pairs")
+        raise ValueError("use a t=0 archive; this experiment learns complete source-to-parent pairs")
     if not np.isfinite(a["force_max"]).all():
-        raise ValueError("Michael: mining needs finite saved UMA forces")
+        raise ValueError("mining needs finite saved UMA forces")
     templates = [dataset[2*i] for i in range(len(a["train_saddles"]))]
     free_indices = torch.nonzero(~templates[0]["fixed"]).flatten().numpy()
     if len(free_indices) != 1:
-        raise ValueError("Michael: this contained LiC experiment expects one mobile atom")
+        raise ValueError("this contained LiC experiment expects one mobile atom")
     li = int(free_indices[0])
     labels = np.asarray([s["saddle_un_pos"][li].numpy() for s in templates])
     cell = templates[0]["cell"].numpy()
     # Compare periodic images rather than raw wrapped coordinates.
     for expected, stored in zip(labels, a["train_saddles"]):
         if np.linalg.norm(mic_unwrap(expected, stored, cell)-expected) > 1e-4:
-            raise ValueError("Michael: archive parent saddles do not match the training labels")
+            raise ValueError("archive parent saddles do not match the training labels")
     if not np.allclose(cell, a["cell"]):
-        raise ValueError("Michael: archive cell differs from the training cell")
+        raise ValueError("archive cell differs from the training cell")
     partition, observed, held = split_failures(a, args.train_basins, args.holdout_fraction,
                                              args.seed, args.force_epsilon)
     train_rows = np.flatnonzero(partition == 0)
     if not len(train_rows):
-        raise ValueError("Michael: no recovery training rows")
+        raise ValueError("no recovery training rows")
     data = dict(starts=a["starts"], parent=a["parent_index"], radius=a["radius"],
         partition=partition, baseline_force_max=a["force_max"], baseline_outcome=a["outcome_code"],
         baseline_basin=a["nearest_false_index"], baseline_finals=a["finals"],
@@ -163,7 +163,7 @@ def prepare(args, dataset):
         scope="endpoint-basin-disjoint recovery sources, NOT exclusion of all bridge coordinates",
         mining_rule="saved free-atom force_max > epsilon, regardless of geometric true hit")
     manifest_path.write_text(json.dumps(summary, indent=2))
-    print(f"[split] Michael: {json.dumps(summary, indent=2)}", flush=True)
+    print(f"[split] {json.dumps(summary, indent=2)}", flush=True)
 
 
 def load_split(root, dataset):
@@ -171,14 +171,14 @@ def load_split(root, dataset):
     manifest = json.loads((root/"split.json").read_text())
     for name,key in [("split.npz","split_sha256"), ("recovery_probes.npz","probes_sha256")]:
         if file_hash(root/name) != manifest[key]:
-            raise ValueError(f"Michael: immutable {name} checksum failed")
+            raise ValueError(f"immutable {name} checksum failed")
     if file_hash(manifest["settings"]["train_traj"]) != manifest["settings"]["train_sha256"]:
-        raise ValueError("Michael: training labels changed since the split")
+        raise ValueError("training labels changed since the split")
     data = read_npz(root/"split.npz")
     rows = np.flatnonzero(data["partition"] == 0)
     forbidden = (data["baseline_outcome"][rows] == 2) & np.isin(data["baseline_basin"][rows], data["holdout_basins"])
     if forbidden.any():
-        raise ValueError("Michael: withheld-basin source leaked into training")
+        raise ValueError("withheld-basin source leaked into training")
     return data, [recovery_record(data,int(row),dataset) for row in rows]
 
 
@@ -204,7 +204,7 @@ def mixed_batch(dataset, recovery, update, seed, experiment):
     """
     ids = batch_indices(len(dataset), update, 4, seed)
     if len(ids) != 4:
-        raise ValueError("Michael: use a training dataset divisible by this experiment's batch size 4")
+        raise ValueError("use a training dataset divisible by this experiment's batch size 4")
     batch = [dataset[i] for i in ids]
     if experiment != "R0":
         j = batch_indices(len(recovery), update, 1, seed+7000)[0]

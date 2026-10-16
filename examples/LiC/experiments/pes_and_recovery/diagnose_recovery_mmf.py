@@ -1,4 +1,4 @@
-"""Michael: fixed TRAINING-recovery bridge probes, R2 versus matched R1.
+"""Fixed TRAINING-recovery bridge probes, R2 versus matched R1.
 
 Reuses the write-once oracle cache created during calibration. No new UMA
 queries, no optimization, no rollouts. EMA is primary and raw is diagnostic.
@@ -7,7 +7,7 @@ queries, no optimization, no rollouts. EMA is primary and raw is diagnostic.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -50,10 +50,10 @@ def main():
     args = SimpleNamespace(**configs[1]); args.device = cli.device
     dataset,saddles = training_data(args)
     split,_ = load_split(root,dataset)
-    if not (root/"recovery_teacher.npz").exists(): raise ValueError("Michael: calibration must create the frozen audit teacher cache first")
+    if not (root/"recovery_teacher.npz").exists(): raise ValueError("calibration must create the frozen audit teacher cache first")
     calibration = json.loads((root/"calibration.json").read_text())
     cache = cache_probe_teachers(args,None,calibration["teacher_deadband"])
-    if not np.all(split["partition"][cache["archive_row"]] == 0): raise ValueError("Michael: audit contains non-training recovery rows")
+    if not np.all(split["partition"][cache["archive_row"]] == 0): raise ValueError("audit contains non-training recovery rows")
     free = cache["free_mask"]
     cache["teacher_disagreement"] = np.clip(1-np.asarray([alignment(v[free],b[free])
         for v,b in zip(cache["targets"],cache["teacher"])]),0,2)
@@ -64,7 +64,7 @@ def main():
               for w in ["ema","raw"] for i,e in [(0,"R1"),(2,"R2")]]
     velocities = {}
     for name,path,weights in cases:
-        print(f"[probe student] Michael: {name.replace('E0','R1').replace('E2','R2')} {weights}",flush=True)
+        print(f"[probe student] {name.replace('E0','R1').replace('E2','R2')} {weights}",flush=True)
         if weights == "ema": load_ema_weights(str(path),[backbone,attention,head],cli.device,use_ema=True)
         else: load_model(model,str(path/"model.safetensors"),strict=True,device=cli.device)
         velocities[name] = evaluate_velocities(model,cache,saddles,cli.device,cli.batch_size)

@@ -10,6 +10,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_source_eval_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_source_eval_%j.err
+#SBATCH --no-requeue
 
 set -euo pipefail
 LIC_STUDY_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
@@ -23,6 +24,6 @@ export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/lic_source_eval_${SLURM_JOB_ID:?Submit with sbatch}"
 unset SLURM_CPU_BIND_TYPE SLURM_CPU_BIND_LIST
 export SLURM_CPU_BIND=none
-echo "[batch] Michael: job=$SLURM_JOB_ID source-study inference; root=$LIC_STUDY_ROOT"
+echo "[batch] job=$SLURM_JOB_ID source-study inference; root=$LIC_STUDY_ROOT"
 srun --cpu-bind=none --unbuffered "$LIC_STUDY_PYTHON" -u examples/LiC/experiments/source_study/source_study.py compare \
   --study-dir "$LIC_STUDY_ROOT" --device cuda "$@"

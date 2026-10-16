@@ -1,4 +1,4 @@
-"""Michael: one Sella kick at a failed FM endpoint, then a fresh FM clock.
+"""One Sella kick at a failed FM endpoint, then a fresh FM clock.
 
 Inference only. The full-Sella comparator starts at EVERY original source,
 not just failed endpoints. NPZ/report snapshots precede CPU-only plotting.
@@ -7,7 +7,7 @@ not just failed endpoints. NPZ/report snapshots precede CPU-only plotting.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -77,7 +77,7 @@ def matched_kicks(delta, force, alpha, seed, max_kick=None):
         length = min(length, max_kick)
     random = np.random.default_rng(seed).normal(size=delta.shape)
     if length > 0 and np.linalg.norm(force) < 1e-30:
-        raise ValueError("Michael: a zero-force state has no matched force-kick direction")
+        raise ValueError("a zero-force state has no matched force-kick direction")
     unit = lambda v: v / max(np.linalg.norm(v), 1e-30)
     return dict(sella=length * unit(delta), random=length * unit(random), force=length * unit(force))
 
@@ -102,7 +102,7 @@ def groups(data):
 def make_report(data):
     cfg = json.loads(str(data["config_json"]))
     methods = list(dict.fromkeys(data["method"]))
-    lines = ["Michael: Sella-preconditioned endpoint restart", "=" * 145,
+    lines = ["Sella-preconditioned endpoint restart", "=" * 145,
         f"Original EMA checkpoint: {cfg['ckpt']}",
         f"Original starts={len(data['starts'])}; flagged={data['flagged'].sum()}; gate={cfg['gate']}; fmax={cfg['fmax']} eV/A.",
         f"Autonomous Euler K={cfg['K']} before repair AND K={cfg['K']} on a NEW clock after the kick. No splicing or training.",
@@ -168,7 +168,7 @@ def save_progress(out, args, geometry, sources, results, extra, stage):
     scratch.replace(out / "sella_restart.npz")
     report = make_report(data)
     (out / "report.txt").write_text(report)
-    print(f"[save] Michael: stage={stage}; completed outputs={len(results)}; {out/'sella_restart.npz'}", flush=True)
+    print(f"[save] stage={stage}; completed outputs={len(results)}; {out/'sella_restart.npz'}", flush=True)
     return report
 
 
@@ -187,7 +187,7 @@ def plot_results(path):
             values = [np.mean(data[field][data["method"] == m] == 0) * 100 if field == "outcome" else
                       np.mean(data[field][data["method"] == m]) * (100 if field == "physical_success" else 1) for m in methods]
             ax.bar(methods, values); ax.set_title(title); ax.tick_params(axis="x", rotation=70)
-        fig.suptitle(f"Michael: endpoint restart, {str(data['stage'])}; work includes detection and repair")
+        fig.suptitle(f"endpoint restart, {str(data['stage'])}; work includes detection and repair")
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         # All outputs and flagged-only panels; trajectories include the original proposal.
         for group in ["all", "flagged"]:
@@ -208,25 +208,25 @@ def plot_results(path):
                     ax.set_title(f"{method}: N={len(use)}; true={100*np.mean(data['outcome'][use]==0):.1f}%; "
                                  f"physical={100*np.mean(data['physical_success'][use]):.1f}%")
                 for ax in list(axes.flat)[len(page):]: ax.set_visible(False)
-                fig.suptitle(f"Michael: {group}; blue trajectories, green/red/purple finals = true/false/other; blue rings = certified\n"
+                fig.suptitle(f"{group}; blue trajectories, green/red/purple finals = true/false/other; blue rings = certified\n"
                              "Orange: endpoint kick. Hybrid paths include proposal + repair; full Sella starts at the original source.")
                 fig.tight_layout(rect=(0, 0, 1, .95)); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: {path.with_suffix('.pdf')}", flush=True)
+    print(f"[plot] {path.with_suffix('.pdf')}", flush=True)
 
 
 def main():
     args = parse_args()
     if args.plot_only: plot_results(args.plot_only); return
     alphas = list(dict.fromkeys(float(a) for a in args.alphas.split(",")))
-    if not alphas or not all(np.isfinite(a) and a > 0 for a in alphas): raise ValueError("Michael: alphas must be positive")
+    if not alphas or not all(np.isfinite(a) and a > 0 for a in alphas): raise ValueError("alphas must be positive")
     if min(args.K, args.batch_size, args.max_steps, args.max_force_calls) <= 0 or args.fmax <= 0:
-        raise ValueError("Michael: step/query counts and force tolerance must be positive")
-    if args.max_kick is not None and args.max_kick <= 0: raise ValueError("Michael: max-kick must be positive")
+        raise ValueError("step/query counts and force tolerance must be positive")
+    if args.max_kick is not None and args.max_kick <= 0: raise ValueError("max-kick must be positive")
     out = Path(args.out_dir or Path(args.ckpt).parent / "sella_restart"); out.mkdir(parents=True, exist_ok=True)
-    if (out / "sella_restart.npz").exists(): raise ValueError("Michael: use a fresh output directory to preserve previous results")
+    if (out / "sella_restart.npz").exists(): raise ValueError("use a fresh output directory to preserve previous results")
     reference, geometry = load_geometry(args.train_traj, args.test_traj)
     sources = generate_starts(args, geometry); n = len(sources["starts"])
-    if not n: raise ValueError("Michael: no starting points selected")
+    if not n: raise ValueError("no starting points selected")
     import torch
     from saddleflow.data import atoms_to_sample_dict
     try:
@@ -236,10 +236,10 @@ def main():
         from examples.LiC.rollout_eval.force_guided_sampling import load_flow_model
         from examples.LiC.rollout_eval.robustness_shells import sample_points
     sample = atoms_to_sample_dict(reference)
-    print(f"[setup] Michael: {n} original starts; unchanged EMA checkpoint; endpoint-only repair; alpha={alphas}", flush=True)
+    print(f"[setup] {n} original starts; unchanged EMA checkpoint; endpoint-only repair; alpha={alphas}", flush=True)
     _, _, backbone, attention, head = load_flow_model(Path(args.ckpt).resolve(), args.device)
     if getattr(head, "_physics_conditioner", None) is not None:
-        raise ValueError("Michael: this one-kick ablation assumes the original unconditioned model; use robustness_shells for conditioned checkpoints")
+        raise ValueError("this one-kick ablation assumes the original unconditioned model; use robustness_shells for conditioned checkpoints")
     calculator, batch = make_uma_calculator(args.model, args.device, args.task_name)
     estimator = MinimumModeEstimator("dense", args.fd_eps)
 
@@ -260,7 +260,7 @@ def main():
         result = run_sella(pes, point, max_steps=steps, max_force_calls=args.max_force_calls,
                            fmax_tol=0. if steps == 1 else args.fmax, delta0=args.sella_delta0)
         sync(); result["wall_seconds"] = perf_counter()-before
-        print(f"[Sella] Michael: {label}; iterations={result['steps']}, PES={result['force_calls']}, "
+        print(f"[Sella] {label}; iterations={result['steps']}, PES={result['force_calls']}, "
               f"time={result['wall_seconds']:.3f}s, status={result['status']}", flush=True)
         return result, pes
 
@@ -268,7 +268,7 @@ def main():
     flow(sources["starts"][:1], "warmup (excluded)", K=1)
     sella(sources["starts"][0], 1, "warmup (excluded)")
     proposal, proposal_seconds = flow(sources["starts"], "original proposal")
-    if not np.isfinite(proposal).all(): raise ValueError("Michael: baseline produced nonfinite positions; inspect the model before repair")
+    if not np.isfinite(proposal).all(): raise ValueError("baseline produced nonfinite positions; inspect the model before repair")
     endpoints = proposal[:, -1]
     flagged = np.zeros(n, dtype=bool); gate_force = np.zeros((n, 3)); gate_eigs = np.full((n, 2), np.nan)
     gate_calls = np.zeros(n, dtype=int); gate_seconds = np.zeros(n)
@@ -283,7 +283,7 @@ def main():
             index_bad = not (eigs[0] < -args.eigenvalue_tol and eigs[1] > args.eigenvalue_tol)
         flagged[i] = force_bad or index_bad
         gate_calls[i] = pes.force_calls; sync(); gate_seconds[i] = perf_counter()-before
-        if (i+1) % 10 == 0 or i+1 == n: print(f"[gate] Michael: {i+1}/{n}; flagged so far={flagged[:i+1].sum()}", flush=True)
+        if (i+1) % 10 == 0 or i+1 == n: print(f"[gate] {i+1}/{n}; flagged so far={flagged[:i+1].sum()}", flush=True)
     original_outcome = classify(endpoints, geometry)[0]
     false_delta = endpoints[:, None]-geometry["false_bridges"][None]
     from ase.geometry import find_mic
@@ -351,7 +351,7 @@ def main():
                       full_sella_seconds=result["wall_seconds"])
         score(result, pes); save(f"full Sella {i+1}/{n}")
     report = save("complete"); print(report, flush=True)
-    print(f"[done] Michael: CPU replot: python examples/LiC/experiments/pes_and_recovery/sella_restart.py --plot-only {out/'sella_restart.npz'}", flush=True)
+    print(f"[done] CPU replot: python examples/LiC/experiments/pes_and_recovery/sella_restart.py --plot-only {out/'sella_restart.npz'}", flush=True)
     if not args.no_plot: plot_results(out / "sella_restart.npz")
 
 

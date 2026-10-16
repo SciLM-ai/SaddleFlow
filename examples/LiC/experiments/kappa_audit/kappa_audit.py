@@ -1,4 +1,4 @@
-"""Michael: post-hoc isopotential-curvature audit. NO steering or training.
+"""Post-hoc isopotential-curvature audit. NO steering or training.
 
 Replay stored Li coordinates with frozen UMA and the existing free-space FD
 Hessian. Physics is cached in restartable NPZ chunks. Analysis thresholds can
@@ -8,7 +8,7 @@ change without new UMA calls; PDF rendering is a separate, model-free script.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -82,13 +82,13 @@ def load_paths(args, geometry):
         a = read_npz(path)
         for key in ["cell","train_saddles","test_saddles","false_bridges"]:
             if not np.allclose(a[key],geometry[key],atol=1e-4,rtol=0):
-                raise ValueError(f"Michael: {path} differs from the reference geometry in {key}")
+                raise ValueError(f"{path} differs from the reference geometry in {key}")
         if "numbers" in a and not np.array_equal(a["numbers"],geometry["numbers"]):
-            raise ValueError("Michael: atom ordering differs")
+            raise ValueError("atom ordering differs")
         if "pbc" in a and not np.array_equal(a["pbc"],geometry["pbc"]):
-            raise ValueError("Michael: periodic directions differ")
+            raise ValueError("periodic directions differ")
         if "positions" in a and not np.allclose(a["positions"][~geometry["free_mask"]],geometry["positions"][~geometry["free_mask"]]):
-            raise ValueError("Michael: fixed scaffold differs")
+            raise ValueError("fixed scaffold differs")
         shell = "paths" in a
         paths = a["paths"] if shell else a["path"]
         methods = np.repeat("saddleflow",len(paths)) if shell else a["method"]
@@ -117,7 +117,7 @@ def load_paths(args, geometry):
                     collection=f"{archive_index}:"+("shells" if shell else "search"),method=str(method),
                     archive_index=archive_index,archive_row=int(row)))
         provenance.append(dict(path=str(Path(path).resolve()),sha256=file_hash(path)))
-    if not records: raise ValueError("Michael: no selected paths; use --methods all for differently named models")
+    if not records: raise ValueError("no selected paths; use --methods all for differently named models")
     return records,provenance
 
 
@@ -155,9 +155,9 @@ def pack_points(records, geometry, args):
 def checked_chunk(filename, expected, context):
     chunk = read_npz(filename); n = len(chunk["positions"])
     if str(chunk["context_json"]) != context or not 0 < n <= len(expected) or not np.array_equal(chunk["positions"],expected[:n]):
-        raise ValueError("Michael: cached physics belongs to different inputs/settings; use a new output directory")
+        raise ValueError("cached physics belongs to different inputs/settings; use a new output directory")
     if str(chunk["checksum"]) != array_hash(*[chunk[k] for k in PHYSICS_KEYS]):
-        raise ValueError("Michael: physics-cache checksum failed")
+        raise ValueError("physics-cache checksum failed")
     return chunk
 
 
@@ -180,7 +180,7 @@ def evaluate_cached(points, cache_dir, settings, make_backend, sensitivity_indic
             saved = checked_chunk(filename,points[first:end],context); done = len(saved["positions"])
             for key in PHYSICS_KEYS: chunk[key][:done] = saved[key]
             chunk["force_calls"] = int(saved["force_calls"])
-            print(f"[cache] Michael: {first+done}/{len(points)} points reused; zero new UMA queries for this prefix",flush=True)
+            print(f"[cache] {first+done}/{len(points)} points reused; zero new UMA queries for this prefix",flush=True)
         if done < end-first:
             if pes is None: pes = make_backend()
             before = pes.force_calls; completed_calls = 0
@@ -197,7 +197,7 @@ def evaluate_cached(points, cache_dir, settings, make_backend, sensitivity_indic
                             chunk["sensitivity_hessian"][local,j] = pes.free_hessian(x,eps)[0]
                     done = local+1; completed_calls = pes.force_calls-before
                     if done%log_every == 0 or first+done == len(points):
-                        print(f"[physics] Michael: {first+done}/{len(points)}; new PES geometries="
+                        print(f"[physics] {first+done}/{len(points)}; new PES geometries="
                               f"{new_calls+completed_calls}; elapsed={(perf_counter()-began)/60:.1f}min",flush=True)
                     if stop_requested is not None and stop_requested(): break
             finally:
@@ -290,7 +290,7 @@ def save_plan(out, points, inputs, geometry, args, settings):
     """Everything needed for later CPU-only export, even without source archives."""
     filename = out/"audit_inputs.npz"; context = json.dumps(settings,sort_keys=True)
     if filename.exists() and str(read_npz(filename)["provenance_json"]) != context:
-        raise ValueError("Michael: saved audit plan uses different physics inputs; use a new output directory")
+        raise ValueError("saved audit plan uses different physics inputs; use a new output directory")
     save_npz(filename,dict(**inputs,**geometry,planned_points=points,
         input_keys=np.asarray(list(inputs)),geometry_keys=np.asarray(list(geometry)),
         config_json=json.dumps(vars(args)),provenance_json=context))
@@ -313,7 +313,7 @@ def export_cached(out, new_calls=0, reason="CPU cache export", print_report=Fals
         chunk = checked_chunk(filename,points[first:end],context)
         pieces.append(chunk); point_ids.extend(range(first,first+len(chunk["positions"])))
     if not pieces:
-        print("[partial] Michael: no finished physics points yet; nothing to export",flush=True)
+        print("[partial] no finished physics points yet; nothing to export",flush=True)
         return None
     physics = {key:np.concatenate([c[key] for c in pieces]) for key in PHYSICS_KEYS}
     physics.update(new_force_calls=np.asarray(new_calls),
@@ -339,7 +339,7 @@ def export_cached(out, new_calls=0, reason="CPU cache export", print_report=Fals
     save_npz(out/"kappa_audit.npz",data)
     report = make_report(data)
     temporary = out/"report.tmp.txt"; temporary.write_text(report); temporary.replace(out/"report.txt")
-    print(f"[snapshot] Michael: {len(point_ids)}/{len(points)} physics points; "
+    print(f"[snapshot] {len(point_ids)}/{len(points)} physics points; "
           f"{completed.sum()}/{len(completed)} fully audited trajectories; saved {out/'kappa_audit.npz'}",flush=True)
     if print_report: print(report,flush=True)
     return data
@@ -359,7 +359,7 @@ def make_report(data):
             f"fully audited trajectories: {int(data['num_complete_trajectories'])}/{int(data['num_planned_trajectories'])}.",
             "Only fully audited trajectories contribute to outcome/lead statistics. Unfinished paths are excluded, NOT failures.",
             "Partial coverage follows processing order and is not representative of all selected methods/starts."]
-    lines = ["Michael: post-hoc LiC isopotential-curvature audit", "="*130,
+    lines = ["post-hoc LiC isopotential-curvature audit", "="*130,
         *coverage,
         "kappa = -min eig(C.T H_free C)/||F_free||; C spans the plane perpendicular to the FULL 3D Li force.",
         f"Force floor={config['force_floor']} eV/A: BOTH nu1 and kappa are undefined at/below it. Warning: nu1 < -{config['curvature_tol']} eV/A^2.",
@@ -441,12 +441,12 @@ def parse_args():
     args = p.parse_args()
     args.sensitivity_eps = [float(x) for x in args.sensitivity_eps.split(",") if x]
     if min(args.force_floor,args.fd_eps,args.fmax,args.true_radius,args.false_radius,args.map_half_width) <= 0:
-        raise ValueError("Michael: force floor and length/force scales must be positive")
+        raise ValueError("force floor and length/force scales must be positive")
     if min(args.cache_chunk_size,args.log_every,args.grid_size) <= 0 or args.curvature_tol < 0 or args.sensitivity_points < 0:
-        raise ValueError("Michael: invalid counts or curvature tolerance")
-    if args.save_every_chunks < 0: raise ValueError("Michael: snapshot interval cannot be negative")
-    if any(x <= 0 for x in args.sensitivity_eps): raise ValueError("Michael: FD sensitivity steps must be positive")
-    if not args.no_map and args.grid_size < 2: raise ValueError("Michael: the XY map needs at least a 2x2 grid")
+        raise ValueError("invalid counts or curvature tolerance")
+    if args.save_every_chunks < 0: raise ValueError("snapshot interval cannot be negative")
+    if any(x <= 0 for x in args.sensitivity_eps): raise ValueError("FD sensitivity steps must be positive")
+    if not args.no_map and args.grid_size < 2: raise ValueError("the XY map needs at least a 2x2 grid")
     return args
 
 
@@ -458,14 +458,14 @@ def main():
         if data is not None and args.plot: plot_saved(out)
         return
     reference,geometry = load_geometry(args.train_traj,args.test_traj)
-    if not 0 <= args.map_basin < len(geometry["false_bridges"]): raise ValueError("Michael: invalid map-basin catalog ID")
+    if not 0 <= args.map_basin < len(geometry["false_bridges"]): raise ValueError("invalid map-basin catalog ID")
     records,provenance = load_paths(args,geometry)
     points,inputs = pack_points(records,geometry,args)
     rng = np.random.default_rng(args.seed+5000)
     sensitivity = np.sort(rng.choice(len(points),min(args.sensitivity_points,len(points)),replace=False))
-    print(f"[setup] Michael: {len(records)} saved trajectories; {len(points)} unique 3D Li geometries including map",flush=True)
+    print(f"[setup] {len(records)} saved trajectories; {len(points)} unique 3D Li geometries including map",flush=True)
     print(f"[setup] approximately {7*len(points)+6*len(args.sensitivity_eps)*len(sensitivity)} PES geometries before cache reuse",flush=True)
-    for i,p in enumerate(provenance): print(f"[archive] Michael: {i}: {p['path']}",flush=True)
+    for i,p in enumerate(provenance): print(f"[archive] {i}: {p['path']}",flush=True)
     if args.dry_run: return
     out.mkdir(parents=True,exist_ok=True)
     settings = dict(input_archives=provenance,points_sha256=array_hash(points),geometry_sha256=array_hash(
@@ -480,12 +480,12 @@ def main():
         if data is not None and args.plot: plot_saved(out)
         return
     def backend():
-        print(f"[UMA] Michael: frozen {args.model}; no inference-mode wrapper around force evaluation",flush=True)
+        print(f"[UMA] frozen {args.model}; no inference-mode wrapper around force evaluation",flush=True)
         calculator,batch_evaluate = make_uma_calculator(args.model,args.device,reference.info.get("task_name","omat"))
         return PESBackend(reference,calculator,batch_evaluate)
     stopped = []
     def request_stop(signum, frame):
-        if not stopped: print(f"[stop] Michael: {signal.Signals(signum).name}; finishing this physics point and saving",flush=True)
+        if not stopped: print(f"[stop] {signal.Signals(signum).name}; finishing this physics point and saving",flush=True)
         stopped.append(signum)
     signals = [signal.SIGINT,signal.SIGTERM,signal.SIGUSR1]
     previous = {s:signal.signal(s,request_stop) for s in signals}

@@ -259,7 +259,7 @@ def rollout_from_step(
     if getattr(velocity_head, "source_conditioning", False):
         if source_positions is None:
             if start_step:
-                raise ValueError("Michael: a source-conditioned restart at t>0 needs the ORIGINAL x0, not x_k")
+                raise ValueError("a source-conditioned restart at t>0 needs the ORIGINAL x0, not x_k")
             source_positions = starts.detach().clone()
         source_kwargs["source_positions"] = source_positions
     path = torch.full((len(x), K + 1, 3), torch.nan, dtype=x.dtype)
@@ -287,7 +287,7 @@ def sample_points(points, reference_positions, *, sample, backbone, attention,
         _,path=rollout_from_step(full,start_step,sample=sample,backbone=backbone,
             attention=attention,velocity_head=velocity_head,device=device,K=K)
         paths.append(path.numpy())
-        print(f"[sample] Michael: {label} {min(first+batch_size,len(points))}/{len(points)}; "
+        print(f"[sample] {label} {min(first+batch_size,len(points))}/{len(points)}; "
               f"t={start_step/K:.2f}, remaining={K-start_step}; no PES guidance; "
               f"conditioning PES={conditioning_queries(velocity_head)-before}",flush=True)
     return np.concatenate(paths)

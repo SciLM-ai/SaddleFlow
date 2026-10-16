@@ -9,6 +9,7 @@
 #SBATCH -e /pscratch/sd/i/ilgar/SaddleFlow_MaterialsSaddles/logs/slurm_%j.err
 #SBATCH -A m1883_g
 #SBATCH -J saddleflow_MaterialsSaddles
+#SBATCH --no-requeue
 
 # Mode-1 product-conditional flow matching, full UMA-S-1.2 unfreeze, 4-block
 # time-FiLM, hybrid PBC-correct convergent v_target with σ=0.05 Å perturb,

@@ -1,4 +1,4 @@
-"""Michael: R0 continuation, R1 recovery FM, R2 recovery FM + detached MMF.
+"""R0 continuation, R1 recovery FM, R2 recovery FM + detached MMF.
 
 Run --stage prepare, then calibrate, then train each experiment. All students
 start from the SAME EMA initializer; only R2 queries physics during updates.
@@ -68,14 +68,14 @@ def parse_args():
         observed = np.unique(a["nearest_false_index"][(a["force_max"]>args.force_epsilon)&(a["outcome_code"]==2)])
         args.train_basins = np.setdiff1d(observed,args.train_basins).tolist()
     if not 0 < args.holdout_fraction < 1:
-        raise ValueError("Michael: holdout fraction must be between zero and one")
+        raise ValueError("holdout fraction must be between zero and one")
     if min(args.updates,args.log_every,args.audit_sources,args.calibration_batches) <= 0:
-        raise ValueError("Michael: counts must be positive")
+        raise ValueError("counts must be positive")
     if min(args.force_epsilon,args.noise_sigma,args.fd_eps,args.learning_rate,args.uma_lr,
            args.velocity_floor,args.force_floor,args.grad_clip,args.gradient_ratio) <= 0:
-        raise ValueError("Michael: scales must be positive")
+        raise ValueError("scales must be positive")
     if args.lambda_pes is not None and args.lambda_pes <= 0:
-        raise ValueError("Michael: lambda must be positive")
+        raise ValueError("lambda must be positive")
     return args
 
 
@@ -89,7 +89,7 @@ def settings(args):
 
 
 def make_backends(args, name, saddles):
-    print(f"[UMA] Michael: separate frozen {name} teacher", flush=True)
+    print(f"[UMA] separate frozen {name} teacher", flush=True)
     calculator,batch_evaluate = make_uma_calculator(name,args.device,saddles[0].info.get("task_name","omat"))
     return [PESBackend(atoms,calculator,batch_evaluate) for atoms in saddles]
 
@@ -105,12 +105,12 @@ def cache_probe_teachers(args, backends, deadband):
     if path.exists():
         data = read_npz(path)
         if json.loads(str(data["context_json"])) != context:
-            raise ValueError("Michael: recovery teacher cache belongs to different settings")
+            raise ValueError("recovery teacher cache belongs to different settings")
         if any(not np.array_equal(data[k],v) for k,v in probes.items()):
-            raise ValueError("Michael: cached recovery probes changed")
+            raise ValueError("cached recovery probes changed")
         if str(data["checksum"]) != array_hash(*[data[k] for k in payload]):
-            raise ValueError("Michael: recovery teacher checksum failed")
-        print("[audit cache] Michael: reusing frozen teachers; no repeated queries",flush=True)
+            raise ValueError("recovery teacher checksum failed")
+        print("[audit cache] reusing frozen teachers; no repeated queries",flush=True)
         return data
     force,mode,vector,eigs,score = [],[],[],[],[]
     for i,(x,parent) in enumerate(zip(probes["positions"],probes["parent"])):
@@ -122,7 +122,7 @@ def cache_probe_teachers(args, backends, deadband):
         force.append(full_f); mode.append(full_q); vector.append(teacher["vector"].cpu().numpy())
         eigs.append(teacher["eigs"]); score.append(teacher["force_rms"])
         if (i+1)%16 == 0 or i+1 == len(probes["t"]):
-            print(f"[audit teacher] Michael: {i+1}/{len(probes['t'])}",flush=True)
+            print(f"[audit teacher] {i+1}/{len(probes['t'])}",flush=True)
     data = dict(probes,force=np.asarray(force),q=np.asarray(mode),teacher=np.asarray(vector),
                 eigenvalues=np.asarray(eigs),force_rms=np.asarray(score),context_json=json.dumps(context))
     data["active"] = data["force_rms"] > deadband
@@ -135,8 +135,8 @@ def calibrate(args, model, name, dataset, recovery, saddles):
     path = Path(args.run_dir)/"calibration.json"
     if path.exists():
         if json.loads(path.read_text())["settings"] != settings(args):
-            raise ValueError("Michael: calibration settings changed")
-        print(f"[calibrate] Michael: reusing {path}",flush=True)
+            raise ValueError("calibration settings changed")
+        print(f"[calibrate] reusing {path}",flush=True)
         return
     backends = make_backends(args,name,saddles)
     deadband = max(pes.dofs.force_metrics(pes.forces(pes.dofs.pack(atoms.positions)))[0]
@@ -155,22 +155,22 @@ def calibrate(args, model, name, dataset, recovery, saddles):
         fm_norm = parameter_gradient_norm(state["fm_loss"],parameters)
         prior_norm = parameter_gradient_norm(prior,parameters,retain_graph=False)
         rows.append(dict(fm=fm_norm,prior=prior_norm,active=teacher["active"],archive_row=batch[3]["archive_row"]))
-        print(f"[calibrate] Michael: {k+1}/{args.calibration_batches}; gFM={fm_norm:.5g}, gMMF={prior_norm:.5g}",flush=True)
+        print(f"[calibrate] {k+1}/{args.calibration_batches}; gFM={fm_norm:.5g}, gMMF={prior_norm:.5g}",flush=True)
     fm_mean,prior_mean = [np.mean([r[key] for r in rows]) for key in ["fm","prior"]]
     if prior_mean <= 0 or fm_mean <= 0:
-        raise ValueError("Michael: zero calibration gradients; inspect training recovery probes")
+        raise ValueError("zero calibration gradients; inspect training recovery probes")
     weight = args.lambda_pes if args.lambda_pes is not None else args.gradient_ratio*fm_mean/prior_mean
     data = dict(settings=settings(args),lambda_pes=float(weight),teacher_deadband=deadband,
                 initial_ratio=float(weight*prior_mean/fm_mean),records=rows,
                 rule="fixed lambda from TRAIN recovery batches only; ratio of mean parameter-gradient norms")
     path.write_text(json.dumps(data,indent=2))
-    print(f"[calibrate] Michael: lambda={weight:.7g}; initial ratio={data['initial_ratio']:.5f}; deadband={deadband:.7g}",flush=True)
+    print(f"[calibrate] lambda={weight:.7g}; initial ratio={data['initial_ratio']:.5f}; deadband={deadband:.7g}",flush=True)
 
 
 def finetune(args, model, groups, source_config, name, dataset, recovery, saddles):
     calibration = json.loads((Path(args.run_dir)/"calibration.json").read_text())
     if calibration["settings"] != settings(args):
-        raise ValueError("Michael: changed initialization/split/physics settings")
+        raise ValueError("changed initialization/split/physics settings")
     weight,deadband = calibration["lambda_pes"],calibration["teacher_deadband"]
     out = Path(args.run_dir)/args.experiment
     out.mkdir(parents=True,exist_ok=True)
@@ -180,9 +180,9 @@ def finetune(args, model, groups, source_config, name, dataset, recovery, saddle
     if (out/"config.json").exists():
         old = json.loads((out/"config.json").read_text())
         if not args.resume_from:
-            raise ValueError("Michael: run exists; use --resume-from or another directory")
+            raise ValueError("run exists; use --resume-from or another directory")
         for key in ["updates","seed","learning_rate","uma_lr","warmup_steps","ema_decay","noise_sigma","grad_clip","extras","split_sha256"]:
-            if old[key] != config[key]: raise ValueError(f"Michael: resume changed {key}")
+            if old[key] != config[key]: raise ValueError(f"resume changed {key}")
     (out/"config.json").write_text(json.dumps(config,indent=2))
     backends = make_backends(args,name,saddles) if args.experiment == "R2" else None
     torch.manual_seed(args.seed)
@@ -195,7 +195,7 @@ def finetune(args, model, groups, source_config, name, dataset, recovery, saddle
     start = 0
     if args.resume_from:
         checkpoint = Path(args.resume_from)
-        if checkpoint.parent.resolve() != out.resolve(): raise ValueError("Michael: resume must belong to this experiment")
+        if checkpoint.parent.resolve() != out.resolve(): raise ValueError("resume must belong to this experiment")
         load_model(model,str(checkpoint/"model.safetensors"))
         ema.load_state_dict(torch.load(checkpoint/"ema.pt",map_location="cpu",weights_only=False))
         ema.shadow = [s.to(p) for s,p in zip(ema.shadow,parameters)]
@@ -211,7 +211,7 @@ def finetune(args, model, groups, source_config, name, dataset, recovery, saddle
     if start == 0 and not args.resume_from:
         save_checkpoint(model,optimizer,scheduler,ema,out/"checkpoint_step_00000000",0,flow_rng,select_rng)
     save_steps = {int(s) for s in args.save_steps.split(",")}
-    print(f"[train] Michael: {args.experiment}, {start}/{args.updates}; 3 original + "
+    print(f"[train] {args.experiment}, {start}/{args.updates}; 3 original + "
           f"{'1 original' if args.experiment == 'R0' else '1 recovery'}; lambda={weight:.6g}",flush=True)
     began = perf_counter()
     for update in range(start,args.updates):
@@ -236,7 +236,7 @@ def finetune(args, model, groups, source_config, name, dataset, recovery, saddle
             force_rms=teacher["force_rms"] if teacher else None)
         with (out/"training_steps.jsonl").open("a") as handle: handle.write(json.dumps(row)+"\n")
         if (update+1)%args.log_every == 0 or update == start:
-            print(f"[train] Michael: {args.experiment} {update+1}/{args.updates} FM={row['loss_fm']:.6g} "
+            print(f"[train] {args.experiment} {update+1}/{args.updates} FM={row['loss_fm']:.6g} "
                   f"MMF={row['loss_prior']:.5f} active={int(row['active'])} t={row['t']:.3f} "
                   f"row={row['recovery_row']} PES={row['teacher_calls']} elapsed={(perf_counter()-began)/60:.1f}min",flush=True)
         del state,fm,prior,loss
@@ -255,8 +255,8 @@ def main():
     if (manifest["init_weights"] != str(Path(args.init_weights).resolve())
             or manifest["train_sha256"] != file_hash(args.train_traj)
             or args.train_basins != split["train_basins"].tolist()):
-        raise ValueError("Michael: use the same initializer, training labels and fold as preparation")
-    print(f"[setup] Michael: {len(recovery)} recovery TRAIN pairs; holdout never queried during optimization",flush=True)
+        raise ValueError("use the same initializer, training labels and fold as preparation")
+    print(f"[setup] {len(recovery)} recovery TRAIN pairs; holdout never queried during optimization",flush=True)
     torch.manual_seed(args.seed)
     model,groups,config,name = build_student(args)
     if args.stage == "calibrate": calibrate(args,model,name,dataset,recovery,saddles)

@@ -10,8 +10,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_pes_directions_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_pes_directions_%j.err
+#SBATCH --no-requeue
 
-# Michael: sbatch examples/LiC/experiments/pes_and_recovery/run_pes_directions.sh
+# Sbatch examples/LiC/experiments/pes_and_recovery/run_pes_directions.sh
 # Runs calibration, matched E0/E1/E2 continuation, then unguided comparison.
 # For interrupted training, use the standalone trainer's --resume-from.
 set -euo pipefail
@@ -27,7 +28,7 @@ export PYTHONPATH="$LIC_PES_REPO${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_PES_OUT/matplotlib_cache"
-echo "[batch] Michael: job=$SLURM_JOB_ID results=$LIC_PES_OUT"
+echo "[batch] job=$SLURM_JOB_ID results=$LIC_PES_OUT"
 LIC_PES_SHARED=(--init-weights "$LIC_PES_INIT" --calibration-dir "$LIC_PES_OUT/calibration" --device cuda)
 srun --unbuffered "$LIC_PES_PYTHON" -u examples/LiC/experiments/pes_and_recovery/train_pes_directions.py "${LIC_PES_SHARED[@]}" --calibrate-only
 for LIC_PES_EXPERIMENT in E0 E1 E2; do

@@ -1,6 +1,6 @@
 # LiC physics saddle-search benchmark
 
-Michael, the separate matched 100-step **learned translation** experiment is
+The separate matched 100-step **learned translation** experiment is
 documented in [../mmf_mobility/README.md](../mmf_mobility/README.md). It compares raw MMF, learned
 global mobilities, and a state-dependent policy without changing this original
 inference-only benchmark or the existing FM trainer.
@@ -49,7 +49,7 @@ CUDA_VISIBLE_DEVICES=0 python examples/LiC/rollout_eval/compare_saddle_search.py
 
 ### Slurm batch submission
 
-Michael, use the batch launcher to run the mixed benchmark without keeping an
+Use the batch launcher to run the mixed benchmark without keeping an
 interactive session open:
 
 ```bash

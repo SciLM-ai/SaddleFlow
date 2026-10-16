@@ -10,8 +10,9 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_saddle_search_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_saddle_search_%j.err
+#SBATCH --no-requeue
 
-# Michael: submit from the repository root:
+# Submit from the repository root:
 #   sbatch examples/LiC/experiments/saddle_search/run_saddle_search.sh
 #
 # Optional extra Python arguments, for example a small execution check:

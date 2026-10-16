@@ -10,8 +10,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_recovery_mmf_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_recovery_mmf_%j.err
+#SBATCH --no-requeue
 
-# Michael: one fixed fold, matched continuations, autonomous evaluation + audit.
+# One fixed fold, matched continuations, autonomous evaluation + audit.
 # sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh
 # Complement: sbatch --export=ALL,LIC_REC_FOLD=1 examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh
 # Learnability: sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh --ablation learnability
@@ -25,26 +26,26 @@ LIC_REC_EXTRA=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ablation)
-            if [[ $# -lt 2 ]]; then echo "Michael: --ablation needs a value" >&2; exit 2; fi
+            if [[ $# -lt 2 ]]; then echo "--ablation needs a value" >&2; exit 2; fi
             LIC_REC_ABLATION="$2"; shift 2 ;;
         --ablation=*) LIC_REC_ABLATION="${1#*=}"; shift ;;
         --help|-h)
-            echo "Michael: sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh [--ablation basin-disjoint|learnability|generalization|recovery-horizon|sella-restart]"
-            echo "Michael: ablation options are forwarded to the corresponding Python script."
-            echo "Michael: learnability --mmf adds the detached MMF directional teacher to the same six-source training run."
-            echo "Michael: generalization --starts false-bridges --basins all|unseen|1,2 tests exact/noisy false bridges without training."
-            echo "Michael: add --sigmas none for exact starts only; default sigmas are .02,.05,.10 A."
-            echo "Michael: recovery-horizon --r2-ckpt PATH compares matched R1/R2 at the saved trajectory times, without training."
-            echo "Michael: sella-restart uses the original checkpoint, one endpoint kick + fresh flow, and full Sella on ALL original starts."
+            echo "Sbatch examples/LiC/experiments/pes_and_recovery/run_recovery_mmf.sh [--ablation basin-disjoint|learnability|generalization|recovery-horizon|sella-restart]"
+            echo "Ablation options are forwarded to the corresponding Python script."
+            echo "Learnability --mmf adds the detached MMF directional teacher to the same six-source training run."
+            echo "Generalization --starts false-bridges --basins all|unseen|1,2 tests exact/noisy false bridges without training."
+            echo "Add --sigmas none for exact starts only; default sigmas are .02,.05,.10 A."
+            echo "Recovery-horizon --r2-ckpt PATH compares matched R1/R2 at the saved trajectory times, without training."
+            echo "Sella-restart uses the original checkpoint, one endpoint kick + fresh flow, and full Sella on ALL original starts."
             exit 0 ;;
         *) LIC_REC_EXTRA+=("$1"); shift ;;
     esac
 done
 if [[ "$LIC_REC_ABLATION" != "basin-disjoint" && "$LIC_REC_ABLATION" != "learnability" && "$LIC_REC_ABLATION" != "generalization" && "$LIC_REC_ABLATION" != "recovery-horizon" && "$LIC_REC_ABLATION" != "sella-restart" ]]; then
-    echo "Michael: unknown ablation '$LIC_REC_ABLATION'" >&2; exit 2
+    echo "Unknown ablation '$LIC_REC_ABLATION'" >&2; exit 2
 fi
 if [[ "$LIC_REC_ABLATION" == "basin-disjoint" && ${#LIC_REC_EXTRA[@]} -gt 0 ]]; then
-    echo "Michael: extra CLI options require learnability/generalization/recovery-horizon/sella-restart; use LIC_REC_* exports for the original experiment" >&2
+    echo "Extra CLI options require learnability/generalization/recovery-horizon/sella-restart; use LIC_REC_* exports for the original experiment" >&2
     exit 2
 fi
 LIC_REC_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
@@ -65,7 +66,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_REC_OUT/matplotlib_cache"
-echo "[batch] Michael: job=$SLURM_JOB_ID ablation=$LIC_REC_ABLATION fold=$LIC_REC_FOLD output=$LIC_REC_OUT"
+echo "[batch] job=$SLURM_JOB_ID ablation=$LIC_REC_ABLATION fold=$LIC_REC_FOLD output=$LIC_REC_OUT"
 if [[ "$LIC_REC_ABLATION" == "sella-restart" ]]; then
     srun --unbuffered "$LIC_REC_PYTHON" -u examples/LiC/experiments/pes_and_recovery/sella_restart.py \
         --out-dir "$LIC_REC_OUT" --ckpt "$LIC_REC_INIT" --device cuda "${LIC_REC_EXTRA[@]}"

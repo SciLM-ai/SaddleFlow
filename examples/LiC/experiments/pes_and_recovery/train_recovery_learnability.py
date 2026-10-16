@@ -1,4 +1,4 @@
-"""Michael: deliberately fit a few seen recovery pairs, with early-time FM.
+"""Deliberately fit a few seen recovery pairs, with early-time FM.
 
 Plain recovery FM by default; --mmf adds one detached minimum-mode directional
 teacher per batch. No new mining or inference guidance. This is a learnability
@@ -8,7 +8,7 @@ control, NOT a basin-generalization benchmark. Shared training is unchanged.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -73,14 +73,14 @@ def parse_args():
     p.add_argument("--resume-from"); p.add_argument("--dry-run",action="store_true")
     args = p.parse_args()
     if min(args.num_sources,args.batch_size,args.updates,args.log_every,args.eval_batch_size) <= 0:
-        raise ValueError("Michael: counts must be positive")
+        raise ValueError("counts must be positive")
     if min(args.learning_rate,args.uma_lr,args.grad_clip,args.noise_sigma) <= 0 or args.warmup_steps < 0:
-        raise ValueError("Michael: invalid optimization scales")
+        raise ValueError("invalid optimization scales")
     if args.calibration_batches <= 0 or not all(np.isfinite(v) and v > 0 for v in
         [args.gradient_ratio,args.fd_eps,args.velocity_floor,args.force_floor]):
-        raise ValueError("Michael: invalid MMF calibration scales")
+        raise ValueError("invalid MMF calibration scales")
     if args.lambda_pes is not None and (not args.mmf or not np.isfinite(args.lambda_pes) or args.lambda_pes <= 0):
-        raise ValueError("Michael: a positive --lambda-pes requires --mmf")
+        raise ValueError("a positive --lambda-pes requires --mmf")
     return args
 
 
@@ -89,7 +89,7 @@ def select_rows(split, basin, parent, count, seed):
     rows = np.flatnonzero((split["partition"] == 0)&(split["baseline_outcome"] == 2)
                          &(split["baseline_basin"] == basin)&(split["parent"] == parent))
     if len(rows) < count:
-        raise ValueError(f"Michael: only {len(rows)} TRAIN sources for basin {basin}, parent {parent}; requested {count}")
+        raise ValueError(f"only {len(rows)} TRAIN sources for basin {basin}, parent {parent}; requested {count}")
     return np.sort(np.random.default_rng(seed).choice(rows,count,replace=False))
 
 
@@ -132,9 +132,9 @@ def prepare_mmf(args, model, name, records, saddles, inputs):
         calibration_batches=args.calibration_batches,lambda_override=args.lambda_pes,model=name)
     saved=json.loads(path.read_text()) if path.exists() else None
     if saved and (saved["settings"] != context or file_hash(cache_path) != saved["probes_sha256"]):
-        raise ValueError("Michael: MMF calibration or fixed teachers changed")
+        raise ValueError("MMF calibration or fixed teachers changed")
     if args.resume_from and saved is None:
-        raise ValueError("Michael: MMF resume requires its saved calibration")
+        raise ValueError("MMF resume requires its saved calibration")
     # UMA loading and oracle queries must not perturb student randomness.
     with torch.random.fork_rng(devices=list(range(torch.cuda.device_count()))):
         backends=make_backends(args,name,saddles)
@@ -153,12 +153,12 @@ def prepare_mmf(args, model, name, records, saddles, inputs):
                 g_mmf=parameter_gradient_norm(prior,parameters,retain_graph=False)
                 rows.append(dict(grad_fm=g_fm,grad_mmf=g_mmf,active=teacher["active"],
                     archive_row=samples[j]["archive_row"],time=float(times[j]),force_calls=teacher["force_calls"]))
-                print(f"[calibrate] Michael: MMF {k+1}/{args.calibration_batches}; "
+                print(f"[calibrate] MMF {k+1}/{args.calibration_batches}; "
                       f"gFM={g_fm:.5g} gMMF={g_mmf:.5g} active={teacher['active']}",flush=True)
                 del v,fm,prior
             fm_mean,mmf_mean=[float(np.mean([r[key] for r in rows])) for key in ["grad_fm","grad_mmf"]]
             if min(fm_mean,mmf_mean) <= 0 or not np.isfinite([fm_mean,mmf_mean]).all():
-                raise ValueError("Michael: MMF calibration has no usable gradient; inspect the mask/teachers")
+                raise ValueError("MMF calibration has no usable gradient; inspect the mask/teachers")
             weight=args.lambda_pes if args.lambda_pes is not None else args.gradient_ratio*fm_mean/mmf_mean
             # Cache teachers on the existing fixed recovery probes: diagnostics
             # can track adoption without any new PES queries during sampling.
@@ -174,9 +174,9 @@ def prepare_mmf(args, model, name, records, saddles, inputs):
             path.write_text(json.dumps(saved,indent=2))
     cache=read_npz(cache_path)
     if not np.array_equal(cache["positions"],np.asarray(inputs["positions"])) or not np.array_equal(cache["t"],inputs["t"]):
-        raise ValueError("Michael: cached MMF probe states differ")
+        raise ValueError("cached MMF probe states differ")
     inputs["teacher_vectors"],inputs["teacher_active"]=cache["vector"],cache["active"]
-    print(f"[calibrate] Michael: frozen lambda={saved['lambda_pes']:.7g}; "
+    print(f"[calibrate] frozen lambda={saved['lambda_pes']:.7g}; "
           f"initial gradient ratio={saved['initial_gradient_ratio']:.4f}; "
           f"training-saddle force deadband={saved['teacher_deadband']:.7g} eV/A",flush=True)
     return saved,backends
@@ -258,7 +258,7 @@ def write_diagnostics(out, snapshots, inputs, geometry, args, selected_rows, mmf
                     mmf_calibration_json=json.dumps(mmf))
     temporary = out/"learnability.tmp.npz"
     np.savez_compressed(temporary,**data); temporary.replace(out/"learnability.npz")
-    lines = ["Michael: " + ("recovery FM + MMF learnability control" if mmf else "recovery FM learnability control"), "="*115,
+    lines = ["" + ("recovery FM + MMF learnability control" if mmf else "recovery FM learnability control"), "="*115,
         f"Seen TRAIN sources only: basin={args.basin}, parent={args.parent}, archive rows={selected_rows.tolist()}.",
         (f"Recovery-only FM + detached MMF direction on one example/batch; lambda={mmf['lambda_pes']:.7g}. "
          "No endpoint force loss or inference guidance." if mmf else
@@ -288,7 +288,7 @@ def write_diagnostics(out, snapshots, inputs, geometry, args, selected_rows, mmf
         display += ["", "Latest fixed-probe MMF adoption: step / weights / active / mean cosine / median cosine"]+lines[-2:]
     report="\n".join(lines)+"\n"; (out/"report.txt").write_text(report)
     print("\n".join(display),flush=True)
-    print(f"[save] Michael: {out/'learnability.npz'} and {out/'report.txt'}",flush=True)
+    print(f"[save] {out/'learnability.npz'} and {out/'report.txt'}",flush=True)
 
 
 def train_control(args, model, groups, cfg, records, inputs, geometry, selected_rows, mmf=None, backends=None):
@@ -305,10 +305,10 @@ def train_control(args, model, groups, cfg, records, inputs, geometry, selected_
     if mmf: config["mmf_calibration_sha256"]=file_hash(out/"mmf_calibration.json")
     if (out/"config.json").exists():
         old=json.loads((out/"config.json").read_text())
-        if not args.resume_from: raise ValueError("Michael: run exists; resume or use a new directory")
+        if not args.resume_from: raise ValueError("run exists; resume or use a new directory")
         if {k:v for k,v in old.items() if k not in ["resume_from","dry_run"]} != {
             k:v for k,v in config.items() if k not in ["resume_from","dry_run"]}:
-            raise ValueError("Michael: resume changed learnability settings")
+            raise ValueError("resume changed learnability settings")
     (out/"config.json").write_text(json.dumps(config,indent=2))
     torch.manual_seed(args.seed)
     parameters=[p for p in model.parameters() if p.requires_grad]
@@ -321,7 +321,7 @@ def train_control(args, model, groups, cfg, records, inputs, geometry, selected_
     snapshots=[]; start=0
     if args.resume_from:
         checkpoint=Path(args.resume_from)
-        if checkpoint.parent.resolve()!=out.resolve(): raise ValueError("Michael: resume must belong to this run")
+        if checkpoint.parent.resolve()!=out.resolve(): raise ValueError("resume must belong to this run")
         load_model(model,str(checkpoint/"model.safetensors"))
         ema.load_state_dict(torch.load(checkpoint/"ema.pt",map_location="cpu",weights_only=False))
         ema.shadow=[s.to(p) for s,p in zip(ema.shadow,parameters)]
@@ -373,7 +373,7 @@ def train_control(args, model, groups, cfg, records, inputs, geometry, selected_
                 teacher_cosine=alignment(v[j][free].detach().cpu().numpy(),teacher["vector"][free].cpu().numpy()))
         with (out/"training_steps.jsonl").open("a") as f: f.write(json.dumps(row)+"\n")
         if update==start or (update+1)%args.log_every==0:
-            print(f"[train] Michael: learnability {update+1}/{args.updates} FM={row['loss_fm']:.6g} "
+            print(f"[train] learnability {update+1}/{args.updates} FM={row['loss_fm']:.6g} "
                   f"t0={int((times==0).sum())}/{len(times)} early={int((times<.25).sum())}/{len(times)} "
                   f"MMF={row['loss_mmf']:.5g} total={row['loss_total']:.6g} "
                   f"PES={row['teacher_calls']} elapsed={(perf_counter()-began)/60:.1f}min",flush=True)
@@ -390,36 +390,36 @@ def main():
     split,_=load_split(args.source_run,dataset)
     manifest=json.loads((Path(args.source_run)/"split.json").read_text())["settings"]
     if Path(args.init_weights).resolve()!=Path(manifest["init_weights"]).resolve():
-        raise ValueError("Michael: use the original EMA initializer, not the failed continuation")
+        raise ValueError("use the original EMA initializer, not the failed continuation")
     rows=select_rows(split,args.basin,args.parent,args.num_sources,args.seed)
     records=[recovery_record(split,int(row),dataset) for row in rows]
     _,geometry=load_geometry(args.train_traj,args.test_traj)
     for key in ["cell","train_saddles","test_saddles","false_bridges"]:
-        if not np.allclose(split[key],geometry[key]): raise ValueError(f"Michael: source split differs in {key}")
+        if not np.allclose(split[key],geometry[key]): raise ValueError(f"source split differs in {key}")
     inputs=fixed_inputs(records,geometry,args.seed,args.noise_sigma)
-    print(f"[setup] Michael: {len(rows)} seen TRAIN sources; basin={args.basin}, parent={args.parent}; rows={rows.tolist()}",flush=True)
-    print(f"[setup] Michael: {args.updates} updates; recovery-only batches; head LR={args.learning_rate:g}, "
+    print(f"[setup] {len(rows)} seen TRAIN sources; basin={args.basin}, parent={args.parent}; rows={rows.tolist()}",flush=True)
+    print(f"[setup] {args.updates} updates; recovery-only batches; head LR={args.learning_rate:g}, "
           f"backbone LR={args.uma_lr:g}; {args.lr_schedule} after warmup; "
           + ("R2: one detached MMF teacher/batch" if args.mmf else "R1: no physics teacher"),flush=True)
     if args.dry_run: return
     if file_hash(Path(args.init_weights)/"ema.pt")!=manifest["init_ema_sha256"]:
-        raise ValueError("Michael: original initializer EMA changed")
+        raise ValueError("original initializer EMA changed")
     out=Path(args.run_dir); out.mkdir(parents=True,exist_ok=True)
     if (out/"config.json").exists():
         old=json.loads((out/"config.json").read_text())
         if not args.resume_from or bool(old.get("mmf",False)) != args.mmf:
-            raise ValueError("Michael: use a new run directory, or resume the same FM/MMF experiment")
+            raise ValueError("use a new run directory, or resume the same FM/MMF experiment")
     selection=dict(rows=rows,source_split_sha256=file_hash(Path(args.source_run)/"split.npz"),
                    init_ema_sha256=manifest["init_ema_sha256"])
     if (out/"selection.npz").exists():
         old=read_npz(out/"selection.npz")
-        if any(not np.array_equal(old[k],v) for k,v in selection.items()): raise ValueError("Michael: selection changed")
+        if any(not np.array_equal(old[k],v) for k,v in selection.items()): raise ValueError("selection changed")
     else: np.savez_compressed(out/"selection.npz",**selection)
     torch.manual_seed(args.seed); model,groups,cfg,name=build_student(args)
     mmf,backends=prepare_mmf(args,model,name,records,saddles,inputs) if args.mmf else (None,None)
     train_control(args,model,groups,cfg,records,inputs,geometry,rows,mmf,backends)
     for trajectory in dataset._traj_cache.values(): trajectory.close()
-    print(f"[done] Michael: CPU replot: python examples/LiC/experiments/pes_and_recovery/plot_recovery_learnability.py {out/'learnability.npz'}",flush=True)
+    print(f"[done] CPU replot: python examples/LiC/experiments/pes_and_recovery/plot_recovery_learnability.py {out/'learnability.npz'}",flush=True)
 
 
 if __name__=="__main__": main()

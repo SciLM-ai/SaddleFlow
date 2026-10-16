@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC.
+# This script imports LiC modules from examples/LiC.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC)]
 

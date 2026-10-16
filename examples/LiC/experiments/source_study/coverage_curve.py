@@ -1,4 +1,4 @@
-"""Michael: catalog-connected coverage as a function of starts per minimum.
+"""Catalog-connected coverage as a function of starts per minimum.
 
 Reads one or more ``source_study.npz`` archives written by
 ``source_study.py compare --populations connected``.  For each requested
@@ -36,7 +36,7 @@ def load(path, method):
     config = json.loads(str(data["config_json"]))
     use = (data["method"] == method) & (data["source_population"][data["source_index"]] == "connected")
     if not use.any():
-        raise ValueError(f"Michael: no connected starts for {method} in {path}")
+        raise ValueError(f"no connected starts for {method} in {path}")
     rows = data["source_index"][use]
     minimum = data["source_minimum_index"][rows]
     # Starts are stored in generation order (minimum by minimum, draw by draw),
@@ -82,7 +82,7 @@ def main():
     draws = sorted(map(int, args.draws.split(",")))
     runs = [load(path, args.method) for path in args.archives]
     out = Path(args.out_dir or Path(args.archives[0]).parent); out.mkdir(parents=True, exist_ok=True)
-    lines = [f"Michael: connected-saddle coverage vs starts per minimum ({args.method}, EMA)", "="*112,
+    lines = [f"connected-saddle coverage vs starts per minimum ({args.method}, EMA)", "="*112,
              "First k starts of each minimum (nested subsets of one run). Connectivity = stored R/S/P catalog adjacency.",
              "uniform% = expected coverage if each start hit a random connected saddle at the observed connected-hit rate.", "",
              "sigma(A)     k      N  minima  coverage%  uniform%  reached/total  connected_hit%  true%  false%  phys%",
@@ -120,7 +120,7 @@ def main():
                title=f"{args.method}: catalog-connected coverage")
         ax.grid(alpha=.3); ax.legend(fontsize=7)
         fig.tight_layout(); fig.savefig(out/"coverage_curve.pdf"); plt.close(fig)
-        print(f"[plot] Michael: {out/'coverage_curve.pdf'}")
+        print(f"[plot] {out/'coverage_curve.pdf'}")
 
 
 if __name__ == "__main__":

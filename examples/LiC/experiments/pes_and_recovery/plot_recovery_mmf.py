@@ -1,9 +1,9 @@
-"""Michael: replot recovery comparisons without any model or UMA calls."""
+"""Replot recovery comparisons without any model or UMA calls."""
 
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -46,13 +46,13 @@ def render_pdf(path, output=None):
             ax.set_xticks(np.arange(len(names))+.4-width/2,[s.replace("_","\n") for s in names],fontsize=8)
             ax.set_title(key+" (%)"); ax.set_ylim(0,105); ax.grid(axis="y",alpha=.2)
         axes[0].legend(fontsize=8)
-        fig.suptitle("Michael: endpoint-basin-disjoint recovery, autonomous 20-step sampling")
+        fig.suptitle("endpoint-basin-disjoint recovery, autonomous 20-step sampling")
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
         for group,use_sources in groups.items():
             if not use_sources.any(): continue
             use = use_sources[data["source_index"]]
             trajectory_page(pdf,data,methods,use,group,show_starts=False,path_limit=150)
-    print(f"[plot] Michael: saved {output}",flush=True)
+    print(f"[plot] saved {output}",flush=True)
 
 
 if __name__ == "__main__":

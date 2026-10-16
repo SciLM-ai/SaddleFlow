@@ -1,4 +1,4 @@
-# Michael: 12/48 saddles x initial-source memory
+# 12/48 saddles x initial-source memory
 
 Four plain-FM runs: `n12_uncond`, `n12_source`, `n48_uncond`, `n48_source`.
 No force/curvature/MMF inputs, losses, recovery pairs, or online PES guidance.
@@ -6,7 +6,7 @@ The student still runs its normal trainable UMA-derived neural backbone.
 
 ## Prepare and train
 
-Michael: from the repository root in the saddleflow environment:
+From the repository root in the saddleflow environment:
 
 ```bash
 python examples/LiC/experiments/source_study/source_study.py prepare
@@ -82,7 +82,7 @@ x0; it cannot reset source memory to x_k. Standard study shells start at t=0.
 
 ## Shared inference
 
-Michael: after the four runs finish:
+After the four runs finish:
 
 ```bash
 sbatch examples/LiC/experiments/source_study/run_source_study_inference.sh
@@ -115,7 +115,7 @@ and `source_study.pdf`. Numerical/report snapshots are saved after each batch;
 incomplete methods have smaller N and must not be pooled as complete results.
 The PDF shows outcomes and the same sampled trajectories for each model.
 
-Michael: midpoint and quick inference options:
+Midpoint and quick inference options:
 
 ```bash
 # Same optimizer checkpoint for ALL arms; never silently pick unequal "latest".
@@ -141,7 +141,7 @@ python examples/LiC/experiments/source_study/source_study.py --plot-only \
 
 ## Coverage vs starts per minimum
 
-Michael: does the plain model eventually reach every catalog-connected saddle
+Does the plain model eventually reach every catalog-connected saddle
 of a minimum if given enough noisy starts? Two inference-only runs of
 `n12_uncond`, 128 starts per minimum, at the default noise and at twice it:
 

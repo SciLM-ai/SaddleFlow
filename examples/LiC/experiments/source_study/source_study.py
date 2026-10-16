@@ -1,4 +1,4 @@
-"""Michael: nested 12/48-saddle source-memory study; no PES-guided sampling.
+"""Nested 12/48-saddle source-memory study; no PES-guided sampling.
 
 prepare: freeze the split once. compare: evaluate matched EMA checkpoints.
 All teacher/parent information is evaluation metadata, never a student input.
@@ -7,7 +7,7 @@ All teacher/parent information is evaluation metadata, never a student input.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -35,7 +35,7 @@ def load_split(directory):
     manifest = json.loads((directory/"split.json").read_text())
     for name, checksum in manifest["files"].items():
         if file_hash(directory/name) != checksum:
-            raise ValueError(f"Michael: source-study split file changed: {name}")
+            raise ValueError(f"source-study split file changed: {name}")
     return manifest, read_npz(directory/"split.npz")
 
 
@@ -45,12 +45,12 @@ def prepare(args):
     if (directory/"split.json").exists():
         manifest, _ = load_split(directory)
         if manifest["seed"] != args.split_seed or manifest["inputs"] != inputs:
-            raise ValueError("Michael: split already exists with different seed/data; use a new study directory")
-        print(f"[split] Michael: reusing immutable split {directory}")
+            raise ValueError("split already exists with different seed/data; use a new study directory")
+        print(f"[split] reusing immutable split {directory}")
         return
     train, test = read(args.train_traj, index=":"), read(args.test_traj, index=":")
     if len(train) != 36 or len(test) != 501:
-        raise ValueError("Michael: this study expects the original 12 train + 167 test triplets")
+        raise ValueError("this study expects the original 12 train + 167 test triplets")
     frames = train+test
     extra = np.sort(np.random.default_rng(args.split_seed).choice(np.arange(12, 179), 36, replace=False))
     small = np.arange(12); large = np.r_[small, extra]
@@ -67,7 +67,7 @@ def prepare(args):
                     extra36=extra.tolist(), heldout131=heldout.tolist(),
                     files={name: file_hash(directory/name) for name in names})
     (directory/"split.json").write_text(json.dumps(manifest, indent=2)+"\n")
-    print(f"[split] Michael: {directory}: original 12, nested 48, fixed held-out 131; seed={args.split_seed}")
+    print(f"[split] {directory}: original 12, nested 48, fixed held-out 131; seed={args.split_seed}")
 
 
 def parse_args():
@@ -146,7 +146,7 @@ def evaluation_sources(args, geometry, split):
     use = np.arange(len(points))
     if args.populations != "all":
         wanted = set(args.populations.split(","))
-        if not wanted <= set(groups): raise ValueError(f"Michael: unknown/empty populations {wanted-set(groups)}")
+        if not wanted <= set(groups): raise ValueError(f"unknown/empty populations {wanted-set(groups)}")
         use = use[np.isin(sources["population"], list(wanted))]
     if args.limit_starts:
         use = np.sort(rng.choice(use, min(args.limit_starts, len(use)), replace=False))
@@ -155,7 +155,7 @@ def evaluation_sources(args, geometry, split):
 
 def report(data):
     config = json.loads(str(data["config_json"]))
-    lines = ["Michael: 12/48-saddle x source-memory study (EMA)", "="*125,
+    lines = ["12/48-saddle x source-memory study (EMA)", "="*125,
         f"Checkpoint={config['checkpoint']}; equal update={config['checkpoint_update']}; K={config['K']}; split seed={config['split_seed']}",
         "Original 12 nested in 48; fixed holdout=131. Extra36 are NOT common held-out saddles.",
         "Identical evaluation starts; source-conditioned students retain actual x0, never the target/noise vector.",
@@ -243,9 +243,9 @@ def compare(args):
     root = Path(args.study_dir).resolve(); manifest, split = load_split(root/"split")
     methods = args.models.split(",")
     if not methods or len(set(methods)) != len(methods) or not set(methods) <= set(METHODS):
-        raise ValueError("Michael: select n12_uncond,n12_source,n48_uncond,n48_source")
+        raise ValueError("select n12_uncond,n12_source,n48_uncond,n48_source")
     if args.K < 1 or args.batch_size < 1 or args.samples_per_site < 1 or args.coverage_draws < 0:
-        raise ValueError("Michael: invalid sampling counts")
+        raise ValueError("invalid sampling counts")
     configs = [json.loads((root/m/"config.json").read_text()) for m in methods]
     shared = ["batch_size", "learning_rate", "weight_decay", "warmup_steps", "min_lr_ratio", "grad_clip_norm", "ema_decay", "mixed_precision", "seed", "max_steps", "init_weights", "num_workers"]
     architecture = ["backbone", "head_depth", "attn_layers", "attn_heads", "unfreeze_uma_all", "early_time_film", "early_time_film_blocks", "uma_lr", "ts_denoise_sigma", "source_channels"]
@@ -254,22 +254,22 @@ def compare(args):
     for method, config in zip(methods, configs):
         ex = config["extras"]
         if ex.get("study_split_sha256") != file_hash(root/"split/split.json"):
-            raise ValueError("Michael: checkpoint uses a different split")
+            raise ValueError("checkpoint uses a different split")
         if ex["source_conditioning"] != method.endswith("source") or ex["train_saddle_count"] != int(method[1:3]):
-            raise ValueError("Michael: model directory does not match its study arm")
+            raise ValueError("model directory does not match its study arm")
         if any(config[k] != configs[0][k] for k in shared) or any(ex[k] != configs[0]["extras"][k] for k in architecture):
-            raise ValueError("Michael: model settings/budgets are not matched")
+            raise ValueError("model settings/budgets are not matched")
         if ex.get("inject_force") or ex.get("curvature_conditioning") or ex.get("force_constraint_enabled"):
-            raise ValueError("Michael: this study requires plain FM and no oracle inputs")
+            raise ValueError("this study requires plain FM and no oracle inputs")
         checkpoint = root/method/args.checkpoint
         updates.append(json.loads((checkpoint/"meta.json").read_text())["global_step"])
         args.checkpoints[method] = str(checkpoint)
-    if len(set(updates)) != 1: raise ValueError("Michael: compare checkpoints at identical optimizer updates")
+    if len(set(updates)) != 1: raise ValueError("compare checkpoints at identical optimizer updates")
     args.checkpoint_update = updates[0]; args.split_seed = manifest["seed"]
     args.train_traj = str(root/"split/train12.traj"); args.test_traj = str(root/"split/catalog_rest.traj")
     reference, geometry = load_geometry(args.train_traj, args.test_traj)
     sources, minima, edges = evaluation_sources(args, geometry, split)
-    if not len(sources["starts"]): raise ValueError("Michael: no evaluation starts selected")
+    if not len(sources["starts"]): raise ValueError("no evaluation starts selected")
     args.model = configs[0]["extras"]["backbone"]; args.mode_backend = "dense"
     args.out_dir = args.out_dir or str(root/f"comparison_{args.checkpoint}")
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
@@ -278,7 +278,7 @@ def compare(args):
     calculator, batch = (None, None) if args.geometry_only else make_uma_calculator(args.model, args.device, "omat")
     results = []; probes = []; probe_methods = []
     probe_times = np.asarray(list(map(float, args.probe_times.split(","))))
-    if np.any((probe_times < 0) | (probe_times >= 1)): raise ValueError("Michael: probe times must be in [0,1)")
+    if np.any((probe_times < 0) | (probe_times >= 1)): raise ValueError("probe times must be in [0,1)")
     all_saddles = np.vstack([geometry["train_saddles"], geometry["test_saddles"]])
     def save():
         temporary = out/"source_study.partial.npz"
@@ -319,7 +319,7 @@ def compare(args):
         _, text = save()
     print(text, flush=True)
     if not args.no_plot: plot(archive)
-    print(f"[done] Michael: CPU replot: python examples/LiC/experiments/source_study/source_study.py --plot-only {archive}", flush=True)
+    print(f"[done] CPU replot: python examples/LiC/experiments/source_study/source_study.py --plot-only {archive}", flush=True)
 
 
 def plot(path):
@@ -356,7 +356,7 @@ def plot(path):
             ax.set_title(method); ax.set_aspect("equal"); ax.legend(fontsize=7)
         for ax in axes.flat[len(methods):]: ax.set_visible(False)
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: {Path(path).with_suffix('.pdf')}")
+    print(f"[plot] {Path(path).with_suffix('.pdf')}")
 
 
 def main():

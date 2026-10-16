@@ -168,7 +168,7 @@ class VelocityHead(nn.Module):
         self.source_channels = int(source_channels)
         self.source_conditioning = bool(source_conditioning)
         if self.source_channels < 0 or (self.source_conditioning and not self.source_channels):
-            raise ValueError("Michael: source conditioning requires positive source_channels")
+            raise ValueError("source conditioning requires positive source_channels")
         # v7-5: when the caller passes a multi-layer concat of trainable-UMA
         # block outputs (X_T features), `x_input_channel_factor` says how many
         # blocks were stacked. Head then projects (N, num_sph, factor*C)
@@ -483,15 +483,15 @@ class VelocityHead(nn.Module):
         if self.source_channels:
             if self.source_conditioning:
                 if source_delta is None or source_delta.shape != (len(x), 3):
-                    raise ValueError("Michael: source-conditioned velocity requires MIC(x0-x_t), shape (N,3)")
+                    raise ValueError("source-conditioned velocity requires MIC(x0-x_t), shape (N,3)")
                 source_delta = source_delta.to(x)
             else:
                 if source_delta is not None:
-                    raise ValueError("Michael: unconditioned source-study arm must not receive source data")
+                    raise ValueError("unconditioned source-study arm must not receive source data")
                 source_delta = x.new_zeros(len(x), 3)
             x = self._inject_vector(x, source_delta, self.source_proj, self.source_fuse)
         elif source_delta is not None:
-            raise ValueError("Michael: source_delta supplied without a source-input branch")
+            raise ValueError("source_delta supplied without a source-input branch")
 
         x_l01 = get_l_component_range(x, l_min=0, l_max=1)  # (N, 4, C)
 

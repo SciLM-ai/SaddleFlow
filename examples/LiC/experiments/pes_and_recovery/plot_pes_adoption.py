@@ -1,4 +1,4 @@
-"""Michael: fixed-probe teacher-adoption plots from an existing NPZ only."""
+"""Fixed-probe teacher-adoption plots from an existing NPZ only."""
 
 import argparse
 from pathlib import Path
@@ -31,7 +31,7 @@ def render_pdf(path, output=None):
             axes[1,i].set_ylabel("Teacher adoption (delta cosine)")
             for ax in axes[:,i]: ax.axhline(0,color="black",lw=.8); ax.grid(alpha=.2)
         fig.colorbar(scatter,ax=axes.ravel().tolist(),label="Flow time t",fraction=.025,pad=.025)
-        fig.suptitle(f"Michael: fixed probes, cached MMF teacher; {second} versus {first}\nPositive delta cosine is better teacher alignment")
+        fig.suptitle(f"fixed probes, cached MMF teacher; {second} versus {first}\nPositive delta cosine is better teacher alignment")
         fig.subplots_adjust(top=.9,hspace=.3,wspace=.25,right=.86)
         pdf.savefig(fig); plt.close(fig)
         fig,axes = plt.subplots(1,2,figsize=(12,5))
@@ -54,7 +54,7 @@ def render_pdf(path, output=None):
             ax.grid(alpha=.2); ax.legend()
         fig.suptitle("Teacher disagreement versus adoption and supervised tradeoff\nPer-bin counts and parent/time breakdowns are in report.txt")
         fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
-    print(f"[plot] Michael: saved {output}",flush=True)
+    print(f"[plot] saved {output}",flush=True)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Michael: plot the cached kappa audit. No UMA, GPU, or rollout is needed."""
+"""Plot the cached kappa audit. No UMA, GPU, or rollout is needed."""
 
 import argparse
 import json
@@ -142,15 +142,15 @@ def render_pdf(path, output=None, path_limit=30):
         axes[1].set_xticks(np.arange(len(groups)),[f"{c}\n{m}" for c,m in groups],fontsize=8)
         axes[1].set_ylabel("Any-warning false-positive rate on observable certified true paths (%)")
         axes[1].set_ylim(0,105)
-        fig.suptitle("Michael: candidate kappa warning, NOT a failure label\n"+coverage+
+        fig.suptitle("candidate kappa warning, NOT a failure label\n"+coverage+
                      "\nRead report.txt for complete lead denominators, missing warnings and masked coverage")
         fig.tight_layout(rect=(0,0,1,.86)); pdf.savefig(fig); plt.close(fig)
         for collection,method in groups:
             use = (data["collection"] == collection)&(data["method"] == method)
-            title = f"Michael: {collection} / {method}"+(f" — {coverage}" if partial else "")
+            title = f"{collection} / {method}"+(f" — {coverage}" if partial else "")
             history_page(pdf,data,use,title,path_limit)
             map_page(pdf,data,use,title,path_limit)
-    print(f"[plot] Michael: saved {output}",flush=True)
+    print(f"[plot] saved {output}",flush=True)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ it takes 0 steps and moves 0.0000 A.
 
 Input is an ASE trajectory of candidate geometries (see dump_predictions.py), each
 frame carrying `info['tid']` and `info['src']`. Output is JSON, one record per frame:
-converged flag, final fmax, force calls, rmsd/maxd moved, and the final positions.
+converged flag, final fmax, force calls, rmsd/maxd moved, and the final positions, plus
+`fmax_start`, the force at the candidate before Sella moves it (one extra call, not in `nfc`).
 With --check-index it also returns the lowest `nev` Hessian eigenvalues by
 finite-difference Lanczos, so the result can be filtered to genuine index-1 saddles.
 
@@ -54,6 +55,9 @@ def parse_args():
                         "first-order saddle. Adds ~2 force calls per Lanczos matvec.")
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--nshards", type=int, default=1)
+    p.add_argument("--skip-done", nargs="*", default=[],
+                   help="Output JSONs of an earlier run; frames whose tid they already hold are skipped "
+                        "before sharding (finishes a run that hit its time limit).")
     return p.parse_args()
 
 
@@ -81,7 +85,9 @@ def main():
     args = parse_args()
     predict_unit = pretrained_mlip.get_predict_unit(args.model, device="cuda")
 
-    frames = list(Trajectory(args.src))[args.shard::args.nshards]
+    done = {r["tid"] for path in args.skip_done for r in json.load(open(path))}
+    frames = [f for f in Trajectory(args.src) if int(f.info.get("tid", -1)) not in done]
+    frames = frames[args.shard::args.nshards]
     rows = []
     for i, frame in enumerate(frames):
         # ASE copy preserves FixAtoms, actual PBC and charge/spin metadata.
@@ -89,8 +95,14 @@ def main():
         calculator = FAIRChemCalculator(predict_unit, task_name=args.task_name)
         pes = PESBackend(atoms, calculator)
         x_start = atoms.positions.copy()
-        record = {"tid": int(frame.info.get("tid", -1)), "src": str(frame.info.get("src", "?"))}
+        record = {"tid": int(frame.info.get("tid", -1)), "src": str(frame.info.get("src", "?")),
+                  "fmax_start": float("nan")}
         try:
+            # The force AT the candidate, before Sella moves it -- what a one-call filter
+            # would see. A separate calculator keeps this call out of the search's nfc count.
+            start = atoms.copy()
+            start.calc = FAIRChemCalculator(predict_unit, task_name=args.task_name)
+            record["fmax_start"] = float(np.linalg.norm(start.get_forces(), axis=1).max())
             result = run_sella(pes, pes.dofs.pack(x_start), fmax_tol=args.fmax,
                                max_steps=args.steps, max_force_calls=1_000_000, delta0=args.delta0)
             # Verification is distinct from search cost, and uses FREE forces.

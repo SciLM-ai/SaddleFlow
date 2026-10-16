@@ -476,7 +476,7 @@ def train(
                 message = (f"[train] ep {epoch:4d} step {global_step:7d} mode {mode} "
                            f"loss {loss_val:.4f}  lr {lr:.2e}  n_mobile {out['n_mobile']}")
                 if "conditioning_queries" in out:
-                    message += f"  Michael: conditioning PES={out['conditioning_queries']}"
+                    message += f"  conditioning PES={out['conditioning_queries']}"
                     if "conditioning_curvature_mean" in out:
                         values = out["conditioning_curvature_mean"].cpu().tolist()
                         message += f"  mean lambda1/lambda2/gap={','.join(f'{v:.4f}' for v in values)}"

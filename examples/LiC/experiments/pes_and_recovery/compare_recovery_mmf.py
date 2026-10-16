@@ -1,4 +1,4 @@
-"""Michael: evaluate basin-disjoint R0/R1/R2, with autonomous SaddleFlow only.
+"""Evaluate basin-disjoint R0/R1/R2, with autonomous SaddleFlow only.
 
 All source sets and checkpoints are fixed before evaluation. UMA is used only
 AFTER sampling for force/index certification. Results precede PDF generation.
@@ -7,7 +7,7 @@ AFTER sampling for force/index certification. Results precede PDF generation.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parents[2]  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -42,21 +42,21 @@ def check_matching(root):
     configs = [json.loads((root/e/"config.json").read_text()) for e in ["R0","R1","R2"]]
     keys = ["init_weights","updates","learning_rate","uma_lr","warmup_steps","ema_decay","noise_sigma","seed","split_sha256"]
     for c in configs[1:]:
-        if any(c[key] != configs[0][key] for key in keys): raise ValueError("Michael: R0/R1/R2 settings differ")
-        if c["extras"]["lambda_pes"] != configs[0]["extras"]["lambda_pes"]: raise ValueError("Michael: calibration differs")
+        if any(c[key] != configs[0][key] for key in keys): raise ValueError("R0/R1/R2 settings differ")
+        if c["extras"]["lambda_pes"] != configs[0]["extras"]["lambda_pes"]: raise ValueError("calibration differs")
     logs = [[json.loads(s) for s in (root/e/"training_steps.jsonl").read_text().splitlines()] for e in ["R0","R1","R2"]]
     if any([r["update"] for r in rows] != list(range(1,configs[0]["updates"]+1)) for rows in logs):
-        raise ValueError("Michael: not all matched continuation updates have completed")
+        raise ValueError("not all matched continuation updates have completed")
     for rows in logs[1:]:
         if [r["original_sha256"] for r in rows] != [r["original_sha256"] for r in logs[0]]:
-            raise ValueError("Michael: original-data streams differ")
+            raise ValueError("original-data streams differ")
     if [(r["batch_sha256"],r["recovery_row"]) for r in logs[1]] != [(r["batch_sha256"],r["recovery_row"]) for r in logs[2]]:
-        raise ValueError("Michael: R1/R2 recovery bridges differ")
+        raise ValueError("R1/R2 recovery bridges differ")
     allowed = np.flatnonzero(read_npz(root/"split.npz")["partition"] == 0)
     if not np.isin([r["recovery_row"] for r in logs[1]],allowed).all():
-        raise ValueError("Michael: recovery logs contain non-training rows")
+        raise ValueError("recovery logs contain non-training rows")
     if any(r["teacher_calls"] != 0 for rows in logs[:2] for r in rows):
-        raise ValueError("Michael: R0/R1 should never query a teacher during updates")
+        raise ValueError("R0/R1 should never query a teacher during updates")
     return configs
 
 
@@ -83,7 +83,7 @@ def shared_sources(split, geometry, seed, sigma, fresh_archive=None):
     if fresh_archive:
         a = read_npz(fresh_archive)
         if np.any(a["start_step"] != 0) or not np.allclose(a["cell"],geometry["cell"]):
-            raise ValueError("Michael: fresh shell archive must use matching cell and t=0")
+            raise ValueError("fresh shell archive must use matching cell and t=0")
         for i,x in enumerate(a["starts"]): append(x,"fresh_shell",int(a["parent_index"][i]),r=float(a["radius"][i]))
     return dict(starts=np.asarray(starts),population=np.asarray(population),parent=np.asarray(parent),radius=np.asarray(radius),
                 partition=np.asarray(partition),archive_row=np.asarray(archive_row),baseline_basin=np.asarray(basin))
@@ -109,7 +109,7 @@ def report_groups(data):
 
 def make_report(data):
     config = json.loads(str(data["config_json"]))
-    lines = ["Michael: basin-disjoint recovery FM with/without MMF", "="*110,
+    lines = ["basin-disjoint recovery FM with/without MMF", "="*110,
         f"Train basins={data['train_basins'].tolist()}; withheld basins={data['holdout_basins'].tolist()} (zero-based catalog IDs)",
         "R0: original-only continuation; R1: 3 original + 1 recovery; R2: same pairs + detached recovery MMF.",
         "Reference is the untouched EMA initializer. All methods use identical autonomous 20-step Euler starts.",
@@ -135,7 +135,7 @@ def make_report(data):
         m2 = m1.replace("R1_","R2_",1)
         if m2 not in methods: continue
         i1,i2 = np.flatnonzero(data["method"] == m1),np.flatnonzero(data["method"] == m2)
-        if not np.array_equal(data["source_index"][i1],data["source_index"][i2]): raise ValueError("Michael: unpaired evaluation sources")
+        if not np.array_equal(data["source_index"][i1],data["source_index"][i2]): raise ValueError("unpaired evaluation sources")
         for group in ["heldout_high_force","withheld_false_basins"]:
             use = groups[group][data["source_index"][i1]]
             y1,y2 = data["outcome"][i1][use] == 0,data["outcome"][i2][use] == 0
@@ -164,14 +164,14 @@ def main():
     configs = check_matching(root); split = read_npz(root/"split.npz")
     manifest = json.loads((root/"split.json").read_text())
     if file_hash(root/"split.npz") != manifest["split_sha256"] or configs[0]["split_sha256"] != manifest["split_sha256"]:
-        raise ValueError("Michael: evaluation split differs from training")
+        raise ValueError("evaluation split differs from training")
     reference,geometry = load_geometry(configs[0]["train_traj"],args.test_traj)
     for key in ["cell","train_saddles","test_saddles","false_bridges"]:
-        if not np.allclose(split[key],geometry[key]): raise ValueError(f"Michael: evaluation geometry differs in {key}")
+        if not np.allclose(split[key],geometry[key]): raise ValueError(f"evaluation geometry differs in {key}")
     sources = shared_sources(split,geometry,configs[0]["seed"],configs[0]["noise_sigma"],args.fresh_shell_archive)
     args.force_epsilon = manifest["settings"]["force_epsilon"]
     if args.fresh_shell_archive and file_hash(args.fresh_shell_archive) == manifest["settings"]["shell_sha256"]:
-        raise ValueError("Michael: the mining archive cannot also be called fresh evaluation data")
+        raise ValueError("the mining archive cannot also be called fresh evaluation data")
     args.K,args.max_steps,args.step_budgets,args.restarts = 20,20,"20",1
     args.model,args.fd_eps = configs[0]["extras"]["backbone"],configs[0]["fd_eps"]
     args.checkpoints = {}
@@ -192,7 +192,7 @@ def main():
             _,path = rollout_from_step(x,0,sample=sample,backbone=backbone,attention=attention,
                 velocity_head=head,device=args.device,K=20)
             paths.extend(path.numpy()); elapsed.extend([(perf_counter()-began)/len(points)]*len(points))
-            print(f"[sample] Michael: {method} {len(paths)}/{len(sources['starts'])}; no PES guidance",flush=True)
+            print(f"[sample] {method} {len(paths)}/{len(sources['starts'])}; no PES guidance",flush=True)
         del backbone,attention,head
         if torch.cuda.is_available(): torch.cuda.empty_cache()
         for i,path in enumerate(paths):
@@ -204,7 +204,7 @@ def main():
                 status="fixed_K",error="",steps=20,force_calls=0,wall_seconds=elapsed[i],model_forward_calls=20,
                 diagnostic_seconds=perf_counter()-began,diagnostic_force_calls=evaluation["diagnostic_force_calls"],
                 evaluation=evaluation,budget_results=[dict(x=path[-1],**evaluation)]))
-            if (i+1)%32 == 0 or i+1 == len(paths): print(f"[verify] Michael: {method} {i+1}/{len(paths)} post-hoc endpoints",flush=True)
+            if (i+1)%32 == 0 or i+1 == len(paths): print(f"[verify] {method} {i+1}/{len(paths)} post-hoc endpoints",flush=True)
         archive = out/"saddle_search.npz"
         data = save_archive(archive,args,geometry,sources,results,[20])
         data.update(source_partition=sources["partition"],source_archive_row=sources["archive_row"],
@@ -212,7 +212,7 @@ def main():
             split_sha256=manifest["split_sha256"])
         np.savez_compressed(archive,**data)
         (out/"report.txt").write_text(make_report(data))
-        print(f"[save] Michael: {archive}",flush=True)
+        print(f"[save] {archive}",flush=True)
     print(make_report(data),flush=True)
     if not args.no_plot:
         try: from plot_recovery_mmf import render_pdf

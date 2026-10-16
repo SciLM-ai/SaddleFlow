@@ -25,7 +25,7 @@ with plot_throws.py.
 import sys
 from pathlib import Path
 
-# Michael: this script imports LiC modules from examples/LiC/rollout_eval.
+# This script imports LiC modules from examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parent  # examples/LiC
 sys.path[:0] = [str(_LIC / 'rollout_eval')]
 
@@ -180,7 +180,7 @@ def main():
              d_start=d_start, d_end=d_end, d_end_train=d_end_tr, d_end_test=d_end_te,
              train_saddles=tr_sad, test_saddles=te_sad, cell=cell,
              conditioning_pes_calls=np.asarray(conditioning_queries(head)))
-    print(f"[throw] Michael: online conditioning PES geometries={conditioning_queries(head)}; no force-guidance correction")
+    print(f"[throw] online conditioning PES geometries={conditioning_queries(head)}; no force-guidance correction")
     qs = [0, 1, 5, 10, 50, 90, 95, 99, 100]
     print(f"\n[throw] {args.n} random starts, K={args.K}")
     print("  distance to the nearest dataset saddle (A):")

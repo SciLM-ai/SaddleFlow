@@ -11,8 +11,9 @@
 #SBATCH --signal=USR1@120
 #SBATCH --output=/scratch/gqs7zr/saddleflow/lic_kappa_audit_%j.out
 #SBATCH --error=/scratch/gqs7zr/saddleflow/lic_kappa_audit_%j.err
+#SBATCH --no-requeue
 
-# Michael: audit ALL stored paths; publish partial CPU-plottable snapshots.
+# Audit ALL stored paths; publish partial CPU-plottable snapshots.
 set -euo pipefail
 LIC_KAPPA_REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
 LIC_KAPPA_PYTHON="${LIC_KAPPA_PYTHON:-/home/gqs7zr/.conda/envs/saddleflow/bin/python}"
@@ -26,7 +27,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export MPLCONFIGDIR="$LIC_KAPPA_OUT/matplotlib_cache"
-echo "[batch] Michael: job=$SLURM_JOB_ID output=$LIC_KAPPA_OUT; no training or steering"
+echo "[batch] job=$SLURM_JOB_ID output=$LIC_KAPPA_OUT; no training or steering"
 srun --unbuffered "$LIC_KAPPA_PYTHON" -u examples/LiC/experiments/kappa_audit/kappa_audit.py \
     --archives "$LIC_KAPPA_SHELLS" "$LIC_KAPPA_SEARCH" --out-dir "$LIC_KAPPA_OUT" --device cuda \
     --save-every-chunks 8 "$@"
