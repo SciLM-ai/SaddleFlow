@@ -14,8 +14,12 @@ call separates them, false landing points can be filtered out cheaply after samp
 3. **Label.** `sella_eval.py --check-index` runs Sella from each landing point with the paper's
    protocol (UMA-S-1.2, fmax 0.01 eV/Å, ≤ 300 steps, `delta0` 0.1). A landing point is **real** if
    Sella converges to an index-1 saddle within a maxd cutoff of it; otherwise it is **false**:
-   `moved_far`, `minimum` (no negative mode), `higher_order` (two or more), `not_converged` or
-   `error`. A low force cannot flag the stationary ones (`minimum`, `higher_order`); only the index
+   `moved_far`, `minimum` (no negative mode), `higher_order` (two or more), `index_unknown` (the
+   index check hit its cap), `not_converged` or `error`. Two caps keep one hard case from taking
+   hours: Sella stops after 2,000 force calls (counted as `not_converged`) and the index check, which
+   computes the two lowest Hessian eigenvalues, after another 2,000. Override with
+   `MAX_FORCE_CALLS` and `INDEX_MAX_FORCE_CALLS`. In the first 472 cases no converged Sella run
+   needed more than 2,000 calls. A low force cannot flag the stationary ones (`minimum`, `higher_order`); only the index
    check finds those.
 4. **Filter test.** `fmax_start`, the UMA force at the landing point before Sella moves it, is compared
    between real and false points.

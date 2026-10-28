@@ -1047,8 +1047,12 @@ class FlowMatchingLoss(nn.Module):
         # ============================================================
         # Step B — Trainable backbone forward(s).
         # ============================================================
+        # Hint field (N, 3), concatenated in batch order, when the backbone injects one (LiC hint model).
+        hint_all = None
+        if getattr(self.backbone, "inject_hint", False):
+            hint_all = torch.cat([b["hint_field"] for b in batch]).to(device=device, dtype=torch.float32)
         if isinstance(self.backbone, TimeFiLMBackbone):
-            backbone_call = lambda f=None: self.backbone(batch_data, t_tensor, batch_idx, force=f)
+            backbone_call = lambda f=None: self.backbone(batch_data, t_tensor, batch_idx, force=f, hint=hint_all)
         else:
             backbone_call = lambda f=None: self.backbone(batch_data)
 
@@ -1080,10 +1084,10 @@ class FlowMatchingLoss(nn.Module):
             force_field_all = forces.detach()
             if is_v6_force_film:
                 if need_grad:
-                    feat = self.backbone(batch_data, t_tensor, batch_idx, force=force_field_all)
+                    feat = self.backbone(batch_data, t_tensor, batch_idx, force=force_field_all, hint=hint_all)
                 else:
                     with torch.no_grad():
-                        feat = self.backbone(batch_data, t_tensor, batch_idx, force=force_field_all)
+                        feat = self.backbone(batch_data, t_tensor, batch_idx, force=force_field_all, hint=hint_all)
 
         # endpoint_features_all was computed above (BEFORE the x_t forward) so
         # MoLE state remains consistent with the x_t backward recompute.

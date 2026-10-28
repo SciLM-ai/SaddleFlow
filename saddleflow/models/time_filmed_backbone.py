@@ -64,6 +64,16 @@ class ForceFiLM(nn.Module):
         return x + self.proj(irreps)
 
 
+class HintFiLM(ForceFiLM):
+    """The same zero-initialised equivariant injection, for a per-atom hint field h (N, 3).
+
+    A hint says which saddle to aim for: for a geometric hint, a unit direction on the epicenter atom and
+    zero elsewhere; for a mode hint, a local mode vector. It enters as l=1 = h and l=0 = |h| before each
+    injected block, so the block's message passing carries it to neighbouring atoms. Separate parameters
+    from ForceFiLM, so forces and hints never share weights.
+    """
+
+
 class TimeFiLMBackbone(nn.Module):
     """Wrap a UMA `eSCNMDBackbone` so a learnable equivariant time-FiLM is
     applied at one or more block-input boundaries.
@@ -85,12 +95,15 @@ class TimeFiLMBackbone(nn.Module):
         time_mlp_hidden: int = 128,
         inject_block_indices: list[int] | None = None,
         inject_force: bool = False,
+        inject_hint: bool = False,
     ):
         """Args:
             inject_force: if True, ALSO apply a per-injection-point ForceFiLM
                 that adds projected UMA-force features to the block's input.
                 This is v6: force gets architectural depth (lives inside the
                 unfrozen UMA blocks via FiLM, not just at the head).
+            inject_hint: if True, also apply a per-injection-point HintFiLM that adds the projected
+                hint field passed to forward(..., hint=h).
         """
         super().__init__()
         self.backbone = backbone
@@ -130,10 +143,18 @@ class TimeFiLMBackbone(nn.Module):
                 for _ in self.inject_block_indices
             ])
 
+        self.inject_hint = inject_hint
+        if inject_hint:
+            self.hint_films = nn.ModuleList([
+                HintFiLM(channels=backbone.sphere_channels, lmax=backbone.lmax)
+                for _ in self.inject_block_indices
+            ])
+
         # Per-call state read by the pre-hooks. Set in forward(...).
         self._t: torch.Tensor | None = None
         self._batch_idx: torch.Tensor | None = None
         self._force: torch.Tensor | None = None
+        self._hint: torch.Tensor | None = None
         # Register a pre-hook on each target block.
         self._handles = []
         for film_idx, block_idx in enumerate(self.inject_block_indices):
@@ -165,6 +186,7 @@ class TimeFiLMBackbone(nn.Module):
         """
         film = self.films[film_idx]
         force_film = self.force_films[film_idx] if self.inject_force else None
+        hint_film = self.hint_films[film_idx] if self.inject_hint else None
         def hook(module, args, kwargs):
             if self._t is None or self._batch_idx is None:
                 # v7-2b static-featurisation mode: caller invoked
@@ -179,6 +201,10 @@ class TimeFiLMBackbone(nn.Module):
             # again with force" two-pass scheme without re-instantiating.
             if force_film is not None and self._force is not None:
                 x_filmed = force_film(x_filmed, self._force)
+            if hint_film is not None:
+                if self._hint is None:
+                    raise ValueError("this backbone was built with inject_hint=True; pass hint=(N, 3)")
+                x_filmed = hint_film(x_filmed, self._hint)
             return (x_filmed,) + args[1:], kwargs
         return hook
 
@@ -188,6 +214,7 @@ class TimeFiLMBackbone(nn.Module):
         t: torch.Tensor,
         batch_idx: torch.Tensor,
         force: torch.Tensor | None = None,
+        hint: torch.Tensor | None = None,
     ) -> dict:
         """Run the backbone with time-FiLM (and optionally force-FiLM, v6+)
         applied at the configured injection points.
@@ -200,6 +227,7 @@ class TimeFiLMBackbone(nn.Module):
                 to the data layout.
             force: (N, 3) per-atom force in eV/Å (Mode 1 v6 only). Required if
                 `inject_force=True` was passed at construction.
+            hint: (N, 3) per-atom hint field. Required if `inject_hint=True` was passed at construction.
         Returns the backbone's normal forward dict (with `node_embedding`).
         """
         # For v6's two-pass scheme (forward 1 to get features for force,
@@ -208,12 +236,14 @@ class TimeFiLMBackbone(nn.Module):
         self._t = t
         self._batch_idx = batch_idx
         self._force = force
+        self._hint = hint
         try:
             return self.backbone(data)
         finally:
             self._t = None
             self._batch_idx = None
             self._force = None
+            self._hint = None
 
     def forward_static(self, data) -> dict:
         """v7-2b: run the underlying UMA backbone WITHOUT time-FiLM and WITHOUT

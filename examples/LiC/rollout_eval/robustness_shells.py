@@ -247,6 +247,7 @@ def rollout_from_step(
     device: str,
     K: int,
     source_positions: torch.Tensor | None = None,
+    hint: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Resume the ordinary Euler sampler from `start_step` using the original dt.
 
@@ -262,6 +263,8 @@ def rollout_from_step(
                 raise ValueError("a source-conditioned restart at t>0 needs the ORIGINAL x0, not x_k")
             source_positions = starts.detach().clone()
         source_kwargs["source_positions"] = source_positions
+    if hint is not None:
+        source_kwargs["hint"] = hint          # fixed for the whole rollout
     path = torch.full((len(x), K + 1, 3), torch.nan, dtype=x.dtype)
     path[:, start_step] = x[:, LI]
     dt = 1.0 / K

@@ -12,10 +12,12 @@ from .eval import (
     rmsd_pbc,
     validity_check,
 )
+from .relaxation import RelaxResult, relax, uma_calculator
 from .training import EMA, TrainingConfig, identity_collate, train
 
 __all__ = [
     "EMA",
+    "RelaxResult",
     "SiteGroup",
     "TrainingConfig",
     "aggregate_reactants",
@@ -28,7 +30,9 @@ __all__ = [
     "load_uma_backbone",
     "match_sites",
     "pairwise_rmsd_pbc",
+    "relax",
     "rmsd_pbc",
     "train",
+    "uma_calculator",
     "validity_check",
 ]

@@ -11,9 +11,10 @@ from .core import (
 from .db_dataset import AseDbSaddleDataset
 from .materials_saddles_dataset import MaterialsSaddlesDataset
 from .traj_dataset import TrajTripletDataset
-from .transforms import gaussian_perturbation, mic_displacement, wrap_positions
+from .transforms import gaussian_perturbation, mic_displacement, transform_structure, wrap_positions
 
 __all__ = [
+    "transform_structure",
     "AseDbSaddleDataset",
     "MaterialsSaddlesDataset",
     "TrajTripletDataset",

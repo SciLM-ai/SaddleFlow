@@ -12,7 +12,7 @@ class MinimumModeEstimator:
     """
 
     def __init__(self, backend="auto", eps=0.002, dense_max_dimension=12,
-                 lanczos_tol=1e-3, lanczos_maxiter=100, seed=0):
+                 lanczos_tol=1e-3, lanczos_maxiter=100, seed=0, ncv=None):
         if backend not in ("auto", "dense", "hvp"):
             raise ValueError("Mode backend must be auto, dense, or hvp.")
         if eps <= 0:
@@ -23,6 +23,7 @@ class MinimumModeEstimator:
         self.lanczos_tol = lanczos_tol
         self.lanczos_maxiter = lanczos_maxiter
         self.rng = np.random.default_rng(seed)
+        self.ncv = ncv              # Lanczos subspace size; ARPACK's default (2k + 1) restarts often
 
     def use_dense(self, dimension, n_modes=2):
         return (self.backend == "dense" or dimension <= n_modes or
@@ -40,7 +41,7 @@ class MinimumModeEstimator:
         values, vectors = eigsh(
             operator, k=min(n_modes, dimension - 1), which="SA",
             v0=self.rng.normal(size=dimension), tol=self.lanczos_tol,
-            maxiter=self.lanczos_maxiter,
+            maxiter=self.lanczos_maxiter, ncv=None if self.ncv is None else min(self.ncv, dimension - 1),
         )
         order = np.argsort(values)
         return values[order], vectors[:, order], float("nan")

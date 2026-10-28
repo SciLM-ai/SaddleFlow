@@ -7,10 +7,11 @@ Reads a run directory written by run_failure_mode_analysis.sh (make_proposals.py
     moved_far      converged to an index-1 saddle, but farther than the cutoff
     minimum        converged to a stationary point with no negative mode
     higher_order   converged to a stationary point with two or more negative modes
-    not_converged  Sella did not reach fmax
+    index_unknown  converged, but the index check hit its force-call cap or did not converge
+    not_converged  Sella did not reach fmax (including a stop at its force-call cap)
     error          Sella or the calculator raised
 
-Everything but `real` counts as a false landing point. Then `fmax_start` (UMA force at the landing
+Everything but `real` counts as a false landing point (an unverified index is not a verified saddle). Then `fmax_start` (UMA force at the landing
 point, before Sella) is tested as a one-call filter. The maxd cutoff that defines "near" is not fixed in
 advance; every table is repeated for each --maxd-cutoffs value. CPU only, no model or UMA calls.
 
@@ -25,7 +26,7 @@ import numpy as np
 from ase.geometry import find_mic
 from ase.io import read
 
-CATEGORIES = ("real", "moved_far", "minimum", "higher_order", "not_converged", "error")
+CATEGORIES = ("real", "moved_far", "minimum", "higher_order", "index_unknown", "not_converged", "error")
 
 
 def parse_args():
@@ -41,20 +42,38 @@ def parse_args():
 
 def load(run_dir):
     run = Path(run_dir)
-    records = []
+    # A landing point labelled more than once (overlapping passes) keeps the record from the first file
+    # in sorted order; the others are returned so the report can show how often Sella disagrees with itself.
+    by_tid, repeats = {}, {}
     for path in sorted(glob.glob(str(run / "sella*.json"))):
-        records += json.loads(Path(path).read_text())
-    by_tid = {r["tid"]: r for r in records}
+        for r in json.loads(Path(path).read_text()):
+            if r["tid"] in by_tid:
+                repeats.setdefault(r["tid"], []).append(r)
+            else:
+                by_tid[r["tid"]] = r
     proposals = read(run / "proposals.traj", index=":")
     minima = read(run / "minima.traj", index=":")
     saddles = read(run / "stored_saddles.traj", index=":")
     selection = json.loads((run / "selection.json").read_text())
     missing = [a.info["tid"] for a in proposals if a.info["tid"] not in by_tid]
-    return selection, proposals, minima, saddles, [by_tid.get(a.info["tid"]) for a in proposals], missing
+    records = [by_tid.get(a.info["tid"]) for a in proposals]
+    return selection, proposals, minima, saddles, records, missing, by_tid, repeats
 
 
 def max_mic(a_pos, b_pos, cell, pbc):
     return float(find_mic(np.asarray(a_pos) - np.asarray(b_pos), cell, pbc)[1].max())
+
+
+def max_mic_untranslated(a, b):
+    """Max per-atom MIC displacement after removing the mean shift, for cells with no fixed atoms.
+
+    A rigid shift of a fully periodic cell is the same structure; without this, a 2-atom cell that the
+    model only translated would count as having moved.
+    """
+    d = find_mic(a.positions - b.positions, a.cell, a.pbc)[0]
+    if not a.constraints:
+        d = d - d.mean(0)
+    return float(np.linalg.norm(d, axis=1).max())
 
 
 def category(record, cutoff):
@@ -62,6 +81,8 @@ def category(record, cutoff):
         return "error"
     if not record["conv"]:
         return "not_converged"
+    if record.get("index_status") in ("budget", "no_convergence"):
+        return "index_unknown"
     if record.get("nneg") is None:
         raise ValueError("Sella was run without --check-index; the index labels are missing")
     if record["nneg"] == 0:
@@ -69,6 +90,13 @@ def category(record, cutoff):
     if record["nneg"] >= 2:
         return "higher_order"
     return "real" if record["maxd"] <= cutoff else "moved_far"
+
+
+def found_saddle(proposal, record):
+    """The structure Sella converged to, as Atoms (cell, PBC and constraints of the landing point)."""
+    atoms = proposal.copy()
+    atoms.positions = np.asarray(record["pos"])
+    return atoms
 
 
 def wilson(k, n, z=1.96):
@@ -99,21 +127,26 @@ def main():
     args = parse_args()
     cutoffs = sorted(map(float, args.maxd_cutoffs.split(",")))
     thresholds = list(map(float, args.force_thresholds.split(",")))
-    selection, proposals, minima, saddles, records, missing = load(args.run_dir)
+    selection, proposals, minima, saddles, records, missing, by_tid, repeats = load(args.run_dir)
     keep = [i for i, r in enumerate(records) if r is not None]
     records = [records[i] for i in keep]
     proposals, minima, saddles = [proposals[i] for i in keep], [minima[i] for i in keep], [saddles[i] for i in keep]
     s = selection["settings"]
     fstart = np.array([r.get("fmax_start", np.nan) for r in records])
     landed = np.array([max_mic(p.positions, m.positions, p.cell, p.pbc) for p, m in zip(proposals, minima)])
-    stored = np.array([max_mic(r["pos"], sd.positions, sd.cell, sd.pbc) if r.get("pos") is not None else np.nan
-                       for r, sd in zip(records, saddles)])
+    landed_shape = np.array([max_mic_untranslated(p, m) for p, m in zip(proposals, minima)])
+    # Rigid shift removed: the start noise carries a mean translation that the model never undoes.
+    stored = np.array([max_mic_untranslated(found_saddle(p, r), sd) if r.get("pos") is not None else np.nan
+                       for p, r, sd in zip(proposals, records, saddles)])
     lines = ["failure-mode analysis of the unconditional model (Sella-labelled landing points)", "=" * 100,
              f"data={s['data']}", f"model={s['model']} inference={s.get('inference')} seed={s['seed']}",
              f"{s['n_endpoints']} endpoints -> {s['n_unique_minima']} unique minima -> {s['n_chosen']} starts; "
              f"{len(records)} with Sella results" + (f" ({len(missing)} MISSING, e.g. tids {missing[:5]})" if missing else ""),
              "Labels come from Sella (converged, index 1, displacement), never from fmax_start.",
              f"Model displacement from the minimum (max per-atom, A): p10/p50/p90 = {quantiles(landed)}",
+             f"  same, rigid shift removed (cells without fixed atoms):     p10/p50/p90 = {quantiles(landed_shape)}",
+             f"  landing points the model left within 0.05 A of the minimum (after removing the shift): "
+             f"{int((landed_shape < 0.05).sum())}",
              f"fmax_start NaN (failed before Sella) for {int(np.isnan(fstart).sum())} landing points", ""]
     summary = {}
     for cut in cutoffs:
@@ -151,6 +184,14 @@ def main():
             lines.append(f"real saddles that are the stored NEB saddle (within {args.match_tol:g} A): "
                          f"{hit.sum()}/{real.sum()} = {100 * hit.mean():.1f}%; the rest are other real saddles")
         lines.append("")
+    if repeats:
+        cut = args.primary_cutoff if args.primary_cutoff in summary else cutoffs[len(cutoffs) // 2]
+        changed = [t for t, rs in repeats.items()
+                   if any(category(r, cut) != category(by_tid[t], cut) for r in rs)]
+        lines += [f"--- repeated Sella runs on the same landing point (Sella on GPU is not deterministic) " + "-" * 10,
+                  f"{len(repeats)} landing points were labelled more than once; the category (cutoff {cut:g} A) "
+                  f"differs between runs for {len(changed)} of them: tids {sorted(changed)}",
+                  "The tables above use the first record in sorted file order.", ""]
     text = "\n".join(lines) + "\n"
     out = Path(args.run_dir)
     (out / "report.txt").write_text(text)
@@ -166,7 +207,7 @@ def plot(path, records, fstart, summary, cut):
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
     colors = dict(real="tab:green", moved_far="tab:orange", minimum="tab:blue", higher_order="tab:purple",
-                  not_converged="tab:red", error="black")
+                  index_unknown="tab:gray", not_converged="tab:red", error="black")
     maxd = np.array([r.get("maxd", np.nan) for r in records])
     cats = summary[cut]["cats"]
     with PdfPages(path) as pdf:

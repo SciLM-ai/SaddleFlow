@@ -12,6 +12,10 @@ the saddle-relative perturbation. experiments/source_study/README.md describes t
 Data: `train_set.traj`, flat [R1, S1, P1, R2, S2, P2, ...] frames. Only the
 saddles S enter the objective.
 
+--hint-pairs-dir trains a hint model instead (experiments/hint_model/README.md): each sample starts at a
+minimum moved a short step along a hint direction, its target is the saddle the classical hint search
+reached from that direction, and with --hint-input the direction is also injected into the backbone.
+
 Run from the repository root. The defaults are the reference recipe in
 README.md (16000 epochs, fp32, about 4 h on one GPU):
 
@@ -23,7 +27,8 @@ from pathlib import Path
 
 # This script imports LiC modules from examples/LiC/experiments/source_study, examples/LiC/rollout_eval.
 _LIC = Path(__file__).resolve().parent  # examples/LiC
-sys.path[:0] = [str(_LIC / 'experiments' / 'source_study'), str(_LIC / 'rollout_eval')]
+sys.path[:0] = [str(_LIC / 'experiments' / 'source_study'), str(_LIC / 'rollout_eval'),
+                str(_LIC / 'experiments' / 'hint_model')]
 
 import argparse
 import json
@@ -126,6 +131,20 @@ def parse_args():
                         "checkpoint directory. Use the same --output-dir and --num-epochs "
                         "as the interrupted run; cannot be combined with --init-weights.")
 
+    # Hint model (experiments/hint_model): labels from the classical hint search (hint_pilot.py a3).
+    p.add_argument("--hint-pairs-dir", default=None,
+                   help="hint_pilot a3 output directory; enables hint training (start = minimum + step x hint)")
+    p.add_argument("--hint-arm", default="nudge0.8", help="A3 arm whose connected first runs are the labels")
+    p.add_argument("--hint-input", action=argparse.BooleanOptionalAction, default=True,
+                   help="inject the hint field into the backbone (A1); --no-hint-input uses it only in the start (A2)")
+    p.add_argument("--hint-step", type=float, default=0.3, help="A moved along the hint to make x_0")
+    p.add_argument("--hint-jitter", type=float, default=0.02, help="A, Gaussian jitter on the Li in x_0")
+    p.add_argument("--hint-inversion", action=argparse.BooleanOptionalAction, default=True,
+                   help="invert each sample with probability 1/2 (exact; teaches mirror behaviour)")
+    p.add_argument("--hint-init", default="/scratch/gqs7zr/saddleflow/lic_source_study_seed42/n12_uncond/checkpoint_final",
+                   help="checkpoint whose EMA weights initialise every parameter except the new hint layers; "
+                        "its architecture is reused")
+
     # Optional data aggregation from a completed robustness-shell experiment.
     # The shell archive already contains every source, its parent saddle, and
     # frozen-UMA force at the baseline rollout endpoint.  Selecting high-force
@@ -204,6 +223,7 @@ def parse_args():
         if args.curvature_conditioning: name += "_curvatureinput"
         if args.source_conditioning: name += "_sourceinput"
         if args.study_split: name += f"_n{args.train_saddles}"
+        if args.hint_pairs_dir: name = "hint_" + ("input" if args.hint_input else "startonly")
         args.output_dir = str(here / "runs" / name)
     return args
 
@@ -300,13 +320,50 @@ def calibrate_force_epsilon(
     return epsilon, summary
 
 
+def load_ema_except_hint(loss_module, checkpoint):
+    """Copy a checkpoint's EMA weights into every trainable parameter except the new (zero) hint layers.
+
+    ema.pt is a flat list in trainable-parameter order; the hint layers are the only parameters the source
+    model did not have, so dropping them restores its order exactly.
+    """
+    shadow = torch.load(Path(checkpoint) / "ema.pt", map_location="cpu")["shadow"]
+    destination = [p for n, p in loss_module.named_parameters() if p.requires_grad and "hint_films" not in n]
+    if len(shadow) != len(destination):
+        raise RuntimeError(f"{checkpoint}: {len(shadow)} EMA tensors for {len(destination)} parameters")
+    with torch.no_grad():
+        for parameter, source in zip(destination, shadow):
+            if parameter.shape != source.shape:
+                raise RuntimeError(f"shape mismatch {tuple(parameter.shape)} vs {tuple(source.shape)}")
+            parameter.copy_(source.to(parameter.device, dtype=parameter.dtype))
+    return len(shadow)
+
+
 def main():
     args = parse_args()
+    hint_config = None
+    if args.hint_pairs_dir:
+        # The hint model fine-tunes an existing LiC model, so it reuses that model's architecture.
+        if args.study_split or args.recovery_shell_archive or args.init_weights or args.source_conditioning \
+                or args.inject_force or args.curvature_conditioning or args.force_constrained or args.force_constraint_stopgrad:
+            raise SystemExit("--hint-pairs-dir trains plain FM from --hint-init; drop the other data/physics options")
+        hint_config = json.loads((Path(args.hint_init).parent / "config.json").read_text())["extras"]
+        if hint_config.get("source_conditioning") or hint_config.get("inject_force") or hint_config.get("curvature_conditioning"):
+            raise SystemExit("--hint-init must be an unconditioned LiC model")
+        args.backbone, args.head_depth = hint_config["backbone"], int(hint_config["head_depth"])
+        args.attn_layers, args.attn_heads = int(hint_config["attn_layers"]), int(hint_config["attn_heads"])
+        args.early_time_film = bool(hint_config["early_time_film"])
+        args.early_time_film_blocks = hint_config["early_time_film_blocks"]
+        args.unfreeze_uma_all = bool(hint_config["unfreeze_uma_all"])
+        args.source_channels = int(hint_config.get("source_channels", 0))
+        if args.hint_input and not args.early_time_film:
+            raise SystemExit("--hint-input injects at the time-FiLM blocks; the init model has none")
     force_constraint_enabled = bool(
         args.force_constrained or args.force_constraint_stopgrad
     )
     physics_enabled = args.inject_force or args.curvature_conditioning
     source_channels = args.source_channels if args.study_split or args.source_conditioning else 0
+    if hint_config is not None:
+        source_channels = args.source_channels          # same (inactive) branch width as the init model
     split_sha256 = None
     if args.study_split:
         try: from source_study import load_split, file_hash
@@ -369,11 +426,26 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[train] dataset: {args.train_traj}")
-    original_dataset = TrajTripletDataset(
-        args.train_traj, stats_cache=str(out_dir / "dataset_stats.json")
-    )
-    dataset = original_dataset
+    hint_pairs_info = None
+    if hint_config is not None:
+        from hint_pairs import HintPairDataset, lic_context, load_pairs
+        ctx = lic_context()
+        train_minima = set(json.loads((Path(args.hint_pairs_dir) / "training_minima.json").read_text()))
+        pairs = load_pairs(args.hint_pairs_dir, ctx, args.hint_arm, train_minima)
+        dataset = HintPairDataset(pairs, ctx, step=args.hint_step, jitter=args.hint_jitter,
+                                  inversion=args.hint_inversion, seed=args.seed)
+        hint_pairs_info = dict(pairs=len(pairs), minima=sorted(train_minima),
+                               saddles=len({p[3] for p in pairs}))
+        print(f"[hint] {len(pairs)} pairs ({args.hint_arm}, connected first runs) on {len(train_minima)} training "
+              f"minima, {hint_pairs_info['saddles']} distinct saddles; x0 = minimum + {args.hint_step} A x hint "
+              f"+ N(0, {args.hint_jitter}^2); inversion={args.hint_inversion}; hint input={args.hint_input}", flush=True)
+        original_dataset = None
+    else:
+        print(f"[train] dataset: {args.train_traj}")
+        original_dataset = TrajTripletDataset(
+            args.train_traj, stats_cache=str(out_dir / "dataset_stats.json")
+        )
+        dataset = original_dataset
     if args.study_split:
         batches_per_epoch = (len(dataset)+args.batch_size-1)//args.batch_size
         if args.num_epochs*batches_per_epoch < args.max_steps:
@@ -381,8 +453,9 @@ def main():
         print(f"[study] N={args.train_saddles}; source conditioning={args.source_conditioning}; "
               f"identical {source_channels}-channel branch in both arms; budget={args.max_steps} updates; "
               f"common held-out set=131; split SHA256={split_sha256}", flush=True)
-    print(f"[train] {len(original_dataset)} original records "
-          f"({original_dataset.num_triplets} triplets x 2 sides)")
+    if original_dataset is not None:
+        print(f"[train] {len(original_dataset)} original records "
+              f"({original_dataset.num_triplets} triplets x 2 sides)")
     recovery_summary = None
     if args.recovery_shell_archive:
         recovery_records, recovery_summary, recovery_arrays = build_recovery_records(
@@ -418,7 +491,8 @@ def main():
         )
         print(f"[train] wrote recovery provenance -> {summary_path}")
         print(f"[train] wrote selected recovery buffer -> {buffer_path}")
-    print(f"[train] TS-denoise: x_0 = saddle + N(0, {args.ts_denoise_sigma}^2), x_1 = saddle")
+    if hint_config is None:
+        print(f"[train] TS-denoise: x_0 = saddle + N(0, {args.ts_denoise_sigma}^2), x_1 = saddle")
 
     print(f"[train] loading backbone {args.backbone!r} onto {args.device}")
     # Seed BEFORE module construction, not only inside the generic train loop.
@@ -436,8 +510,8 @@ def main():
     backbone = raw_backbone
     if args.early_time_film:
         idx = [int(x) for x in args.early_time_film_blocks.split(",")]
-        backbone = TimeFiLMBackbone(raw_backbone, inject_block_indices=idx,
-                                    inject_force=False).to(args.device)
+        backbone = TimeFiLMBackbone(raw_backbone, inject_block_indices=idx, inject_force=False,
+                                    inject_hint=bool(hint_config is not None and args.hint_input)).to(args.device)
         print(f"[train] time-FiLM inside the backbone at blocks {idx}")
     sc, lmax = raw_backbone.sphere_channels, raw_backbone.lmax
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
@@ -530,6 +604,8 @@ def main():
     if args.early_time_film:
         for film in backbone.films:
             head_params += list(film.parameters())
+        for film in getattr(backbone, "hint_films", []):
+            head_params += list(film.parameters())
     print(f"[train] attn_layers={args.attn_layers}  head_depth={args.head_depth}  "
           f"head+attn+FiLM params={sum(p.numel() for p in head_params):,}")
     param_groups = None
@@ -596,7 +672,13 @@ def main():
             "source_channels": source_channels,
             "study_split": str(Path(args.study_split).resolve()) if args.study_split else None,
             "study_split_sha256": split_sha256,
-            "train_saddle_count": args.train_saddles if args.study_split else original_dataset.num_triplets,
+            "train_saddle_count": (args.train_saddles if args.study_split else
+                                   original_dataset.num_triplets if original_dataset is not None else None),
+            "inject_hint": bool(hint_config is not None and args.hint_input),
+            "hint_training": None if hint_config is None else dict(
+                pairs_dir=str(Path(args.hint_pairs_dir).resolve()), arm=args.hint_arm, input=args.hint_input,
+                step=args.hint_step, jitter=args.hint_jitter, inversion=args.hint_inversion,
+                init=str(Path(args.hint_init).resolve()), **hint_pairs_info),
             "evaluation_train_traj": str(Path(args.train_traj).resolve()) if args.study_split else None,
             "evaluation_test_traj": str(Path(args.study_split).resolve()/
                 ("heldout131.traj" if args.train_saddles == 48 else "catalog_rest.traj")) if args.study_split else None,
@@ -655,6 +737,10 @@ def main():
             ),
         },
     )
+    if hint_config is not None and not args.resume_from:
+        # EMA is built from the current parameters when train() starts, so it starts at this initialiser.
+        n = load_ema_except_hint(loss_module, args.hint_init)
+        print(f"[hint] initialised {n} tensors from {args.hint_init} (EMA); hint layers start at zero", flush=True)
     train(loss_module, dataset, train_cfg, param_groups=param_groups)
 
 

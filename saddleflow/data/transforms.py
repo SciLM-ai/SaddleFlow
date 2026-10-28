@@ -98,3 +98,25 @@ def gaussian_perturbation(
     noise = torch.randn(m, 3, dtype=dtype, device=device, generator=generator)
     eps[mobile_mask] = noise * sigma
     return eps
+
+
+def transform_structure(atoms, R):
+    """A copy of ASE `atoms` with the orthogonal 3x3 map R (a rotation, mirror or inversion) applied.
+
+    Positions become R r. If R maps the lattice onto itself (always true for inversion) the original cell
+    is kept; otherwise the cell is mapped too, and a mirror's left-handed cell is made right-handed again
+    by negating its last vector, which leaves the lattice unchanged. Map positions back with `p @ R`.
+    """
+    import numpy as np
+
+    out = atoms.copy()
+    out.set_positions(atoms.positions @ np.asarray(R).T, apply_constraint=False)
+    old = atoms.cell.array
+    new = old @ np.asarray(R).T
+    M = new @ np.linalg.inv(old)
+    if np.allclose(M, np.round(M), atol=1e-6) and np.isclose(abs(np.linalg.det(np.round(M))), 1):
+        new = old
+    elif np.linalg.det(new) * np.linalg.det(old) < 0:
+        new[2] *= -1
+    out.set_cell(new)
+    return out

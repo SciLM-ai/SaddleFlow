@@ -20,6 +20,11 @@ converged flag, final fmax, force calls, rmsd/maxd moved, and the final position
 `fmax_start`, the force at the candidate before Sella moves it (one extra call, not in `nfc`).
 With --check-index it also returns the lowest `nev` Hessian eigenvalues by
 finite-difference Lanczos, so the result can be filtered to genuine index-1 saddles.
+The check is skipped when Sella did not converge (the case is a failure either way).
+
+Two optional force-call caps (off by default, which is the paper protocol) bound the cost of a
+single hard case: --max-force-calls stops Sella (status "query_budget", counted as not converged)
+and --index-max-force-calls stops the index check (nneg None, index_status "budget").
 
 Requires the `eval` extra:  CC=gcc CXX=g++ pip install 'saddleflow[eval]'
 (the default NVIDIA `nvc` rejects Sella's -fno-strict-overflow).
@@ -36,7 +41,9 @@ warnings.filterwarnings("ignore")
 from ase.io import Trajectory
 from fairchem.core import FAIRChemCalculator, pretrained_mlip
 
-from saddleflow.classical_saddle_search import MinimumModeEstimator, PESBackend, run_sella
+from scipy.sparse.linalg import ArpackNoConvergence
+
+from saddleflow.classical_saddle_search import MinimumModeEstimator, PESBackend, QueryBudgetExceeded, run_sella
 
 
 def parse_args():
@@ -53,11 +60,15 @@ def parse_args():
     p.add_argument("--check-index", action="store_true",
                    help="Finite-difference Lanczos check that the result is a true "
                         "first-order saddle. Adds ~2 force calls per Lanczos matvec.")
+    p.add_argument("--max-force-calls", type=int, default=None,
+                   help="Cap on Sella's force calls per case (default or 0: none, only --steps).")
+    p.add_argument("--index-max-force-calls", type=int, default=None,
+                   help="Cap on the index check's force calls per case (default or 0: none).")
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--nshards", type=int, default=1)
     p.add_argument("--skip-done", nargs="*", default=[],
                    help="Output JSONs of an earlier run; frames whose tid they already hold are skipped "
-                        "before sharding (finishes a run that hit its time limit).")
+                        "(finishes a run that hit its time limit).")
     return p.parse_args()
 
 
@@ -85,9 +96,12 @@ def main():
     args = parse_args()
     predict_unit = pretrained_mlip.get_predict_unit(args.model, device="cuda")
 
+    # Shard first, then skip: a frame's shard depends only on its position in --src, so array tasks
+    # that start at different times (and see different --skip-done files) never split the work
+    # differently, which would run some frames twice and leave others out.
     done = {r["tid"] for path in args.skip_done for r in json.load(open(path))}
-    frames = [f for f in Trajectory(args.src) if int(f.info.get("tid", -1)) not in done]
-    frames = frames[args.shard::args.nshards]
+    frames = list(Trajectory(args.src))[args.shard::args.nshards]
+    frames = [f for f in frames if int(f.info.get("tid", -1)) not in done]
     rows = []
     for i, frame in enumerate(frames):
         # ASE copy preserves FixAtoms, actual PBC and charge/spin metadata.
@@ -104,21 +118,31 @@ def main():
             start.calc = FAIRChemCalculator(predict_unit, task_name=args.task_name)
             record["fmax_start"] = float(np.linalg.norm(start.get_forces(), axis=1).max())
             result = run_sella(pes, pes.dofs.pack(x_start), fmax_tol=args.fmax,
-                               max_steps=args.steps, max_force_calls=1_000_000, delta0=args.delta0)
+                               max_steps=args.steps, max_force_calls=args.max_force_calls or 1_000_000,
+                               delta0=args.delta0)
             # Verification is distinct from search cost, and uses FREE forces.
             pes.max_force_calls = None
             _, fmax = pes.dofs.force_metrics(pes.forces(result["final"]))
             moved = mic(result["positions"], x_start, frame.cell, frame.pbc)
-            eigs, nneg = None, None
+            eigs, nneg, index_status = None, None, "skipped"
             verification_calls = 0
-            if args.check_index:
+            if args.check_index and fmax < args.fmax:
                 before = pes.force_calls
-                estimator = MinimumModeEstimator(lanczos_maxiter=300)
-                values, _, _ = estimator.lowest_modes(pes, result["final"], n_modes=args.nev)
-                eigs = values.tolist()
-                nneg = int(np.sum(values < -0.01))
+                if args.index_max_force_calls:
+                    pes.max_force_calls = before + args.index_max_force_calls
+                try:
+                    estimator = MinimumModeEstimator(lanczos_maxiter=300)
+                    values, _, _ = estimator.lowest_modes(pes, result["final"], n_modes=args.nev)
+                    eigs = values.tolist()
+                    nneg = int(np.sum(values < -0.01))
+                    index_status = "ok"
+                except QueryBudgetExceeded:
+                    index_status = "budget"
+                except ArpackNoConvergence:
+                    index_status = "no_convergence"
+                pes.max_force_calls = None
                 verification_calls = pes.force_calls - before
-            record.update(conv=bool(fmax < args.fmax), fmax=fmax,
+            record.update(conv=bool(fmax < args.fmax), fmax=fmax, index_status=index_status,
                           nfc=result["force_calls"], nsteps=result["steps"],
                           verification_nfc=verification_calls, status=result["status"],
                           free_atoms=pes.dofs.n_free,

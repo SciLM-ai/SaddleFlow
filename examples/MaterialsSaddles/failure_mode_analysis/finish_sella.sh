@@ -18,7 +18,10 @@
 # analyze_failure_modes.py merges every sella*.json in the directory.
 #   sbatch --export=ALL,OUT=<run dir> examples/MaterialsSaddles/failure_mode_analysis/finish_sella.sh
 # Every sella*.json already in OUT is skipped; pass TAG=<name> for a further pass so it does not overwrite
-# the sella_shard<k>.json files of the previous one.
+# the sella_shard<k>.json files of the previous one. Start a further pass only after the previous one has
+# ended, or both will run the cases the previous one is still on.
+# NEV=2, MAX_FORCE_CALLS=2000 and INDEX_MAX_FORCE_CALLS=2000 by default; NEV=4 MAX_FORCE_CALLS=0
+# INDEX_MAX_FORCE_CALLS=0 reproduces the uncapped protocol of runs made before the caps existed.
 set -euo pipefail
 REPO="${SADDLEFLOW_REPO:-/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow}"
 PYTHON="${SADDLEFLOW_PYTHON:-/home/gqs7zr/.conda/envs/saddleflow/bin/python}"
@@ -32,4 +35,5 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 "$PYTHON" -u examples/MaterialsSaddles/sella_eval.py --src "$OUT/proposals.traj" \
   --out "$OUT/sella_${TAG:-shard}${SLURM_ARRAY_TASK_ID}.json" --skip-done "$OUT"/sella*.json \
   --shard "$SLURM_ARRAY_TASK_ID" --nshards "${SLURM_ARRAY_TASK_COUNT:-8}" \
-  --model uma-s-1p2 --task-name "$TASK" --fmax 0.01 --steps 300 --delta0 0.1 --check-index
+  --model uma-s-1p2 --task-name "$TASK" --fmax 0.01 --steps 300 --delta0 0.1 --check-index \
+  --nev "${NEV:-2}" --max-force-calls "${MAX_FORCE_CALLS:-2000}" --index-max-force-calls "${INDEX_MAX_FORCE_CALLS:-2000}"

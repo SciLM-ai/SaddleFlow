@@ -36,7 +36,10 @@ echo "[batch] job=$SLURM_JOB_ID out=$OUT n_starts=$N_STARTS seed=$SEED data=$DAT
 
 "$PYTHON" -u "$HERE/failure_mode_analysis/make_proposals.py" --data "$DATA" --out-dir "$OUT" \
   --n-starts "$N_STARTS" --seed "$SEED" --task-name "$TASK" "$@"
-# The paper's scoring protocol: UMA-S-1.2, fmax 0.01 eV/A, <= 300 steps, delta0 0.1, index check.
+# The paper's scoring protocol (UMA-S-1.2, fmax 0.01 eV/A, <= 300 steps, delta0 0.1, index check), plus
+# force-call caps on Sella and on the index check so one hard case cannot take hours. The two lowest
+# eigenvalues are enough to tell a minimum, an index-1 saddle and a higher-order saddle apart.
 "$PYTHON" -u "$HERE/sella_eval.py" --src "$OUT/proposals.traj" --out "$OUT/sella.json" \
-  --model uma-s-1p2 --task-name "$TASK" --fmax 0.01 --steps 300 --delta0 0.1 --check-index
+  --model uma-s-1p2 --task-name "$TASK" --fmax 0.01 --steps 300 --delta0 0.1 --check-index \
+  --nev "${NEV:-2}" --max-force-calls "${MAX_FORCE_CALLS:-2000}" --index-max-force-calls "${INDEX_MAX_FORCE_CALLS:-2000}"
 "$PYTHON" -u "$HERE/failure_mode_analysis/analyze_failure_modes.py" "$OUT"

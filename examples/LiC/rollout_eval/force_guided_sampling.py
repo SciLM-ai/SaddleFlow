@@ -188,7 +188,8 @@ def load_flow_model(checkpoint: Path, device: str, use_ema: bool = True):
     if bool(extras.get("early_time_film", False)):
         block_indices = [int(value) for value in str(extras.get("early_time_film_blocks", "0,1,2,3")).split(",")]
         backbone = TimeFiLMBackbone(
-            raw_backbone, inject_block_indices=block_indices, inject_force=False
+            raw_backbone, inject_block_indices=block_indices, inject_force=False,
+            inject_hint=bool(extras.get("inject_hint", False)),
         ).to(device)
 
     attention = GlobalAttn(
@@ -268,8 +269,12 @@ def model_velocity(
     device: str,
     *,
     source_positions: torch.Tensor | None = None,
+    hint: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Evaluate LiC velocity with any saved current-state physics inputs."""
+    """Evaluate LiC velocity with any saved current-state physics inputs.
+
+    hint: (B, N, 3) or (N, 3) hint field, required by a hint-injecting backbone; held fixed by the caller
+    for the whole rollout."""
     batch_size = len(positions)
     data_list = [
         build_atomic_data(
@@ -296,7 +301,13 @@ def model_velocity(
 
     with torch.no_grad():
         if isinstance(backbone, TimeFiLMBackbone):
-            features = backbone(atomic_batch, time_tensor, atomic_batch.batch)
+            hint_field = None
+            if getattr(backbone, "inject_hint", False):
+                if hint is None:
+                    raise ValueError("this checkpoint injects a hint; pass hint=(B, N, 3)")
+                hint_field = (hint if hint.dim() == 3 else hint.expand(batch_size, -1, -1))
+                hint_field = hint_field.reshape(-1, 3).to(device=device, dtype=torch.float32)
+            features = backbone(atomic_batch, time_tensor, atomic_batch.batch, hint=hint_field)
         else:
             features = backbone(atomic_batch)
         hidden = attention(features["node_embedding"], atomic_batch.batch)
