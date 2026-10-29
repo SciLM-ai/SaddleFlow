@@ -181,8 +181,11 @@ class DatasetRows(TierBRows):
                         m = Atoms(numbers=E.numbers, positions=E.positions, cell=E.cell.array, pbc=True)
                         k = len(self.minima)
                         self.minima.append((n, m))
-                        for atom, u, _ in hl.make_hints(m, S.positions):
-                            self.rows.append((k, 2 * n + side, S.positions, atom, u))
+                        # The stored saddle is wrapped into the cell independently of the minimum (most sides have
+                        # an atom in another image); the path start E + u (S - E) needs it in the minimum's frame.
+                        S_un = E.positions + hl.mic(E.cell.array, S.positions - E.positions)
+                        for atom, u, _ in hl.make_hints(m, S_un):
+                            self.rows.append((k, 2 * n + side, S_un, atom, u))
                 n += 1
 
 
