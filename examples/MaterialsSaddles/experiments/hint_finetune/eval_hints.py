@@ -43,6 +43,7 @@ Stages (each its own job: run_eval.sh, chained by submit_eval.sh; every stage sk
 import argparse
 import glob
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,9 +60,10 @@ import hint_labels as hl  # noqa: E402
 import hint_vs_noise as hvn  # noqa: E402
 from hint_vs_noise import hs, ms, read_rows, write_rows  # noqa: E402
 
-OLD_DIR = "/scratch/gqs7zr/saddleflow/hint_vs_noise"
-LABELS = "/scratch/gqs7zr/saddleflow/hint_finetune/tierb/labels.json"
-TEST_SHARDS = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat/test/mp20bat_test_*.aselmdb"
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+OLD_DIR = f"{DATA}/hint_vs_noise"
+LABELS = f"{DATA}/hint_finetune/tierb/labels.json"
+TEST_SHARDS = f"{DATA}/MaterialsSaddles/mp20bat/test/mp20bat_test_*.aselmdb"
 N_GROUPS, GRID_K, PUSH, HINT_NOISE, NOISE_SIGMA, N_NOISE, TILT = 4, 16, 0.6, 0.15, 0.3, 256, 30.0
 LAND_MERGE, CUTOFF, RADII, BUDGETS = 0.15, 1.0, (0.05, 0.1, 0.2, 0.3), (5000, 10000, 20000, 40000, 80000)
 # Stage-2 cost of a model rollout, in UMA-S force-call equivalents per network evaluation: 0.85 s per start of 20

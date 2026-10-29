@@ -17,6 +17,7 @@ Writes, aligned frame by frame (frame k has info['tid'] = k):
 """
 import argparse
 import json
+import os
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -26,7 +27,8 @@ from ase import Atoms
 from ase.geometry import find_mic
 from ase.io import Trajectory
 
-DEFAULT_DATA = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat/test/mp20bat_test_0000.aselmdb"
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+DEFAULT_DATA = f"{DATA}/MaterialsSaddles/mp20bat/test/mp20bat_test_0000.aselmdb"
 
 
 def parse_args():

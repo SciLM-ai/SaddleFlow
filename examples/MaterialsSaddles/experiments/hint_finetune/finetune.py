@@ -64,8 +64,9 @@ from saddleflow.models import GlobalAttn, VelocityHead  # noqa: E402
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone  # noqa: E402
 from saddleflow.utils import TrainingConfig, load_uma_backbone, train  # noqa: E402
 
-MP20BAT = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat"
-DATASET_FILE = "/scratch/gqs7zr/saddleflow/practicality/hf/mp20bat/train/mp20bat_train_0000.aselmdb"   # current release, main
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+MP20BAT = f"{DATA}/MaterialsSaddles/mp20bat"
+DATASET_FILE = f"{DATA}/practicality/hf/mp20bat/train/mp20bat_train_0000.aselmdb"   # current release, main
 
 
 def parse_args():

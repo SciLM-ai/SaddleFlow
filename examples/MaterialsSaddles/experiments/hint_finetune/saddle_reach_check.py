@@ -14,6 +14,7 @@
 import argparse
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eval_hints as ev  # noqa: E402
 from eval_hints import hl, read_rows  # noqa: E402
 
-LOCAL = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat/{split}/mp20bat_{split}_*.aselmdb"
-RELEASE = "/scratch/gqs7zr/saddleflow/practicality/hf/mp20bat/train/mp20bat_train_0000.aselmdb"
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+LOCAL = f"{DATA}/MaterialsSaddles/mp20bat/{{split}}/mp20bat_{{split}}_*.aselmdb"
+RELEASE = f"{DATA}/practicality/hf/mp20bat/train/mp20bat_train_0000.aselmdb"
 SAME, LAND, END, CUTOFF = 0.1, 0.2, 0.15, 1.0
 
 

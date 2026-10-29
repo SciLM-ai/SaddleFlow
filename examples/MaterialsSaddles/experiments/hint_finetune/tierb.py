@@ -33,6 +33,7 @@ Each stage is its own job (run_tierb.sh, chained by submit_tierb.sh); every stag
 import argparse
 import glob
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -49,7 +50,8 @@ import hint_vs_noise as hvn  # noqa: E402
 from hint_vs_noise import hs, ms, read_rows, write_rows  # noqa: E402
 from soft_modes import soft_displacement, soft_modes  # noqa: E402
 
-TRAIN_SHARDS = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat/train/mp20bat_train_*.aselmdb"
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+TRAIN_SHARDS = f"{DATA}/MaterialsSaddles/mp20bat/train/mp20bat_train_*.aselmdb"
 N_RANKED, N_ACCEPT, N_GROUPS = 400, 215, 4
 MIN_ATOMS, MAX_ATOMS = 8, 40
 N_ATOM, N_SOFT, GRID_K, PUSH, NOISE = 64, 64, 16, 0.6, 0.05

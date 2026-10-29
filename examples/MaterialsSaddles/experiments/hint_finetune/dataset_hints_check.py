@@ -16,6 +16,7 @@
 import argparse
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -27,8 +28,9 @@ from ase.db import connect
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hint_labels as hl  # noqa: E402
 
-TRAIN_SHARDS = "/scratch/gqs7zr/saddleflow/MaterialsSaddles/mp20bat/train/mp20bat_train_*.aselmdb"
-LABELS = "/scratch/gqs7zr/saddleflow/hint_finetune/tierb/labels.json"
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+TRAIN_SHARDS = f"{DATA}/MaterialsSaddles/mp20bat/train/mp20bat_train_*.aselmdb"
+LABELS = f"{DATA}/hint_finetune/tierb/labels.json"
 SAME, REGION, LOW, CUTOFF, TILT = 0.1, 0.15, 0.05, 1.0, 30.0
 
 

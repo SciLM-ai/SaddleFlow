@@ -189,7 +189,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", choices=["refine", "report"])
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--eval-dir", default="/scratch/gqs7zr/saddleflow/hint_finetune/eval/pilot_21872158_checkpoint_final")
+    p.add_argument("--eval-dir", default=f"{ev.DATA}/hint_finetune/eval/pilot_21872158_checkpoint_final")
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--nshards", type=int, default=1)
     p.add_argument("--device", default="cuda")

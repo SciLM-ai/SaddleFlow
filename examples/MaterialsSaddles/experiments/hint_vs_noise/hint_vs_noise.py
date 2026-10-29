@@ -49,6 +49,7 @@ connectivity (push along the negative mode, LBFGS to 0.005 eV/A, back within 0.2
 """
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -63,8 +64,9 @@ import mode_search as ms  # noqa: E402
 from hint_search import read_rows, write_rows  # noqa: E402
 from soft_modes import soft_displacement, soft_modes  # noqa: E402
 
-RUN_DIR = "/scratch/gqs7zr/saddleflow/failure_mode_analysis_mp20bat_21421000"
-OLD_DIR = "/scratch/gqs7zr/saddleflow/mp20bat_hint_search"      # the two-minimum hint search
+DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
+RUN_DIR = f"{DATA}/failure_mode_analysis_mp20bat_21421000"
+OLD_DIR = f"{DATA}/mp20bat_hint_search"      # the two-minimum hint search
 KEEP = (486, 18)
 N_STARTS = dict(noise=256, hint=256, soft=256, push=128, softpush=128, null=96)
 NOISE_SIGMA, HINT_PUSH, HINT_NOISE, SOFT_SIZE, SOFT_NOISE = 0.3, 0.6, 0.05, 0.6, 0.05
