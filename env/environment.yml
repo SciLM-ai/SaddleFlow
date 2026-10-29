@@ -1,0 +1,16 @@
+# The saddleflow conda environment used for the experiments on this branch (exported 2026-10-28).
+# Python and its system libraries come from conda-forge; everything else is pip, pinned in
+# requirements-lock.txt (torch 2.8.0 with CUDA 12.8 wheels, so the GPU driver must support CUDA 12.8).
+# From the repository root:
+#   conda env create -f env/environment.yml
+#   conda activate saddleflow
+#   pip install --no-deps -e .
+name: saddleflow
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.14
+  - pip=26.2.1
+  - wheel=0.48.0
+  - pip:
+      - -r requirements-lock.txt
