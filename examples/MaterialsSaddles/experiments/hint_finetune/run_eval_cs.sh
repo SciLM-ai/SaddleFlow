@@ -17,13 +17,14 @@
 #   STAGE=land           one GPU per group (array task = group), one process; needs CKPT
 #   STAGE=sella|verify   one GPU per group (array task = group), WORKERS processes
 #   STAGE=report         CPU (submit with --partition=cpu --gres= --constraint=)
+#   STAGE=frames         frames.py: the pilot's landings on the Tier B minima -> OUT/frames.json (one GPU)
 # Every stage skips work already written, so a stopped job can be resubmitted as is.
 set -euo pipefail
 REPO="${SADDLEFLOW_REPO:-/u/gqs7zr/SaddleFlow}"
 PYTHON="${SADDLEFLOW_PYTHON:-/u/gqs7zr/.conda/envs/saddleflow/bin/python}"
 export SADDLEFLOW_DATA="${SADDLEFLOW_DATA:-/bigtemp/gqs7zr/saddleflow}"
 OUT="${OUT:?Pass OUT=<evaluation directory>}"
-STAGE="${STAGE:?Pass STAGE=land|sella|verify|report}"
+STAGE="${STAGE:?Pass STAGE=land|sella|verify|report|frames}"
 WORKERS="${WORKERS:-8}"
 EXTRA="${EXTRA:-}"
 cd "$REPO"
@@ -46,6 +47,8 @@ wait_all() {
 case "$STAGE" in
   report)
     "$PYTHON" -u "$E" report --out-dir "$OUT" $EXTRA ;;
+  frames)
+    "$PYTHON" -u examples/MaterialsSaddles/experiments/hint_finetune/frames.py --out-dir "$OUT" $EXTRA ;;
   land)
     GROUP="${GROUP:-${SLURM_ARRAY_TASK_ID:?array task id = group}}"
     nvidia-smi --query-gpu=name --format=csv,noheader

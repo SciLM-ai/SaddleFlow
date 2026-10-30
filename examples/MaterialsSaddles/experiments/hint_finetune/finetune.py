@@ -32,6 +32,11 @@ Options (both off by default, which is the pilot):
                  inversion), so the target stays exact. Teaches the mirror behaviour that rotation-equivariance
                  alone does not give. Validation draws are never inverted.
 
+    --frames f   near-saddle frames (frames.py): with probability --frame-prob a hinted row is replaced by a frame y
+                 of a training region: target its saddle S, a hint from that region, t ~ U(0.7, 0.95), the source
+                 placed so the straight line to S passes through y at t (flow_time: no x_t perturbation). Training
+                 draws only.
+
 Objective: MSE (not the released Huber), so several saddles sharing a hint stay separate distributions and the
 start noise chooses among them; convergent target, x_t perturbation 0.05 A, CoM-symmetric loss, as released.
 
@@ -86,6 +91,8 @@ def parse_args():
     p.add_argument("--hint-rows", default="tierb", choices=["tierb", "dataset"], help="source of the hinted half")
     p.add_argument("--dataset-file", default=DATASET_FILE, help="--hint-rows dataset: MaterialsSaddles .aselmdb file")
     p.add_argument("--inversion-prob", type=float, default=0.0, help="share of training records inverted (r -> -r)")
+    p.add_argument("--frames", default=None, help="frames.py frames.json: near-saddle frames in the hinted half")
+    p.add_argument("--frame-prob", type=float, default=0.3, help="share of hinted rows replaced by a frame (0.3: 15%% of a batch)")
     p.add_argument("--path-u-power", type=float, default=2.0)
     # Objective (released values unless noted).
     p.add_argument("--loss-type", default="mse", choices=["mse", "huber"])
@@ -114,6 +121,17 @@ def parse_args():
 def unit_field(n, atom, u):
     h = np.zeros((n, 3)); h[atom] = u
     return torch.as_tensor(h, dtype=torch.float32)
+
+
+def hinted_record(m, x0, x1, hint, role, metadata):
+    """A training record for the hinted half: source x0, saddle x1 in x0's frame, hint field (N, 3)."""
+    n = len(m)
+    x0t, x1t = torch.as_tensor(x0, dtype=torch.float32), torch.as_tensor(x1, dtype=torch.float32)
+    return {"start_pos": x0t.clone(), "flow_source_pos": x0t.clone(), "saddle_un_pos": x1t,
+            "partner_un_pos": x0t.clone(), "Z": torch.as_tensor(m.numbers, dtype=torch.long),
+            "cell": torch.as_tensor(m.cell.array, dtype=torch.float32), "fixed": torch.zeros(n, dtype=torch.bool),
+            "task_name": "omat", "charge": 0, "spin": 0, "delta_norm": torch.linalg.vector_norm(x1t - x0t),
+            "role": role, "triplet_id": metadata["tid"], "metadata": metadata, "hint_field": hint}
 
 
 class TierBRows:
@@ -149,14 +167,8 @@ class TierBRows:
             x0 = E + noise
             x0[atom] += a.hint_push * d
         x1 = x0 + hl.mic(m.cell.array, S - x0)          # the saddle in the minimum-image frame of the start
-        x0t, x1t = torch.as_tensor(x0, dtype=torch.float32), torch.as_tensor(x1, dtype=torch.float32)
-        return {"start_pos": x0t.clone(), "flow_source_pos": x0t.clone(), "saddle_un_pos": x1t,
-                "partner_un_pos": x0t.clone(), "Z": torch.as_tensor(m.numbers, dtype=torch.long),
-                "cell": torch.as_tensor(m.cell.array, dtype=torch.float32), "fixed": torch.zeros(n, dtype=torch.bool),
-                "task_name": "omat", "charge": 0, "spin": 0, "delta_norm": torch.linalg.vector_norm(x1t - x0t),
-                "role": "hint_path" if path else "hint_start", "triplet_id": int(tid),
-                "metadata": {"tid": int(tid), "region": int(region), "atom": int(atom)},
-                "hint_field": unit_field(n, atom, d)}
+        return hinted_record(m, x0, x1, unit_field(n, atom, d), "hint_path" if path else "hint_start",
+                             {"tid": int(tid), "region": int(region), "atom": int(atom)})
 
 
 class DatasetRows(TierBRows):
@@ -188,6 +200,29 @@ class DatasetRows(TierBRows):
                         for atom, u, _ in hl.make_hints(m, S_un):
                             self.rows.append((k, 2 * n + side, S_un, atom, u))
                 n += 1
+
+
+class FrameRows:
+    """Near-saddle frames (frames.py): the frame y is x_t at a late time t, the target its region's saddle S."""
+
+    def __init__(self, path, args):
+        self.args, self.frames = args, json.loads(Path(path).read_text())
+
+    def __len__(self):
+        return len(self.frames)
+
+    def record(self, i, rng):
+        f = self.frames[i]
+        m = Atoms(numbers=f["numbers"], cell=f["cell"], pbc=True)
+        y, S = np.array(f["frame"]), np.array(f["saddle"])          # y unwrapped next to S
+        h = f["hints"][int(rng.integers(len(f["hints"])))]
+        d = hl.tilt(np.array(h["direction"]), self.args.hint_tilt, rng)
+        t = rng.uniform(0.7, 0.95)
+        x0 = S + (y - S) / (1 - t)                                 # (1 - t) x0 + t S = y
+        r = hinted_record(m, x0, S, unit_field(len(m), h["atom"], d), "frame",
+                          {"tid": int(f["tid"]), "region": int(f["region"]), "atom": int(h["atom"])})
+        r["flow_time"] = t
+        return r
 
 
 def invert(record):
@@ -225,8 +260,9 @@ class Replay:
 class Pairs(Dataset):
     """Item i = (Tier B row i, a replay record). Training draws are random; validation draws are fixed."""
 
-    def __init__(self, tierb, replay, fixed_seed=None, size=None, inversion=0.0):
+    def __init__(self, tierb, replay, fixed_seed=None, size=None, inversion=0.0, frames=None, frame_prob=0.0):
         self.tierb, self.replay, self.fixed_seed, self.inversion = tierb, replay, fixed_seed, inversion
+        self.frames, self.frame_prob = frames, frame_prob
         self.size = min(size or len(tierb), len(tierb))
         self.order = (np.random.default_rng(fixed_seed).permutation(len(tierb))[:self.size]
                       if fixed_seed is not None else None)
@@ -241,7 +277,11 @@ class Pairs(Dataset):
         else:
             rng = np.random.default_rng([self.fixed_seed, i])
             j = int(self.order[i])
-        pair = (self.tierb.record(j, rng), self.replay.record(int(rng.integers(len(self.replay))), rng))
+        if self.fixed_seed is None and self.frames and rng.random() < self.frame_prob:     # training draws only
+            hinted = self.frames.record(int(rng.integers(len(self.frames))), rng)
+        else:
+            hinted = self.tierb.record(j, rng)
+        pair = (hinted, self.replay.record(int(rng.integers(len(self.replay))), rng))
         if self.fixed_seed is None and self.inversion:          # training draws only
             pair = tuple(invert(r) if rng.random() < self.inversion else r for r in pair)
         return pair
@@ -310,7 +350,8 @@ def main():
                    else DatasetRows(args.dataset_file, args.labels, args))
     tierb_val = TierBRows(args.labels, True, args)
     replay_train, replay_val = Replay("train", args), Replay("val", args)
-    train_ds = Pairs(tierb_train, replay_train, inversion=args.inversion_prob)
+    frames = FrameRows(args.frames, args) if args.frames else None
+    train_ds = Pairs(tierb_train, replay_train, inversion=args.inversion_prob, frames=frames, frame_prob=args.frame_prob)
     val_ds = Pairs(tierb_val, replay_val, fixed_seed=args.seed, size=args.max_val_pairs) if len(tierb_val) else None
     loss, groups, config = build(args, device)
     if local_rank == 0:
@@ -318,7 +359,7 @@ def main():
         print(f"[finetune] hinted rows ({args.hint_rows}): train {len(tierb_train)} ({len(tierb_train.minima)} minima"
               + (f"; {tierb_train.skipped} triplets in Tier B element sets left out" if args.hint_rows == "dataset" else "")
               + f"), Tier B held out {len(tierb_val)}; replay train {len(replay_train)}, val {len(replay_val)}; "
-              f"inversion {args.inversion_prob}")
+              f"inversion {args.inversion_prob}; frames {len(frames) if frames else 0} (p {args.frame_prob if frames else 0})")
         print(f"[finetune] world {world}, {args.batch_pairs} pairs ({2 * args.batch_pairs} records) per GPU; "
               f"trainable parameters {n}")
 

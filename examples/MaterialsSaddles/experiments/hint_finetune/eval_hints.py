@@ -468,9 +468,10 @@ def verify(args, out):
 # ---------------------------------------------------------------- report
 def reference(args, out, minima):
     """Per test minimum: the verified points (old and new), the connected index-1 points <= 1 eV with their region,
-    and the regions (representative position, barrier, labels, whether only stage 2 found them)."""
+    and the regions (representative position, barrier, labels, whether only stage 2 found them).
+    out: an evaluation directory, or a list of them (their verified points pooled into one reference)."""
     points = old_points(args, minima)
-    for c in read_rows(out / "verify" / "verify_*.json"):
+    for c in (c for o in (out if isinstance(out, list) else [out]) for c in read_rows(Path(o) / "verify" / "verify_*.json")):
         if c.get("status") != "error":
             points.setdefault(c["tid"], []).append(dict(c, source="new"))
     ref = {}

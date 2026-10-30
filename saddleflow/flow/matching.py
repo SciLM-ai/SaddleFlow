@@ -236,6 +236,10 @@ def sample_endpoints(
     # coordinate tensors, while the normal loss still masks fixed atoms.
     explicit_source = sample.get("flow_source_pos")
     if explicit_source is not None:
+        # An optional ``flow_time`` fixes t as well, with no x_t perturbation: x_t is then exactly a chosen point
+        # (e.g. a known structure near the saddle, with the source placed so the line passes through it at t).
+        if sample.get("flow_time") is not None:
+            return explicit_source, r_saddle, float(sample["flow_time"]), mobile, 0.0
         t = torch.rand((), generator=generator).item()
         return explicit_source, r_saddle, t, mobile
 
