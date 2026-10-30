@@ -120,7 +120,7 @@ def test_minima(args):
     """{tid: (minimum, group)} for the stable minima of the 30-minimum experiment."""
     old = Path(args.old_dir)
     plan = json.loads((old / "plan.json").read_text())
-    by_tid = {int(m.info["tid"]): m for m in read(Path(plan["run_dir"]) / "minima.traj", index=":")}
+    by_tid = {int(m.info["tid"]): m for m in read(hvn.plan_run_dir(plan) / "minima.traj", index=":")}
     eig = {}
     for l in read_rows(old / "landings" / "landings_*.json"):
         eig.setdefault(l["tid"], l["soft_eigs"][0])

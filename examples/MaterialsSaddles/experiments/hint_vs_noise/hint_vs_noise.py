@@ -120,9 +120,15 @@ def counts(args):
     return {a: max(len(MODEL_ARMS), int(round(n * args.scale))) for a, n in N_STARTS.items()}
 
 
+def plan_run_dir(plan):
+    """The plan's failure-mode run: its recorded path, or the same directory under DATA (data copied elsewhere)."""
+    path = Path(plan["run_dir"])
+    return path if path.exists() else Path(DATA) / path.name
+
+
 def load_plan(args, group=None):
     plan = json.loads((Path(args.out_dir) / "plan.json").read_text())
-    by_tid = {int(m.info["tid"]): m for m in read(Path(plan["run_dir"]) / "minima.traj", index=":")}
+    by_tid = {int(m.info["tid"]): m for m in read(plan_run_dir(plan) / "minima.traj", index=":")}
     rows = [r for r in plan["minima"] if group is None or r["group"] == group]
     if args.limit:
         rows = rows[:args.limit]

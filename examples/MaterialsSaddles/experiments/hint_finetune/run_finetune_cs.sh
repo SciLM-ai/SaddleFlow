@@ -24,12 +24,15 @@
 #   variants both with it; whichever starts first runs, and the other is cancelled)
 #   RESUME=<checkpoint dir> OUT=<run dir> sbatch ... run_finetune_cs.sh       # continue a run
 #   EXTRA="--hint-rows dataset --inversion-prob 0.5" sbatch ... run_finetune_cs.sh   # another arm
+#   RUN_NAME=inversion EXTRA="--inversion-prob 0.5" sbatch --job-name=hint_ft_inv ...  # the pilot + inversion
+#   (RUN_NAME names the run directory, default armA; give each arm its own --job-name so FIRST_WINS only
+#   cancels that arm's twin)
 set -euo pipefail
 REPO="${SADDLEFLOW_REPO:-/u/gqs7zr/SaddleFlow}"
 PYTHON="${SADDLEFLOW_PYTHON:-/u/gqs7zr/.conda/envs/saddleflow/bin/python}"
 export SADDLEFLOW_DATA="${SADDLEFLOW_DATA:-/bigtemp/gqs7zr/saddleflow}"
 LABELS="${LABELS:-$SADDLEFLOW_DATA/hint_finetune/tierb/labels.json}"
-OUT="${OUT:-$SADDLEFLOW_DATA/hint_finetune/runs/armA_${SLURM_JOB_ID}}"
+OUT="${OUT:-$SADDLEFLOW_DATA/hint_finetune/runs/${RUN_NAME:-armA}_${SLURM_JOB_ID}}"
 EXTRA="${EXTRA:---hint-rows dataset}"
 [ -n "${RESUME:-}" ] && EXTRA="$EXTRA --resume-from $RESUME"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
