@@ -80,6 +80,24 @@ class FlowMatchingConfig:
     # u is drawn as U(0,1)**path_u_power: 1.0 is uniform along the path, > 1 biases the start toward the
     # ENDPOINT (u -> 0), which is where the Dimer-like use case actually starts; < 1 biases toward the saddle.
     path_u_power: float = 1.0
+    # Mover starts: x0 = start + u (saddle - start) + N(0, mover_sigma^2) on a set of mobile atoms (the movers), x1 =
+    # saddle, with u = 0 with probability mover_u0_prob, else U(0, 1). The set is every mobile atom with probability
+    # mover_all_prob; the mobile atoms within a radius drawn from U(mover_ball_rmin, mover_ball_rmax) (A, minimum image,
+    # at the start) of the most-moving atom with probability mover_ball_prob (an atom of interest and a cutoff); else
+    # the mobile atoms moving more than mover_thresh from start to saddle (a threshold drawn from U(0, mover_thresh_max)
+    # when that is > 0). The most-moving atom is always in the set. With mover_flag the set is also passed to the
+    # network as a per-atom flag (TimeFiLMBackbone(inject_flag=True)). Noise on every atom of a system without fixed
+    # atoms is made zero-mean (no rigid shift).
+    mover_start_prob: float = 0.0
+    mover_sigma: float = 0.3
+    mover_thresh: float = 0.5
+    mover_thresh_max: float = 0.0
+    mover_all_prob: float = 0.0
+    mover_ball_prob: float = 0.0
+    mover_ball_rmin: float = 3.0
+    mover_ball_rmax: float = 5.0
+    mover_u0_prob: float = 1.0
+    mover_flag: bool = False
     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
@@ -166,6 +184,33 @@ def sample_endpoints(
     r_saddle = sample["saddle_un_pos"]
     partner = sample["partner_un_pos"]
     mobile = ~sample["fixed"]
+    if config.mover_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.mover_start_prob:
+        d = r_saddle - r_start
+        n = torch.where(mobile, d.norm(dim=1), torch.full_like(d[:, 0], -1.0))
+        c = int(n.argmax())                                            # the most-moving mobile atom
+        u_set = (float(torch.rand((), generator=generator)) if config.mover_all_prob > 0.0 or config.mover_ball_prob > 0.0
+                 else 1.0)
+        if u_set < config.mover_all_prob:
+            movers = mobile.clone()
+        elif u_set < config.mover_all_prob + config.mover_ball_prob:
+            rad = config.mover_ball_rmin + float(torch.rand((), generator=generator)) * (config.mover_ball_rmax - config.mover_ball_rmin)
+            movers = mobile & (mic_displacement(r_start, r_start[c].expand_as(r_start), sample["cell"]).norm(dim=1) <= rad)
+        else:
+            thresh = config.mover_thresh
+            if config.mover_thresh_max > 0.0:
+                thresh = float(torch.rand((), generator=generator)) * config.mover_thresh_max
+            movers = mobile & (n > thresh)
+        movers[c] = True
+        eps = gaussian_perturbation(movers, config.mover_sigma, generator=generator, dtype=r_saddle.dtype)
+        if not bool(sample["fixed"].any()) and bool(movers.equal(mobile)):
+            eps = eps - eps.mean(0)
+        u = 0.0
+        if config.mover_u0_prob < 1.0 and float(torch.rand((), generator=generator)) >= config.mover_u0_prob:
+            u = float(torch.rand((), generator=generator))
+        x0 = r_start + u * d + eps
+        sample["_flag"] = movers                                       # read by FlowMatchingLoss when mover_flag
+        t = torch.rand((), generator=generator).item()
+        return x0, r_saddle, t, mobile
     if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
         u = float(torch.rand((), generator=generator)) ** config.path_u_power
         s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint
@@ -622,6 +667,7 @@ class FlowMatchingLoss(nn.Module):
         v_targets: list[torch.Tensor] = []
         t_values: list[float] = []
         fixed_list: list[torch.Tensor] = []
+        flag_list: list[torch.Tensor] = []
         delta_partner_list: list[torch.Tensor] = []  # only used in Mode 1
         eigenmode_targets: list[torch.Tensor] = []   # only when aux loss > 0
         # Collect R and P AtomicData per sample so we can run UMA on the
@@ -746,6 +792,7 @@ class FlowMatchingLoss(nn.Module):
             v_targets.append(v_target)
             t_values.append(t)
             fixed_list.append(sample["fixed"])
+            flag_list.append(sample.pop("_flag", torch.zeros_like(sample["fixed"])))
 
             _denoise = (self.config.ts_denoise_sigma > 0.0
                         or self.config.ts_denoise_sigma_rel_hi > 0.0)
@@ -911,7 +958,9 @@ class FlowMatchingLoss(nn.Module):
         # Step B — Trainable backbone forward(s).
         # ============================================================
         if isinstance(self.backbone, TimeFiLMBackbone):
-            backbone_call = lambda f=None: self.backbone(batch_data, t_tensor, batch_idx, force=f)
+            flag_all = (torch.cat(flag_list, dim=0).to(device).float()
+                        if self.config.mover_flag and self.backbone.inject_flag else None)
+            backbone_call = lambda f=None: self.backbone(batch_data, t_tensor, batch_idx, force=f, flag=flag_all)
         else:
             backbone_call = lambda f=None: self.backbone(batch_data)
 
