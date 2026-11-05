@@ -4,10 +4,11 @@
     sf = SaddleFlow.from_pretrained()               # SciLM/SaddleFlow on the Hugging Face Hub
     guesses = sf.propose(atoms, n=8, seed=0)        # list of ase.Atoms, one per noise draw
 
-Each proposal starts from the input structure plus Gaussian noise on its mobile atoms and integrates the
-flow; with the released defaults this is five passes of four Euler steps (20 network evaluations), each
-pass restarting at t = 0 from the previous endpoint. The proposals are starting points for a saddle
-optimizer: `saddleflow.search.find_saddles` and `SaddleFlowSearch` run Sella on them.
+Each proposal starts from the input structure plus Gaussian noise on its mobile atoms (or on the atoms given
+in `atoms_to_move`) and integrates the flow; with the released defaults this is five passes of four Euler steps
+(20 network evaluations), each pass restarting at t = 0 from the previous endpoint. A model with a per-atom flag
+input (`config["flag"]`, SaddleFlow FM2) is also told which atoms were displaced. The proposals are starting
+points for a saddle optimizer: `saddleflow.search.find_saddles` and `SaddleFlowSearch` run Sella on them.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from ase import Atoms
 from ase.constraints import FixAtoms
 from fairchem.core.datasets.collaters.simple_collater import data_list_collater
 
-from .data.transforms import wrap_positions
+from .data.transforms import mic_displacement, wrap_positions
 from .flow.matching import apply_output_projections, build_atomic_data
 from .models.time_filmed_backbone import TimeFiLMBackbone
 from .models.velocity_head import VelocityHead
@@ -60,7 +61,8 @@ class SaddleFlow(nn.Module):
 
     `config` holds the UMA backbone configuration (`backbone`), the blocks that carry a time-FiLM
     (`film_blocks`), the head depth (`head_depth`), the tasks the model was trained on (`tasks`, with any
-    remapping such as oc22 -> oc20) and the inference defaults (`inference`).
+    remapping such as oc22 -> oc20), the inference defaults (`inference`) and whether the backbone takes a per-atom
+    flag of the displaced atoms (`flag`).
     """
 
     def __init__(self, config: dict):
@@ -70,7 +72,7 @@ class SaddleFlow(nn.Module):
         self.config = config
         raw = eSCNMDMoeBackbone(**{**config["backbone"], **_INFERENCE_OVERRIDES})
         self.backbone = TimeFiLMBackbone(raw, inject_block_indices=list(config["film_blocks"]),
-                                         inject_force=False)
+                                         inject_force=False, inject_flag=bool(config.get("flag", False)))
         self.velocity_head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax,
                                           depth=int(config["head_depth"]))
         self.eval()
@@ -132,12 +134,13 @@ class SaddleFlow(nn.Module):
         dev, B = self.device, len(xs)
         sizes = [int(r["Z"].shape[0]) for r in recs]
         fixed = torch.cat([r["fixed"] for r in recs]).to(dev)
+        flag = torch.cat([r["flag"] for r in recs]).float().to(dev) if self.backbone.inject_flag else None
         for k in range(steps):
             t = torch.full((B,), k / steps, dtype=torch.float32, device=dev)
             data = [build_atomic_data(x, r["Z"], r["cell"], r["task_name"], r["charge"], r["spin"], r["fixed"])
                     for x, r in zip(xs, recs)]
             batch = data_list_collater(data, otf_graph=True).to(dev)
-            h = self.backbone(batch, t, batch.batch)["node_embedding"]
+            h = self.backbone(batch, t, batch.batch, flag=flag)["node_embedding"]
             v = self.velocity_head(h, t, batch.batch)
             v = apply_output_projections(v, fixed, batch.batch, B).cpu().float()
             xs = [wrap_positions(x + dv / steps, r["cell"]) for x, dv, r in zip(xs, torch.split(v, sizes), recs)]
@@ -145,8 +148,9 @@ class SaddleFlow(nn.Module):
 
     def propose(self, atoms: Atoms | Sequence[Atoms], n: int = 1, *, sigma: float | None = None,
                 passes: int | None = None, steps: int | None = None, seed: int | None = None,
-                task_name: str | None = None, batch_size: int = 16,
-                return_passes: bool = False) -> list[Atoms] | list[list[Atoms]]:
+                task_name: str | None = None, batch_size: int = 16, return_passes: bool = False,
+                atoms_to_move: Sequence[int] | Sequence[Sequence[int]] | None = None,
+                radius: float | None = None) -> list[Atoms] | list[list[Atoms]]:
         """Propose `n` saddle points for each input structure.
 
         Args:
@@ -160,6 +164,10 @@ class SaddleFlow(nn.Module):
                 else `omat`.
             batch_size: systems per network call.
             return_passes: also return the endpoint after every pass (`info['passes']`, shape (passes+1, N, 3)).
+            atoms_to_move: the atoms that get the noise (and the flag, for a model with a flag input); None is every
+                mobile atom. One list of indices for every structure, or one list per structure.
+            radius: with `atoms_to_move`, use instead every mobile atom within `radius` (A, minimum image) of those
+                atoms (an atom of interest and a cutoff).
 
         Returns:
             For one input structure, a list of `n` structures; for a list, one such list per structure.
@@ -177,13 +185,26 @@ class SaddleFlow(nn.Module):
         gen = torch.Generator().manual_seed(seed) if seed is not None else None
 
         jobs = []                                            # (structure index, draw, record, start)
+        per_structure = atoms_to_move is not None and len(atoms_to_move) and not np.isscalar(atoms_to_move[0])
         for i, at in enumerate(structures):
             rec = self._record(at, task_name)
             pos = torch.as_tensor(at.get_positions(), dtype=torch.float32)
-            mobile = (~rec["fixed"]).float().unsqueeze(1)
+            moved = ~rec["fixed"]
+            if atoms_to_move is not None:
+                chosen = torch.as_tensor(atoms_to_move[i] if per_structure else atoms_to_move, dtype=torch.long)
+                if radius is None:
+                    moved = moved & torch.zeros_like(moved).index_fill(0, chosen, True)
+                else:
+                    near = torch.stack([mic_displacement(pos, pos[c].expand_as(pos), rec["cell"]).norm(dim=1) <= radius
+                                        for c in chosen.tolist()]).any(0)
+                    moved = moved & near
+            rec["flag"] = moved
             for d in range(n):
                 noise = torch.randn(pos.shape, generator=gen) if gen is not None else torch.randn(pos.shape)
-                jobs.append((i, d, rec, wrap_positions(pos + sigma * noise * mobile, rec["cell"])))
+                noise = noise * moved.float().unsqueeze(1)
+                if self.backbone.inject_flag and not bool(rec["fixed"].any()) and bool(moved.all()):
+                    noise = noise - noise.mean(0)            # every atom noised, no anchor: no rigid shift (as trained)
+                jobs.append((i, d, rec, wrap_positions(pos + sigma * noise, rec["cell"])))
 
         out = [[None] * n for _ in structures]
         with _no_tf32():
@@ -204,6 +225,8 @@ class SaddleFlow(nn.Module):
                                      saddleflow_steps=steps, task_name=rec["task"])
                     if seed is not None:
                         prop.info["saddleflow_seed"] = seed
+                    if atoms_to_move is not None:
+                        prop.info["saddleflow_atoms"] = np.flatnonzero(rec["flag"].numpy())
                     if return_passes:
                         prop.info["passes"] = np.stack(trace[j], 0)
                     out[i][d] = prop

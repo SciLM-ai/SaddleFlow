@@ -96,6 +96,7 @@ class TimeFiLMBackbone(nn.Module):
         inject_block_indices: list[int] | None = None,
         inject_force: bool = False,
         inject_hint: bool = False,
+        inject_flag: bool = False,
     ):
         """Args:
             inject_force: if True, ALSO apply a per-injection-point ForceFiLM
@@ -149,6 +150,14 @@ class TimeFiLMBackbone(nn.Module):
                 HintFiLM(channels=backbone.sphere_channels, lmax=backbone.lmax)
                 for _ in self.inject_block_indices
             ])
+        # Per-atom flag (e.g. "this atom was displaced"): a zero-initialised linear map from the flag to the l = 0
+        # channels, added at each injection point, so the wrapper equals the flag-free one at init.
+        self.inject_flag = inject_flag
+        if inject_flag:
+            self.flag_films = nn.ModuleList([nn.Linear(1, backbone.sphere_channels) for _ in self.inject_block_indices])
+            for lin in self.flag_films:
+                nn.init.zeros_(lin.weight); nn.init.zeros_(lin.bias)
+        self._flag: torch.Tensor | None = None
 
         # Per-call state read by the pre-hooks. Set in forward(...).
         self._t: torch.Tensor | None = None
@@ -187,6 +196,7 @@ class TimeFiLMBackbone(nn.Module):
         film = self.films[film_idx]
         force_film = self.force_films[film_idx] if self.inject_force else None
         hint_film = self.hint_films[film_idx] if self.inject_hint else None
+        flag_film = self.flag_films[film_idx] if self.inject_flag else None
         def hook(module, args, kwargs):
             if self._t is None or self._batch_idx is None:
                 # v7-2b static-featurisation mode: caller invoked
@@ -205,6 +215,10 @@ class TimeFiLMBackbone(nn.Module):
                 if self._hint is None:
                     raise ValueError("this backbone was built with inject_hint=True; pass hint=(N, 3)")
                 x_filmed = hint_film(x_filmed, self._hint)
+            if flag_film is not None and self._flag is not None:
+                add = torch.zeros_like(x_filmed)
+                add[:, 0, :] = flag_film(self._flag.to(x_filmed.dtype).unsqueeze(-1))
+                x_filmed = x_filmed + add
             return (x_filmed,) + args[1:], kwargs
         return hook
 
@@ -215,6 +229,7 @@ class TimeFiLMBackbone(nn.Module):
         batch_idx: torch.Tensor,
         force: torch.Tensor | None = None,
         hint: torch.Tensor | None = None,
+        flag: torch.Tensor | None = None,
     ) -> dict:
         """Run the backbone with time-FiLM (and optionally force-FiLM, v6+)
         applied at the configured injection points.
@@ -237,6 +252,7 @@ class TimeFiLMBackbone(nn.Module):
         self._batch_idx = batch_idx
         self._force = force
         self._hint = hint
+        self._flag = flag
         try:
             return self.backbone(data)
         finally:
@@ -244,6 +260,7 @@ class TimeFiLMBackbone(nn.Module):
             self._batch_idx = None
             self._force = None
             self._hint = None
+            self._flag = None
 
     def forward_static(self, data) -> dict:
         """v7-2b: run the underlying UMA backbone WITHOUT time-FiLM and WITHOUT

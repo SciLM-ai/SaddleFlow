@@ -1,0 +1,729 @@
+# Unified diff from this branch's code (a/) to the code snapshot that trained FM2 (b/ = code_snap_1025). Every
+# hunk is an option FM2 left at its default (off), a comment, or code this branch adds (saddleflow/selector.py is
+# omitted: it is new here and not used in training).
+--- a/saddleflow/flow/matching.py
++++ b/saddleflow/flow/matching.py
+@@ -80,24 +80,117 @@
+     # u is drawn as U(0,1)**path_u_power: 1.0 is uniform along the path, > 1 biases the start toward the
+     # ENDPOINT (u -> 0), which is where the Dimer-like use case actually starts; < 1 biases toward the saddle.
+     path_u_power: float = 1.0
+-    # Mover starts: x0 = start + u (saddle - start) + N(0, mover_sigma^2) on a set of mobile atoms (the movers), x1 =
+-    # saddle, with u = 0 with probability mover_u0_prob, else U(0, 1). The set is every mobile atom with probability
+-    # mover_all_prob; the mobile atoms within a radius drawn from U(mover_ball_rmin, mover_ball_rmax) (A, minimum image,
+-    # at the start) of the most-moving atom with probability mover_ball_prob (an atom of interest and a cutoff); else
+-    # the mobile atoms moving more than mover_thresh from start to saddle (a threshold drawn from U(0, mover_thresh_max)
+-    # when that is > 0). The most-moving atom is always in the set. With mover_flag the set is also passed to the
+-    # network as a per-atom flag (TimeFiLMBackbone(inject_flag=True)). Noise on every atom of a system without fixed
+-    # atoms is made zero-mean (no rigid shift).
++    # Smallest u a path start may have: u = path_u_min + (1 - path_u_min) * U(0,1)**path_u_power.  0 keeps the
++    # original recipe; > 0 removes the starts at the bare endpoint + noise.
++    path_u_min: float = 0.0
++    # Probability that a path start carries NO noise (the point lies exactly on the start -> saddle line);
++    # otherwise the usual path_noise_sigma. 0 keeps the original recipe, 1 is noise-free path starts.
++    path_exact_prob: float = 0.0
++    # Single-ended conditioning: feed the head only the displacement to the START endpoint (the reactant);
++    # the product slot of the two-endpoint input is zero. Needs delta_endpoint_channels > 0.
++    start_only_condition: bool = False
++    # Local TS-denoise (LiC-style for many-atom cells): if > 0, the TS-denoise noise goes only on the k mobile atoms
++    # that move most between the start and the saddle (the reacting atoms), instead of on every mobile atom.
++    ts_denoise_local_k: int = 0
++    # Line starts: the training point lies EXACTLY on the straight line start -> saddle, at fraction u drawn from a
++    # half-Gaussian N(0, line_u_sigma^2) on [0, 1) (most samples near the start), with t ~ U(0, line_t_max)
++    # independent of u; the target is the exact velocity (saddle - x)/(1 - t) that reaches the saddle at t = 1.
++    # Built by choosing x0 = start + (u - t)/(1 - t) (saddle - start), so (1 - t) x0 + t saddle is that point.
++    line_start_prob: float = 0.0
++    line_u_sigma: float = 0.3
++    line_t_max: float = 0.9
++    # Localized off-line noise on line starts: if sigma > 0, x0 gets Gaussian noise (std sigma) on the k mobile atoms
++    # that move most from start to saddle, with its component along the start -> saddle line removed. The line target
++    # (saddle - x_t)/(1 - t) then undoes it while the on-line part continues: "a localized displacement that is not
++    # along the reaction is noise", which a pure line start never shows.
++    line_local_noise_sigma: float = 0.0
++    line_local_noise_k: int = 3
++    # How the off-line noise is spread (always projected orthogonal to the line afterwards):
++    #   "topk"    std sigma, isotropic, on the k most-moving mobile atoms (the original MIXLN recipe)
++    #   "peratom" std sigma * |d_a| / max|d_a| on every mobile atom a, isotropic in x/y/z (weighted by participation)
++    #   "perdof"  std sigma * |d_i| / max|d_i| on every mobile degree of freedom i (follows the reaction's own pattern)
++    line_local_noise_mode: str = "topk"
++    # Seed starts: x0 = start + u (saddle - start) + a LOCAL seed + a small background, x1 = saddle. The seed is
++    # N(0, seed_sigma^2) on the mobile atoms within seed_radius (A, minimum image, in the start structure) of the
++    # mobile atom that moves most from start to saddle, that atom included; the background is N(0, seed_bg_sigma^2)
++    # on every mobile atom; u is 0 with probability seed_u0_prob, else U(0,1). The footprint has a fixed shape, so
++    # inference can reproduce it around any chosen centre atom (seed_perturbation): where the noise sits tells the
++    # network where the event is, and its direction picks among the few events at that site. Isotropic noise on every
++    # mobile atom instead gives each site only a ~1/(number of sites) chance of hosting the event, so a local network
++    # learns to undo the noise everywhere and falls back to the minimum.
++    seed_start_prob: float = 0.0
++    seed_sigma: float = 0.3
++    seed_radius: float = 3.2
++    seed_bg_sigma: float = 0.05
++    seed_u0_prob: float = 0.5
++    # Seed footprint: "ball" is the fixed shape above; "event" seeds the mobile atoms within seed_radius of the
++    # most-moving atom OR of any mobile atom moving more than seed_move_thresh (A) from start to saddle, so the whole
++    # event is covered. Its shape depends on the event; inference has to approximate it (e.g. two neighbour shells).
++    # "ellipsoid" seeds the mobile atoms inside an ellipsoid on the most-moving atom with three semi-axes drawn
++    # uniformly from [seed_ell_min, seed_ell_max] (A) and a uniformly random orientation, new for every sample; it
++    # tells where the event is but not its shape, and inference draws the same ellipsoids around a chosen centre.
++    seed_footprint: str = "ball"
++    seed_move_thresh: float = 0.2
++    seed_ell_min: float = 2.0
++    seed_ell_max: float = 5.0
++    # Mover starts: x0 = base + N(0, mover_sigma^2) on the mover atoms only, x1 = saddle, where the movers are the
++    # mobile atoms moving more than mover_thresh (A) from start to saddle plus the most-moving one, and base is the
++    # saddle (mover_base "saddle": transition-state denoising on the reacting atoms, as examples/LiC) or the start
++    # structure ("start").
+     mover_start_prob: float = 0.0
+     mover_sigma: float = 0.3
+-    mover_thresh: float = 0.5
+-    mover_thresh_max: float = 0.0
++    mover_thresh: float = 0.2
++    mover_base: str = "saddle"
++    # Tell the network which atoms were displaced (a per-atom flag into TimeFiLMBackbone(inject_flag=True)).
++    mover_flag: bool = False
++    # With mover_base "saddle": put the non-mover atoms at their START positions instead of the saddle's, so the
++    # network also learns to move them (their relaxation) to the saddle, as it must when inference starts at a minimum.
++    mover_rest_at_start: bool = False
++    # Mover starts: with probability mover_edit_prob, edit the noised and flagged set before drawing the noise: add one
++    # random mobile atom within mover_edit_radius (A) of the set or, equally likely, drop one random mover other than
++    # the most-moving one (one-atom sets stay as they are), so the model learns to tolerate imperfect atom sets.
++    mover_edit_prob: float = 0.0
++    mover_edit_radius: float = 3.2
++    # Line part for mover starts with mover_base "start": x0 = start + u (saddle - start) + mover noise, u = 0 with
++    # probability mover_u0_prob, else U(0, 1) (1.0: always at the start, no line).
++    mover_u0_prob: float = 1.0
++    # Line part: u = U(0, 1) ** mover_u_power (2: biased toward the start, as the paper's path starts); 1: uniform.
++    mover_u_power: float = 1.0
++    # Mover set cap: if more than mover_max atoms move more than mover_thresh, keep the mover_max that move most (0: no cap).
++    mover_max: int = 0
++    # Mover starts: background noise N(0, mover_bg_sigma^2) on the other mobile atoms (not flagged), 0: none; with
++    # mover_bg_radius > 0 only on those within mover_bg_radius (A, minimum image, at the start) of a mover.
++    mover_bg_sigma: float = 0.0
++    mover_bg_radius: float = 0.0
++    # Mover set definition mix: with probability mover_all_prob the set is every mobile atom (noise and flag on all, the
++    # released model's start); otherwise, with mover_thresh_max > 0, the threshold is drawn per example from
++    # U(0, mover_thresh_max) instead of mover_thresh (0, 0: the fixed mover_thresh). A set of every mobile atom in a system
++    # without fixed atoms gets zero-mean noise (no rigid shift).
+     mover_all_prob: float = 0.0
++    mover_thresh_max: float = 0.0
++    # Ball sets: with probability mover_ball_prob the set is every mobile atom within a radius drawn from
++    # U(mover_ball_rmin, mover_ball_rmax) (A, minimum image, at the start) of the most-moving atom, which is always in it
++    # (as a user who picks one atom of interest and a cutoff). Drawn after mover_all_prob; the rest are threshold sets.
+     mover_ball_prob: float = 0.0
+     mover_ball_rmin: float = 3.0
+     mover_ball_rmax: float = 5.0
+-    mover_u0_prob: float = 1.0
+-    mover_flag: bool = False
++    # Patch starts: x0 = start + N(0, patch_sigma^2) on the patch (the mobile atoms within patch_radius of the
++    # most-moving atom, which is always in it), the patch flagged (sample["_flag"]), x1 = saddle. With patch_partition
++    # the noise is redrawn until it lines up (cosine over the patch) better with this saddle's displacement than with
++    # the other saddles that share the start and the most-moving atom (sample["patch_cands"]: (m, P, 3), own first),
++    # so the noise direction tells which of them to make; at inference random noise then picks one of them.
++    patch_start_prob: float = 0.0
++    patch_sigma: float = 0.3
++    patch_radius: float = 3.2
++    patch_partition: bool = True
++    patch_max_tries: int = 500
++    # Line part for patch starts: x0 = start + u (saddle - start) + patch noise, u = 0 with probability patch_u0_prob,
++    # else U(0, 1) (1.0: always at the start, no line).
++    patch_u0_prob: float = 1.0
++    # Patch and mover starts: redraw the noise (at most patch_max_tries times) until its cosine with this saddle's
++    # displacement from the start, over the noised atoms, exceeds noise_tau, so the noise points toward this saddle.
++    # Unlike patch_partition it needs no other saddles of the same start. None: off.
++    noise_tau: float | None = None
+     # Noise width may VARY along the path.  sigma(u) is linear between the two ends:
+     #     sigma(u) = path_noise_sigma_endpoint + (path_noise_sigma_saddle - path_noise_sigma_endpoint) * u
+     # u = 0 is the ENDPOINT (reactant or product, where the Dimer-like use case actually starts) and u = 1 is
+@@ -163,6 +256,56 @@
+     energy_conditioning: bool = False
+ 
+ 
++def _local_offline_noise(d, mobile, k, sigma, generator, mode="topk"):
++    """Off-line noise for a line start (see FlowMatchingConfig.line_local_noise_mode), minus its component along
++    d = saddle - start (flattened over all atoms), so it is exactly orthogonal to the reaction line. Mobile atoms only."""
++    mi = mobile.nonzero().squeeze(1)                       # choose among mobile atoms only (never a frozen one)
++    eps = torch.zeros_like(d)
++    if mode == "topk":
++        idx = mi[torch.topk(d[mi].norm(dim=1), min(int(k), len(mi))).indices]
++        eps[idx] = torch.randn((len(idx), 3), generator=generator, dtype=d.dtype).to(d.device) * sigma
++    elif mode == "peratom":
++        w = d[mi].norm(dim=1); w = w / w.max().clamp_min(1e-8)
++        eps[mi] = torch.randn((len(mi), 3), generator=generator, dtype=d.dtype).to(d.device) * (sigma * w[:, None])
++    elif mode == "perdof":
++        w = d[mi].abs(); w = w / w.max().clamp_min(1e-8)
++        eps[mi] = torch.randn((len(mi), 3), generator=generator, dtype=d.dtype).to(d.device) * (sigma * w)
++    else:
++        raise ValueError(f"unknown line_local_noise_mode {mode!r}")
++    dhat = d / d.norm().clamp_min(1e-8)
++    return eps - (eps * dhat).sum() * dhat
++
++
++def seed_perturbation(pos, center, mobile, cell, sigma, radius, generator=None):
++    """N(0, sigma^2) on the mobile atoms within `radius` (A, minimum image) of atom `center` in `pos` (an index, or a
++    list of indices: within `radius` of any of them), those atoms included; zero elsewhere. The seed of a seed start
++    (FlowMatchingConfig.seed_start_prob) and of its inference."""
++    near = torch.zeros(len(pos), dtype=torch.bool, device=pos.device)
++    for c in torch.as_tensor(center).reshape(-1).tolist():
++        near |= mic_displacement(pos, pos[c].expand_as(pos), cell).norm(dim=1) <= radius
++    return gaussian_perturbation(mobile & near, sigma, generator=generator, dtype=pos.dtype)
++
++
++def ellipsoid_perturbation(pos, center, mobile, cell, sigma, ell_min, ell_max, generator=None):
++    """N(0, sigma^2) on the mobile atoms inside an ellipsoid on atom `center` in `pos` with three semi-axes drawn
++    uniformly from [ell_min, ell_max] (A) and a uniformly random orientation (minimum image); zero elsewhere."""
++    axes = ell_min + (ell_max - ell_min) * torch.rand(3, generator=generator, dtype=pos.dtype)
++    w, x, y, z = torch.randn(4, generator=generator, dtype=pos.dtype).tolist()
++    n = (w * w + x * x + y * y + z * z) ** 0.5; w, x, y, z = w / n, x / n, y / n, z / n       # uniform unit quaternion
++    rot = torch.tensor([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
++                        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
++                        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]], dtype=pos.dtype)
++    r = mic_displacement(pos, pos[center].expand_as(pos), cell)
++    inside = (((r @ rot.to(pos.device)) / axes.to(pos.device)) ** 2).sum(1) <= 1.0
++    return gaussian_perturbation(mobile & inside, sigma, generator=generator, dtype=pos.dtype)
++
++
++def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
++    """Cosine between two per-atom displacement sets (flattened)."""
++    a, b = a.reshape(-1), b.reshape(-1).to(a.dtype)
++    return float((a @ b) / (a.norm() * b.norm()).clamp_min(1e-8))
++
++
+ def sample_endpoints(
+     sample: dict,
+     config: FlowMatchingConfig,
+@@ -184,38 +327,122 @@
+     r_saddle = sample["saddle_un_pos"]
+     partner = sample["partner_un_pos"]
+     mobile = ~sample["fixed"]
+-    if config.mover_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.mover_start_prob:
++    if config.patch_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.patch_start_prob:
+         d = r_saddle - r_start
+-        n = torch.where(mobile, d.norm(dim=1), torch.full_like(d[:, 0], -1.0))
+-        c = int(n.argmax())                                            # the most-moving mobile atom
++        c = int(torch.where(mobile, d.norm(dim=1), torch.full_like(d[:, 0], -1.0)).argmax())
++        patch = mobile & (mic_displacement(r_start, r_start[c].expand_as(r_start), sample["cell"]).norm(dim=1)
++                          <= config.patch_radius)
++        patch[c] = True
++        cands = sample.get("patch_cands")
++        for _ in range(config.patch_max_tries):
++            eps = gaussian_perturbation(patch, config.patch_sigma, generator=generator, dtype=r_saddle.dtype)
++            if config.noise_tau is not None and _cosine(eps[patch], d[patch]) <= config.noise_tau:
++                continue
++            if not config.patch_partition or cands is None or len(cands) < 2:
++                break
++            e = eps[patch].reshape(-1); cv = cands.reshape(len(cands), -1).to(e.dtype)
++            if int(((cv @ e) / cv.norm(dim=1).clamp_min(1e-8)).argmax()) == 0:
++                break
++        u = 0.0
++        if config.patch_u0_prob < 1.0 and float(torch.rand((), generator=generator)) >= config.patch_u0_prob:
++            u = float(torch.rand((), generator=generator))
++        x0 = r_start + u * d + eps
++        sample["_flag"] = patch                                        # read by FlowMatchingLoss when mover_flag
++        t = torch.rand((), generator=generator).item()
++        return x0, r_saddle, t, mobile
++    if config.mover_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.mover_start_prob:
++        n = torch.where(mobile, (r_saddle - r_start).norm(dim=1), torch.full_like(r_start[:, 0], -1.0))
+         u_set = (float(torch.rand((), generator=generator)) if config.mover_all_prob > 0.0 or config.mover_ball_prob > 0.0
+                  else 1.0)
+         if u_set < config.mover_all_prob:
+             movers = mobile.clone()
+         elif u_set < config.mover_all_prob + config.mover_ball_prob:
++            c = int(n.argmax())
+             rad = config.mover_ball_rmin + float(torch.rand((), generator=generator)) * (config.mover_ball_rmax - config.mover_ball_rmin)
+             movers = mobile & (mic_displacement(r_start, r_start[c].expand_as(r_start), sample["cell"]).norm(dim=1) <= rad)
++            movers[c] = True
+         else:
+             thresh = config.mover_thresh
+             if config.mover_thresh_max > 0.0:
+                 thresh = float(torch.rand((), generator=generator)) * config.mover_thresh_max
+             movers = mobile & (n > thresh)
+-        movers[c] = True
+-        eps = gaussian_perturbation(movers, config.mover_sigma, generator=generator, dtype=r_saddle.dtype)
+-        if not bool(sample["fixed"].any()) and bool(movers.equal(mobile)):
++            movers[int(n.argmax())] = True
++        if config.mover_max > 0 and int(movers.sum()) > config.mover_max:
++            keep = torch.topk(torch.where(movers, n, torch.full_like(n, -1.0)), config.mover_max).indices
++            movers = torch.zeros_like(movers); movers[keep] = True
++        if config.mover_base not in ("saddle", "start"):
++            raise ValueError(f"unknown mover_base {config.mover_base!r}")
++        base = r_saddle if config.mover_base == "saddle" else r_start
++        if config.mover_rest_at_start:
++            base = torch.where(movers.unsqueeze(-1), r_saddle, r_start)
++        if config.mover_edit_prob > 0.0 and float(torch.rand((), generator=generator)) < config.mover_edit_prob:
++            add = float(torch.rand((), generator=generator)) < 0.5
++            if add:
++                near = torch.stack([mic_displacement(r_start, r_start[j].expand_as(r_start), sample["cell"]).norm(dim=1)
++                                    for j in torch.where(movers)[0]]).min(0).values
++                cand = torch.where(mobile & ~movers & (near <= config.mover_edit_radius))[0]
++            else:
++                cand = torch.where(movers)[0]
++                cand = cand[cand != int(n.argmax())]
++            if len(cand):
++                movers = movers.clone()
++                movers[cand[int(torch.randint(len(cand), (1,), generator=generator))]] = add
++        for _ in range(config.patch_max_tries):
++            eps = gaussian_perturbation(movers, config.mover_sigma, generator=generator, dtype=r_saddle.dtype)
++            if config.noise_tau is None or _cosine(eps[movers], (r_saddle - r_start)[movers]) > config.noise_tau:
++                break
++        if not bool(sample["fixed"].any()) and bool(movers.equal(mobile)):  # noise on every atom, no anchor: no rigid shift
+             eps = eps - eps.mean(0)
+-        u = 0.0
+         if config.mover_u0_prob < 1.0 and float(torch.rand((), generator=generator)) >= config.mover_u0_prob:
+-            u = float(torch.rand((), generator=generator))
+-        x0 = r_start + u * d + eps
++            base = base + float(torch.rand((), generator=generator)) ** config.mover_u_power * (r_saddle - r_start)
++        if config.mover_bg_sigma > 0.0:
++            bg = mobile & ~movers
++            if config.mover_bg_radius > 0.0:
++                near = torch.stack([mic_displacement(r_start, r_start[j].expand_as(r_start), sample["cell"]).norm(dim=1)
++                                    for j in torch.where(movers)[0]]).min(0).values
++                bg = bg & (near <= config.mover_bg_radius)
++            eps = eps + gaussian_perturbation(bg, config.mover_bg_sigma, generator=generator, dtype=r_saddle.dtype)
++        x0 = base + eps
+         sample["_flag"] = movers                                       # read by FlowMatchingLoss when mover_flag
+         t = torch.rand((), generator=generator).item()
+         return x0, r_saddle, t, mobile
++    if config.seed_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.seed_start_prob:
++        d = r_saddle - r_start
++        center = int(torch.where(mobile, d.norm(dim=1), torch.full_like(d[:, 0], -1.0)).argmax())
++        if config.seed_footprint == "event":
++            center = [center] + (mobile & (d.norm(dim=1) > config.seed_move_thresh)).nonzero().squeeze(1).tolist()
++        elif config.seed_footprint not in ("ball", "ellipsoid"):
++            raise ValueError(f"unknown seed_footprint {config.seed_footprint!r}")
++        u = 0.0
++        if float(torch.rand((), generator=generator)) >= config.seed_u0_prob:
++            u = float(torch.rand((), generator=generator))
++        if config.seed_footprint == "ellipsoid":
++            seed = ellipsoid_perturbation(r_start, center, mobile, sample["cell"], config.seed_sigma,
++                                          config.seed_ell_min, config.seed_ell_max, generator)
++        else:
++            seed = seed_perturbation(r_start, center, mobile, sample["cell"], config.seed_sigma, config.seed_radius,
++                                     generator)
++        x0 = (r_start + u * d + seed
++              + gaussian_perturbation(mobile, config.seed_bg_sigma, generator=generator, dtype=r_saddle.dtype))
++        t = torch.rand((), generator=generator).item()
++        return x0, r_saddle, t, mobile
++    if config.line_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.line_start_prob:
++        u = 1.0
++        while u >= 1.0:
++            u = abs(float(torch.randn((), generator=generator))) * config.line_u_sigma
++        t = float(torch.rand((), generator=generator)) * config.line_t_max
++        x0 = r_start + ((u - t) / (1.0 - t)) * (r_saddle - r_start)
++        if config.line_local_noise_sigma > 0.0:
++            x0 = x0 + _local_offline_noise(r_saddle - r_start, mobile, config.line_local_noise_k,
++                                           config.line_local_noise_sigma, generator, config.line_local_noise_mode)
++        return x0, r_saddle, t, mobile
+     if config.path_start_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_start_prob:
+-        u = float(torch.rand((), generator=generator)) ** config.path_u_power
++        u = config.path_u_min + (1.0 - config.path_u_min) * float(torch.rand((), generator=generator)) ** config.path_u_power
+         s_end = config.path_noise_sigma if config.path_noise_sigma_endpoint is None else config.path_noise_sigma_endpoint
+         s_sad = config.path_noise_sigma if config.path_noise_sigma_saddle is None else config.path_noise_sigma_saddle
+         sigma_u = s_end + (s_sad - s_end) * u
++        if config.path_exact_prob > 0.0 and float(torch.rand((), generator=generator)) < config.path_exact_prob:
++            sigma_u = 0.0
+         eps = gaussian_perturbation(mobile, sigma_u, generator=generator, dtype=r_saddle.dtype)
+         x0 = r_start + u * (r_saddle - r_start) + eps      # r_saddle is MIC-unwrapped to r_start: the line is the short path
+         t = torch.rand((), generator=generator).item()
+@@ -245,6 +472,11 @@
+             sig = sig + u * (config.ts_denoise_sigma_max - sig)
+         eps = gaussian_perturbation(mobile, sig, generator=generator,
+                                     dtype=r_saddle.dtype)
++        if config.ts_denoise_local_k > 0:
++            disp = (r_saddle - r_start).norm(dim=-1).masked_fill(~mobile, -1.0)
++            k = min(config.ts_denoise_local_k, int(mobile.sum()))
++            keep = torch.zeros_like(mobile); keep[torch.topk(disp, k).indices] = True
++            eps = eps * keep.unsqueeze(-1).to(eps.dtype)
+         x0 = r_saddle + eps
+         x1 = r_saddle
+         t = torch.rand((), generator=generator).item()
+@@ -810,6 +1042,8 @@
+                 partner = sample["partner_un_pos"]
+                 delta_R = mic_displacement(start_pos, x_t, sample["cell"])
+                 delta_P = mic_displacement(partner, x_t, sample["cell"])
++                if self.config.start_only_condition:
++                    delta_P = torch.zeros_like(delta_R)
+                 delta_partner_list.append(torch.stack([delta_R, delta_P], dim=1))
+ 
+             if want_endpoint_features:
+--- a/examples/MaterialsSaddles/train.py
++++ b/examples/MaterialsSaddles/train.py
+@@ -292,6 +292,24 @@
+                         "sigma(u) interpolates linearly between the two: equal values reproduce the constant "
+                         "tube; endpoint 0 gives a cone with its apex on the minimum, so the perturbation "
+                         "direction predicts which saddle is the target instead of being averaged away.")
++    p.add_argument("--line-start-prob", type=float, default=0.0,
++                   help="Probability of a line start: a point exactly on start->saddle at u ~ |N(0, line-u-sigma)|, t ~ U(0, line-t-max), exact target.")
++    p.add_argument("--line-u-sigma", type=float, default=0.3)
++    p.add_argument("--line-t-max", type=float, default=0.9)
++    p.add_argument("--line-local-noise-sigma", type=float, default=0.0,
++                   help="Noise on the k most-moving atoms of a line start, orthogonal to the line; the target undoes it.")
++    p.add_argument("--line-local-noise-k", type=int, default=3)
++    p.add_argument("--line-local-noise-mode", choices=("topk", "peratom", "perdof"), default="topk",
++                   help="topk: sigma on the k most-moving atoms; peratom: sigma*|d_a|/max|d_a| per mobile atom; "
++                        "perdof: sigma*|d_i|/max|d_i| per mobile degree of freedom.")
++    p.add_argument("--ts-denoise-local-k", type=int, default=0,
++                   help="TS-denoise noise only on the k atoms that move most start->saddle (0 = all mobile atoms).")
++    p.add_argument("--start-only-condition", action="store_true",
++                   help="Condition the head on the reactant only (product slot zero); the new fuse layer starts as identity.")
++    p.add_argument("--path-exact-prob", type=float, default=0.0,
++                   help="Probability that a path start has no noise (exactly on the start-saddle line).")
++    p.add_argument("--path-u-min", type=float, default=0.0,
++                   help="Smallest u of a path start (0 = original recipe; > 0 = no starts at the bare endpoint).")
+     p.add_argument("--path-u-power", type=float, default=1.0,
+                    help="u = U(0,1)**power along the start->saddle line; >1 biases starts toward the endpoint.")
+     p.add_argument("--mixed-start-prob", type=float, default=0.0,
+@@ -408,32 +426,42 @@
+     p.add_argument("--inject-force", action=argparse.BooleanOptionalAction, default=True)
+     p.add_argument("--force-residual", action=argparse.BooleanOptionalAction, default=False)
+     p.add_argument("--xt-perturb-sigma", type=float, default=0.0)
+-    # v7-4: backbone-level force-FiLM is now OFF by default. Forces are still
+-    # used: (a) injected at the velocity / eigenmode heads via force_field_channels,
+-    # (b) used to compute F_dimer for the output-side Dimer residual. We just
+-    # don't perturb the unfrozen UMA blocks' inputs with force-FiLM, since
+-    # those blocks weren't pretrained to receive that signal and the head-level
+-    # injection already gives the model access to F.
+-    p.add_argument("--force-film", action=argparse.BooleanOptionalAction, default=False)
+-    # Mover starts (FlowMatchingConfig.mover_*): noise on a set of mobile atoms, optionally flagged to the network.
++    # Mover starts (the Al RF03X recipe): x0 = start + N(0, mover_sigma^2) on the atoms moving more than mover_thresh from
++    # start to saddle (plus the most-moving one), optionally on the start -> saddle line (mover_u0_prob < 1), those atoms
++    # flagged through the backbone's per-atom flag input (--inject-flag); x1 = saddle.
+     p.add_argument("--mover-start-prob", type=float, default=0.0)
++    p.add_argument("--mover-base", choices=("saddle", "start"), default="start")
++    p.add_argument("--mover-thresh", type=float, default=0.5)
+     p.add_argument("--mover-sigma", type=float, default=0.3)
+-    p.add_argument("--mover-thresh", type=float, default=0.5,
+-                   help="mover starts: atoms moving more than this (A) from start to saddle, plus the most-moving one")
++    p.add_argument("--mover-u0-prob", type=float, default=1.0,
++                   help="mover starts: share at the start (u = 0); the rest on the start -> saddle line, u ~ U(0, 1)")
++    p.add_argument("--mover-u-power", type=float, default=1.0,
++                   help="mover starts, line part: u = U(0, 1) ** power (2: the paper's path-start bias toward the start)")
++    p.add_argument("--mover-max", type=int, default=0,
++                   help="mover starts: keep at most this many movers (the most-moving ones); 0 = no cap")
++    p.add_argument("--mover-all-prob", type=float, default=0.0,
++                   help="mover starts: share whose set is every mobile atom (the released model's all-atom start)")
+     p.add_argument("--mover-thresh-max", type=float, default=0.0,
+                    help="mover starts: draw the threshold per example from U(0, this) (A); 0 = the fixed --mover-thresh")
+-    p.add_argument("--mover-all-prob", type=float, default=0.0,
+-                   help="mover starts: share whose set is every mobile atom")
+     p.add_argument("--mover-ball-prob", type=float, default=0.0,
+                    help="mover starts: share whose set is the mobile atoms within a random radius of the most-moving atom")
+     p.add_argument("--mover-ball-rmin", type=float, default=3.0, help="ball sets: smallest radius (A)")
+     p.add_argument("--mover-ball-rmax", type=float, default=5.0, help="ball sets: largest radius (A)")
+-    p.add_argument("--mover-u0-prob", type=float, default=1.0,
+-                   help="mover starts: share at the start (u = 0); the rest on the start -> saddle line, u ~ U(0, 1)")
+-    p.add_argument("--inject-flag", action="store_true",
+-                   help="flag the mover set through TimeFiLMBackbone's per-atom flag input (needs --early-time-film)")
+     p.add_argument("--align-com", action="store_true",
+-                   help="systems without fixed atoms: remove the saddle's and partner's rigid drift from the start")
++                   help="systems without fixed atoms: shift saddle and partner to zero mean displacement from the start")
++    p.add_argument("--mover-bg-sigma", type=float, default=0.0,
++                   help="mover starts: N(0, sigma^2) also on the other (unflagged) mobile atoms; 0 = they start exactly")
++    p.add_argument("--mover-bg-radius", type=float, default=0.0,
++                   help="mover starts: background noise only on atoms within this distance (A) of a mover; 0 = all")
++    p.add_argument("--inject-flag", action="store_true",
++                   help="per-atom flag of the noised atoms into TimeFiLMBackbone (needs --early-time-film)")
++    # v7-4: backbone-level force-FiLM is now OFF by default. Forces are still
++    # used: (a) injected at the velocity / eigenmode heads via force_field_channels,
++    # (b) used to compute F_dimer for the output-side Dimer residual. We just
++    # don't perturb the unfrozen UMA blocks' inputs with force-FiLM, since
++    # those blocks weren't pretrained to receive that signal and the head-level
++    # injection already gives the model access to F.
++    p.add_argument("--force-film", action=argparse.BooleanOptionalAction, default=False)
+ 
+     # Train/val/test split — uses the official parquet splits shipped with the
+     # HuggingFace dataset. No client-side random splitting.
+@@ -726,15 +754,20 @@
+             print(f"[train] --truncate-blocks: kept first {_keep} of {_was} blocks "
+                   f"(pretrained weights preserved); receptive field ~{_keep * 6} A")
+         if args.random_init:
+-            import torch.nn as _nn
+-            _n = 0
+-            for _m in raw_backbone.modules():
+-                if hasattr(_m, "reset_parameters"):
+-                    _m.reset_parameters(); _n += 1
+-            for _p in raw_backbone.parameters():
+-                _p.requires_grad_(True)
+-            print(f"[train] --random-init: re-initialised {_n} submodules "
+-                  f"(pretrained weights discarded; shape unchanged)")
++            # The whole backbone, not only modules with reset_parameters (those were Linear/Embedding/LayerNorm,
++            # 0.6 % of UMA-S's parameters; the MoLE experts, SO3 layers and norms kept their pretrained values).
++            from saddleflow.utils.backbone import fresh_uma_backbone_state
++            _old = {k: v.detach().clone() for k, v in raw_backbone.state_dict().items()}
++            raw_backbone.load_state_dict(fresh_uma_backbone_state(args.backbone))
++            _same = [k for k, v in raw_backbone.state_dict().items() if v.is_floating_point() and v.numel() > 1
++                     and torch.equal(v.cpu(), _old[k].cpu())]
++            # Train every backbone parameter (embeddings, routing MLP and norm too, not only the blocks: random values
++            # must not stay frozen), except the per-dataset embeddings, which get no gradient in this forward (DDP would
++            # stop on the unused ones).
++            for _n, _p in raw_backbone.named_parameters():
++                _p.requires_grad_(not _n.startswith("dataset_embedding."))
++            print(f"[train] --random-init: backbone re-initialised from {args.backbone!r}'s model_config "
++                  f"(pretrained weights discarded; {len(_same)} multi-element float tensors unchanged: {_same[:5]})")
+     if args.unfreeze_uma_last2 and len(raw_backbone.blocks) >= 2:
+         for p in raw_backbone.blocks[-2].parameters():
+             p.requires_grad_(True)
+@@ -797,6 +830,7 @@
+         dimer_force_channels=head_dimer_C,
+         x_input_channel_factor=x_input_factor,
+         endpoint_n_layers_per_side=n_ep_layers,
++        delta_fuse_identity=bool(args.start_only_condition),
+     ).to(args.device)
+     if args.force_residual and not args.inject_force:
+         raise SystemExit("--force-residual requires --inject-force")
+@@ -899,20 +933,35 @@
+             path_noise_sigma_saddle=(None if args.path_noise_sigma_saddle is None
+                                      else float(args.path_noise_sigma_saddle)),
+             path_u_power=float(args.path_u_power),
++            path_u_min=float(args.path_u_min),
++            path_exact_prob=float(args.path_exact_prob),
++            start_only_condition=bool(args.start_only_condition),
++            ts_denoise_local_k=int(args.ts_denoise_local_k),
++            line_start_prob=float(args.line_start_prob),
++            line_u_sigma=float(args.line_u_sigma),
++            line_t_max=float(args.line_t_max),
++            line_local_noise_sigma=float(args.line_local_noise_sigma),
++            line_local_noise_k=int(args.line_local_noise_k),
++            line_local_noise_mode=str(args.line_local_noise_mode),
+             loss_type=str(args.loss_type),
+             huber_delta=float(args.huber_delta),
+             maxd_weight=float(args.maxd_weight),
+             ts_denoise_sigma_rel_lo=float(args.ts_denoise_sigma_rel_lo),
+             ts_denoise_sigma_rel_hi=float(args.ts_denoise_sigma_rel_hi),
+             mover_start_prob=float(args.mover_start_prob),
+-            mover_sigma=float(args.mover_sigma),
++            mover_base=str(args.mover_base),
+             mover_thresh=float(args.mover_thresh),
+-            mover_thresh_max=float(args.mover_thresh_max),
++            mover_sigma=float(args.mover_sigma),
++            mover_u0_prob=float(args.mover_u0_prob),
++            mover_bg_sigma=float(args.mover_bg_sigma),
++            mover_u_power=float(args.mover_u_power),
++            mover_max=int(args.mover_max),
+             mover_all_prob=float(args.mover_all_prob),
++            mover_thresh_max=float(args.mover_thresh_max),
+             mover_ball_prob=float(args.mover_ball_prob),
+             mover_ball_rmin=float(args.mover_ball_rmin),
+             mover_ball_rmax=float(args.mover_ball_rmax),
+-            mover_u0_prob=float(args.mover_u0_prob),
++            mover_bg_radius=float(args.mover_bg_radius),
+             mover_flag=bool(args.inject_flag),
+         ),
+         backbone, attn, head,
+@@ -977,12 +1026,16 @@
+             "force_residual": bool(args.force_residual),
+             "xt_perturb_sigma": args.xt_perturb_sigma,
+             "force_film": bool(args.force_film),
+-            "mover_start_prob": float(args.mover_start_prob), "mover_sigma": float(args.mover_sigma),
+-            "mover_thresh": float(args.mover_thresh), "mover_thresh_max": float(args.mover_thresh_max),
+-            "mover_all_prob": float(args.mover_all_prob), "mover_ball_prob": float(args.mover_ball_prob),
+-            "mover_ball_rmin": float(args.mover_ball_rmin), "mover_ball_rmax": float(args.mover_ball_rmax),
+-            "mover_u0_prob": float(args.mover_u0_prob), "inject_flag": bool(args.inject_flag),
++            "mover_start_prob": float(args.mover_start_prob), "mover_base": args.mover_base,
++            "mover_thresh": float(args.mover_thresh), "mover_sigma": float(args.mover_sigma),
++            "mover_u0_prob": float(args.mover_u0_prob), "mover_bg_sigma": float(args.mover_bg_sigma),
++            "mover_bg_radius": float(args.mover_bg_radius),
++            "mover_u_power": float(args.mover_u_power), "mover_max": int(args.mover_max),
++            "mover_all_prob": float(args.mover_all_prob), "mover_thresh_max": float(args.mover_thresh_max),
++            "mover_ball_prob": float(args.mover_ball_prob), "mover_ball_rmin": float(args.mover_ball_rmin),
++            "mover_ball_rmax": float(args.mover_ball_rmax),
+             "align_com": bool(args.align_com),
++            "flag_noised": bool(args.inject_flag),
+             "endpoint_features": bool(args.endpoint_features),
+             "eigenmode_aux_weight": float(args.eigenmode_aux_weight),
+             "dimer_force_channels": int(head_dimer_C),
+@@ -1020,6 +1073,15 @@
+             "path_start_prob": args.path_start_prob,
+             "path_noise_sigma": args.path_noise_sigma,
+             "path_u_power": args.path_u_power,
++            "path_u_min": args.path_u_min,
++            "path_exact_prob": float(args.path_exact_prob),
++            "start_only_condition": bool(args.start_only_condition),
++            "ts_denoise_local_k": int(args.ts_denoise_local_k),
++            "line_start_prob": float(args.line_start_prob), "line_u_sigma": float(args.line_u_sigma),
++            "line_t_max": float(args.line_t_max),
++            "line_local_noise_sigma": float(args.line_local_noise_sigma),
++            "line_local_noise_k": int(args.line_local_noise_k),
++            "line_local_noise_mode": str(args.line_local_noise_mode),
+             "init_weights": args.init_weights,
+             "limit_triplets": args.limit_triplets,
+             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
+--- a/saddleflow/pretrained.py
++++ b/saddleflow/pretrained.py
+@@ -4,11 +4,10 @@
+     sf = SaddleFlow.from_pretrained()               # SciLM/SaddleFlow on the Hugging Face Hub
+     guesses = sf.propose(atoms, n=8, seed=0)        # list of ase.Atoms, one per noise draw
+ 
+-Each proposal starts from the input structure plus Gaussian noise on its mobile atoms (or on the atoms given
+-in `atoms_to_move`) and integrates the flow; with the released defaults this is five passes of four Euler steps
+-(20 network evaluations), each pass restarting at t = 0 from the previous endpoint. A model with a per-atom flag
+-input (`config["flag"]`, SaddleFlow FM2) is also told which atoms were displaced. The proposals are starting
+-points for a saddle optimizer: `saddleflow.search.find_saddles` and `SaddleFlowSearch` run Sella on them.
++Each proposal starts from the input structure plus Gaussian noise on its mobile atoms and integrates the
++flow; with the released defaults this is five passes of four Euler steps (20 network evaluations), each
++pass restarting at t = 0 from the previous endpoint. The proposals are starting points for a saddle
++optimizer: `saddleflow.search.find_saddles` and `SaddleFlowSearch` run Sella on them.
+ """
+ 
+ from __future__ import annotations
+@@ -25,7 +24,7 @@
+ from ase.constraints import FixAtoms
+ from fairchem.core.datasets.collaters.simple_collater import data_list_collater
+ 
+-from .data.transforms import mic_displacement, wrap_positions
++from .data.transforms import wrap_positions
+ from .flow.matching import apply_output_projections, build_atomic_data
+ from .models.time_filmed_backbone import TimeFiLMBackbone
+ from .models.velocity_head import VelocityHead
+@@ -61,8 +60,7 @@
+ 
+     `config` holds the UMA backbone configuration (`backbone`), the blocks that carry a time-FiLM
+     (`film_blocks`), the head depth (`head_depth`), the tasks the model was trained on (`tasks`, with any
+-    remapping such as oc22 -> oc20), the inference defaults (`inference`) and whether the backbone takes a per-atom
+-    flag of the displaced atoms (`flag`).
++    remapping such as oc22 -> oc20) and the inference defaults (`inference`).
+     """
+ 
+     def __init__(self, config: dict):
+@@ -72,7 +70,7 @@
+         self.config = config
+         raw = eSCNMDMoeBackbone(**{**config["backbone"], **_INFERENCE_OVERRIDES})
+         self.backbone = TimeFiLMBackbone(raw, inject_block_indices=list(config["film_blocks"]),
+-                                         inject_force=False, inject_flag=bool(config.get("flag", False)))
++                                         inject_force=False)
+         self.velocity_head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax,
+                                           depth=int(config["head_depth"]))
+         self.eval()
+@@ -134,13 +132,12 @@
+         dev, B = self.device, len(xs)
+         sizes = [int(r["Z"].shape[0]) for r in recs]
+         fixed = torch.cat([r["fixed"] for r in recs]).to(dev)
+-        flag = torch.cat([r["flag"] for r in recs]).float().to(dev) if self.backbone.inject_flag else None
+         for k in range(steps):
+             t = torch.full((B,), k / steps, dtype=torch.float32, device=dev)
+             data = [build_atomic_data(x, r["Z"], r["cell"], r["task_name"], r["charge"], r["spin"], r["fixed"])
+                     for x, r in zip(xs, recs)]
+             batch = data_list_collater(data, otf_graph=True).to(dev)
+-            h = self.backbone(batch, t, batch.batch, flag=flag)["node_embedding"]
++            h = self.backbone(batch, t, batch.batch)["node_embedding"]
+             v = self.velocity_head(h, t, batch.batch)
+             v = apply_output_projections(v, fixed, batch.batch, B).cpu().float()
+             xs = [wrap_positions(x + dv / steps, r["cell"]) for x, dv, r in zip(xs, torch.split(v, sizes), recs)]
+@@ -148,9 +145,8 @@
+ 
+     def propose(self, atoms: Atoms | Sequence[Atoms], n: int = 1, *, sigma: float | None = None,
+                 passes: int | None = None, steps: int | None = None, seed: int | None = None,
+-                task_name: str | None = None, batch_size: int = 16, return_passes: bool = False,
+-                atoms_to_move: Sequence[int] | Sequence[Sequence[int]] | None = None,
+-                radius: float | None = None) -> list[Atoms] | list[list[Atoms]]:
++                task_name: str | None = None, batch_size: int = 16,
++                return_passes: bool = False) -> list[Atoms] | list[list[Atoms]]:
+         """Propose `n` saddle points for each input structure.
+ 
+         Args:
+@@ -164,10 +160,6 @@
+                 else `omat`.
+             batch_size: systems per network call.
+             return_passes: also return the endpoint after every pass (`info['passes']`, shape (passes+1, N, 3)).
+-            atoms_to_move: the atoms that get the noise (and the flag, for a model with a flag input); None is every
+-                mobile atom. One list of indices for every structure, or one list per structure.
+-            radius: with `atoms_to_move`, use instead every mobile atom within `radius` (A, minimum image) of those
+-                atoms (an atom of interest and a cutoff).
+ 
+         Returns:
+             For one input structure, a list of `n` structures; for a list, one such list per structure.
+@@ -185,26 +177,13 @@
+         gen = torch.Generator().manual_seed(seed) if seed is not None else None
+ 
+         jobs = []                                            # (structure index, draw, record, start)
+-        per_structure = atoms_to_move is not None and len(atoms_to_move) and not np.isscalar(atoms_to_move[0])
+         for i, at in enumerate(structures):
+             rec = self._record(at, task_name)
+             pos = torch.as_tensor(at.get_positions(), dtype=torch.float32)
+-            moved = ~rec["fixed"]
+-            if atoms_to_move is not None:
+-                chosen = torch.as_tensor(atoms_to_move[i] if per_structure else atoms_to_move, dtype=torch.long)
+-                if radius is None:
+-                    moved = moved & torch.zeros_like(moved).index_fill(0, chosen, True)
+-                else:
+-                    near = torch.stack([mic_displacement(pos, pos[c].expand_as(pos), rec["cell"]).norm(dim=1) <= radius
+-                                        for c in chosen.tolist()]).any(0)
+-                    moved = moved & near
+-            rec["flag"] = moved
++            mobile = (~rec["fixed"]).float().unsqueeze(1)
+             for d in range(n):
+                 noise = torch.randn(pos.shape, generator=gen) if gen is not None else torch.randn(pos.shape)
+-                noise = noise * moved.float().unsqueeze(1)
+-                if self.backbone.inject_flag and not bool(rec["fixed"].any()) and bool(moved.all()):
+-                    noise = noise - noise.mean(0)            # every atom noised, no anchor: no rigid shift (as trained)
+-                jobs.append((i, d, rec, wrap_positions(pos + sigma * noise, rec["cell"])))
++                jobs.append((i, d, rec, wrap_positions(pos + sigma * noise * mobile, rec["cell"])))
+ 
+         out = [[None] * n for _ in structures]
+         with _no_tf32():
+@@ -225,8 +204,6 @@
+                                      saddleflow_steps=steps, task_name=rec["task"])
+                     if seed is not None:
+                         prop.info["saddleflow_seed"] = seed
+-                    if atoms_to_move is not None:
+-                        prop.info["saddleflow_atoms"] = np.flatnonzero(rec["flag"].numpy())
+                     if return_passes:
+                         prop.info["passes"] = np.stack(trace[j], 0)
+                     out[i][d] = prop
+--- a/saddleflow/utils/backbone.py
++++ b/saddleflow/utils/backbone.py
+@@ -58,6 +58,19 @@
+         backbone.eval()
+     return backbone
+ 
++def fresh_uma_backbone_state(name: str = "uma-s-1p2") -> dict:
++    """State dict of a freshly constructed (randomly initialised) backbone of the named UMA checkpoint: the model is
++    built from the checkpoint's own model_config, exactly as fairchem does before loading weights, and the trained
++    weights are never loaded. Loading this into a backbone from `load_uma_backbone(name)` gives the same architecture
++    and settings with the constructors' own initialisation (no pretraining)."""
++    import hydra
++    import torch
++    from fairchem.core.calculate.pretrained_mlip import pretrained_checkpoint_path_from_name
++
++    ckpt = torch.load(pretrained_checkpoint_path_from_name(name), map_location="cpu", weights_only=False)
++    return hydra.utils.instantiate(ckpt.model_config).backbone.state_dict()
++
++
+ def build_uma_backbone_custom(
+     shape: str,
+     dataset_list=None,
+--- a/saddleflow/models/velocity_head.py
++++ b/saddleflow/models/velocity_head.py
+@@ -137,6 +137,7 @@
+         time_embed_dim: int = 64,
+         time_mlp_hidden: int = 128,
+         delta_endpoint_channels: int = 0,
++        delta_fuse_identity: bool = False,
+         force_field_channels: int = 0,
+         force_residual: bool = False,
+         endpoint_features_enabled: bool = False,
+@@ -213,6 +214,13 @@
+             # Training learns useful weights from the (R, P) endpoint signals.
+             nn.init.zeros_(self.delta_proj.weight)
+             nn.init.zeros_(self.delta_proj.bias)
++            if delta_fuse_identity:
++                # Fine-tuning an unconditioned head: start delta_fuse as a pass-through of the UMA features
++                # (identity on the first sphere_channels inputs, zero on the delta channels) so the loaded
++                # weights give exactly the unconditioned model at step 0.
++                with torch.no_grad():
++                    self.delta_fuse.weight.zero_(); self.delta_fuse.bias.zero_()
++                    self.delta_fuse.weight[:, :, :sphere_channels] = torch.eye(sphere_channels)
+ 
+         if force_field_channels > 0:
+             # Mode 1 v2: inject UMA's autograd-derived force at x_t. The force
+--- a/saddleflow/data/materials_saddles_dataset.py
++++ b/saddleflow/data/materials_saddles_dataset.py
+@@ -140,8 +140,8 @@
+         self.task_name_map = dict(task_name_map or {})
+         # Systems without fixed atoms (bulk: lemat, mp20bat) have no anchor, and some saddles drift rigidly from the
+         # start (mp20bat: median 0.06 A, up to 1.8 A). align_com shifts saddle and partner so their mean displacement
+-        # from the start is zero (the gauge of the model's CoM projection), so mover sets and targets carry no drift.
+-        # Systems with any fixed atom are unchanged.
++        # from the start is zero (the gauge of the model's CoM projection), so mover sets, line starts and targets
++        # carry no drift. Systems with any fixed atom are unchanged.
+         self.align_com = bool(align_com)
+         self.shards = self._resolve_shards(shards)
+         self.default_task_name = default_task_name

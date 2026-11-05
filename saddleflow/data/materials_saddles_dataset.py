@@ -131,12 +131,18 @@ class MaterialsSaddlesDataset(Dataset):
         validate: bool = False,
         rebuild_index: bool = False,
         task_name_map: dict | None = None,
+        align_com: bool = False,
     ):
         # Remap UMA task names at read time. Needed because the backbones do not all carry the same MoE
         # task set: uma-s-1p2 has {omat, oc20, oc22, oc25, omol, odac, omc} but uma-m-1p1 has only
         # {omat, oc20, omol, odac, omc} and raises KeyError('oc22'). Applied in __getitem__ so training and
         # inference cannot disagree. Example: {"oc22": "oc20"}.
         self.task_name_map = dict(task_name_map or {})
+        # Systems without fixed atoms (bulk: lemat, mp20bat) have no anchor, and some saddles drift rigidly from the
+        # start (mp20bat: median 0.06 A, up to 1.8 A). align_com shifts saddle and partner so their mean displacement
+        # from the start is zero (the gauge of the model's CoM projection), so mover sets and targets carry no drift.
+        # Systems with any fixed atom are unchanged.
+        self.align_com = bool(align_com)
         self.shards = self._resolve_shards(shards)
         self.default_task_name = default_task_name
         self.default_charge = default_charge
@@ -373,6 +379,9 @@ class MaterialsSaddlesDataset(Dataset):
         # Dimer (lemat / oc20 / oc22) saddles both ship `info['eigenmode']` per
         # the dataset README — an (N, 3) array, generally normalized to unit
         # length, defined up to global sign. Frozen atoms have eigenmode = 0.
+        if self.align_com and not r["fixed"].any():
+            for k in ("saddle_un_pos", "partner_un_pos"):
+                r[k] = r[k] - (r[k] - r["start_pos"]).mean(0)
         sample_dict = {
             "start_pos": torch.from_numpy(r["start_pos"]),
             "saddle_un_pos": torch.from_numpy(r["saddle_un_pos"]),

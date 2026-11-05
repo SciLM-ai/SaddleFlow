@@ -7,6 +7,11 @@ compared endpoint-by-endpoint.
       --restrict-tids <npz> --seed 0 --ckpt <ckpt> --sides 0 --sigma 0.3 --K 4 --tag ev --outdir <dir> \
       --shard 0 --nshards 1 --batch-size 32
 
+--atoms chooses the noised atoms: all (every mobile atom, the default), movers (those moving more than --mover-thresh
+from start to saddle, plus the most-moving one) or ball (the mobile atoms within --ball-radius of a random mobile atom);
+a model trained with --inject-flag is also given them as its per-atom flag. The noise is drawn as for all, so the starts
+of --atoms all are unchanged.
+
 Outputs <tag>_<shard>.traj (endpoints, one frame per throw, same order), <tag>_<shard>_x0.npz (starts) and,
 with SF_SAVE_PASSES=1, <tag>_<shard>_passes.npz (endpoint after every pass). --limit N integrates only the
 first N throws (validation against the unbatched script).
@@ -30,12 +35,13 @@ from saddleflow.data.transforms import mic_displacement, wrap_positions     # no
 from saddleflow.flow.matching import apply_output_projections, build_atomic_data  # noqa: E402
 
 
-def flow_batch(model, xs, recs, K, dc, device, vscale=1.0):
+def flow_batch(model, xs, recs, K, dc, device, vscale=1.0, flags=None):
     """K Euler steps for a list of throws (one system each) with ONE backbone/head call per step."""
     B = len(xs); cells = [r["cell"] for r in recs]
     fixed_cat = torch.cat([r["fixed"] for r in recs]).to(device)
     sizes = [int(r["Z"].shape[0]) for r in recs]
     is_filmed = "TimeFiLM" in type(getattr(model.backbone, "_orig_mod", model.backbone)).__name__  # survives torch.compile
+    flag = torch.cat(flags).float().to(device) if flags is not None and getattr(model.backbone, "inject_flag", False) else None
     with torch.no_grad():
         for step in range(K):
             t = step / K
@@ -43,7 +49,7 @@ def flow_batch(model, xs, recs, K, dc, device, vscale=1.0):
             dl = [build_atomic_data(xs[i], recs[i]["Z"], cells[i], recs[i]["task_name"],
                                     recs[i]["charge"], recs[i]["spin"], recs[i]["fixed"]) for i in range(B)]
             b = data_list_collater(dl, otf_graph=True).to(device)
-            feat = model.backbone(b, tt, b.batch) if is_filmed else model.backbone(b)
+            feat = model.backbone(b, tt, b.batch, flag=flag) if is_filmed else model.backbone(b)
             h = feat["node_embedding"]
             if model.global_attn is not None:
                 h = model.global_attn(h, b.batch)
@@ -71,6 +77,9 @@ def main():
     p.add_argument("--task-name-map", default=None); p.add_argument("--use-ema", action="store_true")
     p.add_argument("--batch-size", type=int, default=32, help="throws per UMA forward")
     p.add_argument("--limit", type=int, default=0, help="integrate only the first N throws (validation)")
+    p.add_argument("--atoms", default="all", choices=["all", "movers", "ball"], help="the noised (and flagged) atoms")
+    p.add_argument("--mover-thresh", type=float, default=0.5, help="--atoms movers: displacement threshold (A)")
+    p.add_argument("--ball-radius", type=float, default=4.0, help="--atoms ball: radius (A) around a random mobile atom")
     a = p.parse_args(); device = "cuda"; sides = [int(s) for s in a.sides.split(",")]
 
     tids = [int(t) for t in load_official_splits(a.subset)[{"train": 0, "val": 1, "test": 2}[a.split]]]
@@ -94,13 +103,21 @@ def main():
 
     # 1. draw every start in dump_throws2.py's order with its generator -> identical starts
     g = torch.Generator().manual_seed(a.seed * 100003 + a.shard)
-    T, Sd, X0, R = [], [], [], []
+    gb = torch.Generator().manual_seed(a.seed * 100003 + a.shard + 50021)          # ball centres, apart from the noise
+    T, Sd, X0, R, M = [], [], [], [], []
     for tid in tids:
         for side in sides:
-            rec = ds[int(2 * tid + side)]; mobile = (~rec["fixed"]).float().unsqueeze(1)
-            x0 = wrap_positions(rec["start_pos"] + a.sigma * torch.randn(rec["start_pos"].shape, generator=g) * mobile, rec["cell"])
-            T.append(int(tid)); Sd.append(int(side)); X0.append(x0); R.append(rec)
-    if a.limit: T, Sd, X0, R = T[:a.limit], Sd[:a.limit], X0[:a.limit], R[:a.limit]
+            rec = ds[int(2 * tid + side)]; mobile = ~rec["fixed"]; moved = mobile
+            if a.atoms == "movers":
+                n = torch.where(mobile, (rec["saddle_un_pos"] - rec["start_pos"]).norm(dim=1), torch.full_like(rec["start_pos"][:, 0], -1.0))
+                moved = mobile & (n > a.mover_thresh); moved[int(n.argmax())] = True
+            elif a.atoms == "ball":
+                mi = torch.where(mobile)[0]; c = int(mi[torch.randint(len(mi), (1,), generator=gb)])
+                moved = mobile & (mic_displacement(rec["start_pos"], rec["start_pos"][c].expand_as(rec["start_pos"]), rec["cell"]).norm(dim=1)
+                                  <= a.ball_radius)
+            x0 = wrap_positions(rec["start_pos"] + a.sigma * torch.randn(rec["start_pos"].shape, generator=g) * moved.float().unsqueeze(1), rec["cell"])
+            T.append(int(tid)); Sd.append(int(side)); X0.append(x0); R.append(rec); M.append(moved)
+    if a.limit: T, Sd, X0, R, M = T[:a.limit], Sd[:a.limit], X0[:a.limit], R[:a.limit], M[:a.limit]
     n_ap = int(os.environ.get("SF_NAPPLY", "1")); n_ap2 = int(os.environ.get("SF_NAPPLY2", "1"))
     vsc = float(os.environ.get("SF_VSCALE", "1.0")); save_p = os.environ.get("SF_SAVE_PASSES", "0") == "1"
     if float(os.environ.get("SF_RESTART_SIGMA", "0")) > 0:
@@ -112,12 +129,12 @@ def main():
         idx = list(range(s0, min(s0 + a.batch_size, len(T)))); xs = [X0[i].clone() for i in idx]; recs = [R[i] for i in idx]
         trace = [[x.numpy().astype(np.float32)] for x in xs] if save_p else None
         for _ in range(n_ap):
-            xs = flow_batch(m1, xs, recs, a.K, dc, device, vsc); nfwd += a.K
+            xs = flow_batch(m1, xs, recs, a.K, dc, device, vsc, flags=[M[i] for i in idx]); nfwd += a.K
             if save_p:
                 for j, x in enumerate(xs): trace[j].append(x.numpy().astype(np.float32))
         if m2 is not None:
             for _ in range(n_ap2):
-                xs = flow_batch(m2, xs, recs, a.K, 0, device, vsc); nfwd += a.K
+                xs = flow_batch(m2, xs, recs, a.K, 0, device, vsc, flags=[M[i] for i in idx]); nfwd += a.K
                 if save_p:
                     for j, x in enumerate(xs): trace[j].append(x.numpy().astype(np.float32))
         for j, i in enumerate(idx):
@@ -130,7 +147,8 @@ def main():
               f"({nfwd*len(idx)/(time.time()-t0):.1f} system-forwards/s)", flush=True)
     out.close()
     off = np.concatenate([[0], np.cumsum([len(x) for x in X0])])
-    np.savez(f"{a.outdir}/{a.tag}_{a.shard:02d}_x0.npz", tids=np.array(T), sides=np.array(Sd), offsets=off, x0=np.concatenate([x.numpy().astype(np.float32) for x in X0], 0))
+    np.savez(f"{a.outdir}/{a.tag}_{a.shard:02d}_x0.npz", tids=np.array(T), sides=np.array(Sd), offsets=off, x0=np.concatenate([x.numpy().astype(np.float32) for x in X0], 0),
+             moved=np.concatenate([m.numpy() for m in M]))
     if PASS:
         np.savez_compressed(f"{a.outdir}/{a.tag}_{a.shard:02d}_passes.npz", tids=np.array(T), sides=np.array(Sd), offsets=off,
                             npass=np.array([t.shape[0] for t in PASS]), passes=np.concatenate([t.reshape(-1, 3) for t in PASS], 0))

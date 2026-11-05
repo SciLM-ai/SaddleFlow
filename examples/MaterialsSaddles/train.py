@@ -415,6 +415,25 @@ def parse_args():
     # those blocks weren't pretrained to receive that signal and the head-level
     # injection already gives the model access to F.
     p.add_argument("--force-film", action=argparse.BooleanOptionalAction, default=False)
+    # Mover starts (FlowMatchingConfig.mover_*): noise on a set of mobile atoms, optionally flagged to the network.
+    p.add_argument("--mover-start-prob", type=float, default=0.0)
+    p.add_argument("--mover-sigma", type=float, default=0.3)
+    p.add_argument("--mover-thresh", type=float, default=0.5,
+                   help="mover starts: atoms moving more than this (A) from start to saddle, plus the most-moving one")
+    p.add_argument("--mover-thresh-max", type=float, default=0.0,
+                   help="mover starts: draw the threshold per example from U(0, this) (A); 0 = the fixed --mover-thresh")
+    p.add_argument("--mover-all-prob", type=float, default=0.0,
+                   help="mover starts: share whose set is every mobile atom")
+    p.add_argument("--mover-ball-prob", type=float, default=0.0,
+                   help="mover starts: share whose set is the mobile atoms within a random radius of the most-moving atom")
+    p.add_argument("--mover-ball-rmin", type=float, default=3.0, help="ball sets: smallest radius (A)")
+    p.add_argument("--mover-ball-rmax", type=float, default=5.0, help="ball sets: largest radius (A)")
+    p.add_argument("--mover-u0-prob", type=float, default=1.0,
+                   help="mover starts: share at the start (u = 0); the rest on the start -> saddle line, u ~ U(0, 1)")
+    p.add_argument("--inject-flag", action="store_true",
+                   help="flag the mover set through TimeFiLMBackbone's per-atom flag input (needs --early-time-film)")
+    p.add_argument("--align-com", action="store_true",
+                   help="systems without fixed atoms: remove the saddle's and partner's rigid drift from the start")
 
     # Train/val/test split — uses the official parquet splits shipped with the
     # HuggingFace dataset. No client-side random splitting.
@@ -541,6 +560,7 @@ def main():
             default_task_name=args.default_task_name,
             stats_cache=stats_path_for_ds,
             task_name_map=_parse_task_map(args.task_name_map),
+            align_com=bool(args.align_com),
         )
         if args.shards_dir is None and list(ds.shards) != subset_shards(s):
             raise SystemExit(f"[train] {s}: dataset file order differs from data_prep.subset_shards; "
@@ -738,13 +758,13 @@ def main():
         inject_idx = [int(x) for x in args.early_time_film_blocks.split(",")]
         backbone = TimeFiLMBackbone(
             raw_backbone, inject_block_indices=inject_idx,
-            inject_force=args.force_film,
+            inject_force=args.force_film, inject_flag=args.inject_flag,
         ).to(args.device)
         print(f"[train] backbone wrapped with TimeFiLMBackbone — time-FiLM "
               f"at blocks {inject_idx}  force_film={args.force_film}")
     else:
-        if args.force_film:
-            raise SystemExit("--force-film requires --early-time-film")
+        if args.force_film or args.inject_flag:
+            raise SystemExit("--force-film and --inject-flag require --early-time-film")
         backbone = raw_backbone
 
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
@@ -846,6 +866,9 @@ def main():
     if args.early_time_film:
         for film in backbone.films:
             head_attn_params += list(film.parameters())
+        if args.inject_flag:
+            for lin in backbone.flag_films:
+                head_attn_params += list(lin.parameters())
     n_head_attn = sum(p.numel() for p in head_attn_params if p.requires_grad)
     print(f"[train] backbone K{raw_backbone.num_layers}L{lmax} (sphere_channels={sc})")
     print(f"[train] trainable: head+attn(+early_film) = {n_head_attn:,}  "
@@ -881,6 +904,16 @@ def main():
             maxd_weight=float(args.maxd_weight),
             ts_denoise_sigma_rel_lo=float(args.ts_denoise_sigma_rel_lo),
             ts_denoise_sigma_rel_hi=float(args.ts_denoise_sigma_rel_hi),
+            mover_start_prob=float(args.mover_start_prob),
+            mover_sigma=float(args.mover_sigma),
+            mover_thresh=float(args.mover_thresh),
+            mover_thresh_max=float(args.mover_thresh_max),
+            mover_all_prob=float(args.mover_all_prob),
+            mover_ball_prob=float(args.mover_ball_prob),
+            mover_ball_rmin=float(args.mover_ball_rmin),
+            mover_ball_rmax=float(args.mover_ball_rmax),
+            mover_u0_prob=float(args.mover_u0_prob),
+            mover_flag=bool(args.inject_flag),
         ),
         backbone, attn, head,
         force_head=force_head, force_tasks=force_tasks,
@@ -944,6 +977,12 @@ def main():
             "force_residual": bool(args.force_residual),
             "xt_perturb_sigma": args.xt_perturb_sigma,
             "force_film": bool(args.force_film),
+            "mover_start_prob": float(args.mover_start_prob), "mover_sigma": float(args.mover_sigma),
+            "mover_thresh": float(args.mover_thresh), "mover_thresh_max": float(args.mover_thresh_max),
+            "mover_all_prob": float(args.mover_all_prob), "mover_ball_prob": float(args.mover_ball_prob),
+            "mover_ball_rmin": float(args.mover_ball_rmin), "mover_ball_rmax": float(args.mover_ball_rmax),
+            "mover_u0_prob": float(args.mover_u0_prob), "inject_flag": bool(args.inject_flag),
+            "align_com": bool(args.align_com),
             "endpoint_features": bool(args.endpoint_features),
             "eigenmode_aux_weight": float(args.eigenmode_aux_weight),
             "dimer_force_channels": int(head_dimer_C),
