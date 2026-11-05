@@ -1,0 +1,19 @@
+# First lines of the two launch logs (the launcher echoes its resolved settings), and the training log lines that
+# record the start from FM1's weights, the resume, and the end.
+
+## full_64b/ft_run19m.launch.log (start, 2026-10-25)
+[full-slot] gen on nodes 0..63 (64 x 8) ~132226 steps (EMA 0.9996218595435088) --mover-u0-prob 0.5 --backbone uma-m-1p1 --uma-lr 3e-3 --early-time-film-blocks 0,1,2,3,4,5,6,7,8,9 --loss-type huber --huber-delta 0.05 --mover-all-prob 0.2 --mover-thresh-max 1.0 --align-com --init-weights /scratch/00405/graeme/saddleflow/campaigns/2026-10-15_qsweep/caches/hf/hub/models--SciLM--SaddleFlow/snapshots/f003c2699ac1b9eb0446fa128f9f34c249af9757 --mover-ball-prob 0.2 --mover-ball-rmin 3 --mover-ball-rmax 5 -> /scratch/00405/graeme/saddleflow/campaigns/2026-10-17_al_scratch/full_64b/ft_run19m  Sun Oct 25 10:53:42 PM CDT 2026
+
+## full_64b/ft_run19m.resume1.launch.log (resume in a new 64-node job)
+[full-slot] gen on nodes 0..63 (64 x 8) ~132226 steps (EMA 0.9996218595435088) --mover-u0-prob 0.5 --backbone uma-m-1p1 --uma-lr 3e-3 --early-time-film-blocks 0,1,2,3,4,5,6,7,8,9 --loss-type huber --huber-delta 0.05 --mover-all-prob 0.2 --mover-thresh-max 1.0 --align-com --mover-ball-prob 0.2 --mover-ball-rmin 3 --mover-ball-rmax 5 --resume-from /scratch/00405/graeme/saddleflow/campaigns/2026-10-17_al_scratch/full_64b/ft_run19m/gen/checkpoint_step_00048000 -> /scratch/00405/graeme/saddleflow/campaigns/2026-10-17_al_scratch/full_64b/ft_run19m  Mon Oct 26 10:59:19 PM CDT 2026
+[full-slot] gen done Wed Oct 28 03:19:51 PM CDT 2026
+
+## full_64b/ft_run19m/gen_part1.log
+[train] init-weights from /scratch/00405/graeme/saddleflow/campaigns/2026-10-15_qsweep/caches/hf/hub/models--SciLM--SaddleFlow/snapshots/f003c2699ac1b9eb0446fa128f9f34c249af9757/model.safetensors: loaded 370 tensors (missing=24, unexpected=0); fresh optimizer + LR schedule from epoch 0
+[train] total steps: 8462874  (epochs 1 × 132233 batches)
+[train] starting at epoch 0, global step 0
+
+## full_64b/ft_run19m/gen.log (after the resume)
+[train] total steps: 8462874  (epochs 1 × 132233 batches)
+[train] starting at epoch 0, global step 48000
+[train] done. total time 2417.79 min
