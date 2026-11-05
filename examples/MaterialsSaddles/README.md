@@ -1,5 +1,8 @@
 # MaterialsSaddles — full-dataset production training & evaluation
 
+> The released foundation models were trained as recorded in [`examples/FM1`](../FM1) (the paper model) and
+> [`examples/FM2`](../FM2). This README describes the earlier product-conditional run.
+
 Mode-1 product-conditional flow-matching training of **SaddleFlow** on the
 **entire MaterialsSaddles dataset** (NEB-CI / Dimer saddles across battery
 materials, catalysis, and broad Materials Project / Alexandria / ICSD chemistry),

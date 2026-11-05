@@ -29,9 +29,9 @@ Two ways to use it:
 - `saddleflow/flow/` — `FlowMatchingConfig`, `FlowMatchingLoss`, start-distribution sampling, sampler.
 - `saddleflow/models/` — `TimeFiLMBackbone`, `VelocityHead`, `GlobalAttn`.
 - `saddleflow/utils/` — backbone loading, the `accelerate` training loop (`training.py`), EMA, evaluation helpers.
-- `examples/` — `MaterialsSaddles` (paper model, data download, evaluation), `FM2` (the released FM2's exact training
-  run and a script that repeats it), `MP20Bat` (conditional recipe), `Al_adatom` (FM2 fine-tune on one surface), `LiC`
-  and `LiC_simpler` (small unconditioned examples with their own READMEs), `LematBulk`, `scaling_bench`.
+- `examples/` — `MaterialsSaddles` (paper model, data download, evaluation), `FM1` and `FM2` (the released models' exact
+  training runs and scripts that repeat them), `MP20Bat` (conditional recipe), `Al_adatom` (FM2 fine-tune on one
+  surface), `LiC` and `LiC_simpler` (small unconditioned examples with their own READMEs), `LematBulk`, `scaling_bench`.
 - `tests/` — `pytest tests`.
 
 ## The paper model (unconditional, all four MaterialsSaddles subsets)
