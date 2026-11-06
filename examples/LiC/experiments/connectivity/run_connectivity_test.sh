@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_connectivity_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_connectivity_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_connectivity_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_connectivity_%j.err
 #SBATCH --no-requeue
 
 # Downhill connectivity check of the never-reached coverage pairs. Extra arguments go to connectivity_test.py,

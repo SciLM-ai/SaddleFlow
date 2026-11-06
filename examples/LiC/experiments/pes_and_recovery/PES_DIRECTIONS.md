@@ -50,8 +50,8 @@ then evaluation of **all five predeclared checkpoints**.
 Slurm logs:
 
 ```text
-/scratch/gqs7zr/saddleflow/lic_pes_directions_<JOBID>.out
-/scratch/gqs7zr/saddleflow/lic_pes_directions_<JOBID>.err
+/scratch/gqs7zr/saddleflow/logs/lic_pes_directions_<JOBID>.out
+/scratch/gqs7zr/saddleflow/logs/lic_pes_directions_<JOBID>.err
 ```
 
 Override `LIC_PES_OUT`, `LIC_PES_INIT`, or `LIC_PES_STARTS` before `sbatch` if
@@ -170,7 +170,7 @@ Non-interactive launch for the existing run:
 sbatch examples/LiC/experiments/pes_and_recovery/run_pes_adoption.sh
 ```
 
-Logs: `/scratch/gqs7zr/saddleflow/lic_pes_adoption_<JOBID>.out` and `.err`.
+Logs: `/scratch/gqs7zr/saddleflow/logs/lic_pes_adoption_<JOBID>.out` and `.err`.
 Or run directly on an allocated GPU:
 
 ```bash

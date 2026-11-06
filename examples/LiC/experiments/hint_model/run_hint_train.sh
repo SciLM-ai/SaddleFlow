@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_hint_train_%x_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_hint_train_%x_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_hint_train_%x_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_hint_train_%x_%j.err
 #SBATCH --no-requeue
 
 # Fine-tune n12_uncond into a LiC hint model. ARM=input (A1: hint injected into the backbone) or

@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=06:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/hint_pilot_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/hint_pilot_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/hint_pilot_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/hint_pilot_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of the LiC hint pilot; submit_hint_pilot.sh chains them. MODE is one of

@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/tierb_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/tierb_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/tierb_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/tierb_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of tierb.py (submit_tierb.sh chains them, each as its own job):

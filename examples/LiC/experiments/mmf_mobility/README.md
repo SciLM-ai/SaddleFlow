@@ -74,7 +74,7 @@ It accepts one A100/A40/B200/A6000/RTXPRO6000 GPU and requests 24 hours, 64 GB
 host memory, and 4 CPUs. Slurm chooses the GPU; its assignment is not overwritten.
 Default results go to `/scratch/gqs7zr/saddleflow/lic_mmf_mobility_<JOBID>/`.
 Stdout, including progress and final tables, goes to
-`/scratch/gqs7zr/saddleflow/lic_mmf_mobility_<JOBID>.out`; stderr goes to `.err`.
+`/scratch/gqs7zr/saddleflow/logs/lic_mmf_mobility_<JOBID>.out`; stderr goes to `.err`.
 
 Override `LIC_MMF_OUT_DIR`, `LIC_MMF_PYTHON`, or `LIC_MMF_BASELINE` if needed.
 An empty `LIC_MMF_BASELINE` requests fresh mixed starts. Extra launcher arguments

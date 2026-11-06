@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_hint_eval_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_hint_eval_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_hint_eval_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_hint_eval_%j.err
 #SBATCH --no-requeue
 
 # Evaluate A1, A2 and the untouched n12_uncond (B0) from the same hint starts: rollouts, Sella from every

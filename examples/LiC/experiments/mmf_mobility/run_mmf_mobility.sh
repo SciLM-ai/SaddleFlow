@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_mmf_mobility_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_mmf_mobility_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_mmf_mobility_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_mmf_mobility_%j.err
 #SBATCH --no-requeue
 
 # Sbatch examples/LiC/experiments/mmf_mobility/run_mmf_mobility.sh

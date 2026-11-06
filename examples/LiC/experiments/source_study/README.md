@@ -24,7 +24,7 @@ are NOT all held-out in the 48-saddle arms.
 
 The Slurm array maps 0/1/2/3 to the four names above, each on one supported GPU.
 `--array=0-3%2` limits concurrent jobs to two. Nothing submits automatically.
-Training logs: `/scratch/gqs7zr/saddleflow/lic_source_study_ARRAYID_TASKID.out`
+Training logs: `/scratch/gqs7zr/saddleflow/logs/lic_source_study_ARRAYID_TASKID.out`
 and `.err`. Checkpoints/configs go to `<study>/<arm>/`.
 
 All four use **96000 optimizer updates**, batch 4, sigma .25 A, uniform time,
@@ -109,7 +109,7 @@ verification: no two-sided downhill relaxation is performed. Starts from minima
 are an off-training-distribution stress test. Related perturbations are not
 independent transfer units.
 
-Logs: `/scratch/gqs7zr/saddleflow/lic_source_eval_JOBID.out` / `.err`.
+Logs: `/scratch/gqs7zr/saddleflow/logs/lic_source_eval_JOBID.out` / `.err`.
 Results: `<study>/comparison_checkpoint_final/source_study.npz`, `report.txt`,
 and `source_study.pdf`. Numerical/report snapshots are saved after each batch;
 incomplete methods have smaller N and must not be pooled as complete results.

@@ -11,17 +11,21 @@ Start sets:
             mirror_test.py: its exact noise), hint zero, 5 passes x 4 Euler steps (the released schedule)
     hint    --per-minimum starts of the evaluation's hint grid on each of the 24 test minima (eval_hints.starts,
             the same seeded subset for every model), hint given, 1 pass x 8 steps (ft_hint_1x8); the released
-            model has no hint input and runs its own 5 x 4 from the same starts. Also: of the unchanged landings
+            model and a --replay-only fine-tune have no hint input and run the released 5 x 4 from the same starts. Also: of the unchanged landings
             within 0.2 A of a reference saddle (the 30-minimum experiment's verified regions), the share whose
             mapped landing is within 0.2 A of the same one (the mirrored start finds the mirrored saddle).
 
     python examples/MaterialsSaddles/experiments/mirror_test/mirror_test.py --ckpt <checkpoint dir> --out-dir <dir>
     python examples/MaterialsSaddles/experiments/mirror_test/mirror_test.py --ckpt released --out-dir <dir>
 
+SF_PARITY_EVEN=1 zeroes W2 in the loaded model (saddleflow.utils.parity: mirror-equivariant by construction, no
+retraining); landings.json records it and is reused only under the same setting.
+
 Writes <out-dir>/landings.json (reused if present) and report.txt.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,13 +69,25 @@ def load(args):
     torch.backends.cudnn.allow_tf32 = False
     if args.ckpt == "released":
         from saddleflow import SaddleFlow
-        return SaddleFlow.from_pretrained("SciLM/SaddleFlow", device=args.device)
+        from saddleflow.utils.parity import parity_from_env
+        model = SaddleFlow.from_pretrained("SciLM/SaddleFlow", device=args.device)
+        parity_from_env(model.backbone)
+        return model
     return ev.load_finetuned(args.ckpt, args.device)
+
+
+def no_hint_input(ckpt):
+    """The released model, or a fine-tune trained without hint layers (finetune.py --replay-only)."""
+    if ckpt == "released":
+        return True
+    return bool(json.loads((Path(ckpt).parent / "config.json").read_text())["extras"]["finetune"].get("replay_only"))
 
 
 def roll(args, model, jobs, kind):
     if args.ckpt == "released":
         return ev.roll_released(model, jobs, 5, 4, args.batch_size)
+    if no_hint_input(args.ckpt):
+        return ev.roll_finetuned(model, jobs, False, 5, 4, args.batch_size)
     return ev.roll_finetuned(model, jobs, kind == "hint", *((1, 8) if kind == "hint" else (5, 4)), args.batch_size)
 
 
@@ -90,6 +106,9 @@ def main():
     sets, ea = start_sets(args)
     sets = {k: v[:args.limit or None] for k, v in sets.items()}
     path = out / "landings.json"
+    w2_zero = os.environ.get("SF_PARITY_EVEN") == "1"
+    if path.exists() and json.loads(path.read_text()).get("w2_zero", False) != w2_zero:
+        raise SystemExit(f"{path} was made with w2_zero={not w2_zero}; use another --out-dir")
     if not path.exists():
         lands, model = {}, load(args)
         for kind, jobs in sets.items():
@@ -97,19 +116,19 @@ def main():
                 X = roll(args, model, mapped(jobs, R), kind)
                 lands[f"{kind}/{name}"] = [np.round(x @ R, 5).tolist() for x in X]        # back to the original frame
                 print(f"  {kind} {name}: {len(X)} landings", flush=True)
-        path.write_text(json.dumps(dict(ckpt=args.ckpt, landings=lands)))
+        path.write_text(json.dumps(dict(ckpt=args.ckpt, w2_zero=w2_zero, landings=lands)))
     lands = {k: [np.array(x) for x in v] for k, v in json.loads(path.read_text())["landings"].items()}
 
     minima = {t: m for t, (m, _) in ev.test_minima(ea).items()}
     ref = ev.reference(ea, [], minima)
     q = lambda v: "  ".join(f"{x:7.4f}" for x in np.quantile(v, [0.5, 0.9, 0.99, 1.0]))
-    L = [f"Mirror test: {args.ckpt}", "=" * 100, "",
+    L = [f"Mirror test: {args.ckpt}" + (" (W2 zeroed at load, SF_PARITY_EVEN=1)" if w2_zero else ""), "=" * 100, "",
          "Largest per-atom distance (A, rigid shift removed) between the mapped start's landing, mapped back, and the "
          "unchanged landing.", ""]
     for kind, jobs in sets.items():
         base = lands[f"{kind}/unchanged"]
         L += [f"{kind} starts ({len(jobs)}): " + ("failure-mode run, hint zero, 5 x 4" if kind == "noise" else
-              f"{args.per_minimum} hint-grid starts per test minimum, " + ("5 x 4, no hint input" if args.ckpt == "released" else "hint given, 1 x 8")),
+              f"{args.per_minimum} hint-grid starts per test minimum, " + ("5 x 4, no hint input" if no_hint_input(args.ckpt) else "hint given, 1 x 8")),
               f"  map                        p50      p90      p99      max |  > {NEAR} A    > 1 A" +
               ("  | same saddle" if kind == "hint" else "")]
         near = [ev.nearest_region(minima[j[1]], ref[j[1]], x, NEAR)[0] for j, x in zip(jobs, base)] if kind == "hint" else []

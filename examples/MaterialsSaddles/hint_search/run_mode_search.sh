@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/mode_search_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/mode_search_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/mode_search_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/mode_search_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of mode_search.py on the hint-search output: MODE=search|verify (array task = GPU, WORKERS

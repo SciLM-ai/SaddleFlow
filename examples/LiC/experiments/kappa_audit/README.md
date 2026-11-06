@@ -25,7 +25,7 @@ One central energy/force evaluation plus six FD force geometries computes each
 3x3 Hessian. Displaced geometries use the existing batched backend.
 
 Results: `/scratch/gqs7zr/saddleflow/lic_kappa_audit_JOBID/`.
-Logs: `/scratch/gqs7zr/saddleflow/lic_kappa_audit_JOBID.out` and `.err`.
+Logs: `/scratch/gqs7zr/saddleflow/logs/lic_kappa_audit_JOBID.out` and `.err`.
 The batch script requests any supported A100/A40/B200/A6000/RTXPRO6000 GPU,
 64 GB CPU memory and up to 36 hours. It runs the numerical audit BEFORE the
 separate plotting command. The time request is a limit, not a measured estimate.

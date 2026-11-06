@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=08:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/soft_start_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/soft_start_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/soft_start_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/soft_start_%j.err
 #SBATCH --no-requeue
 
 # Soft-mode starts on the two hint-search minima (hint_start.py soft_*): rollouts and null copies, Sella

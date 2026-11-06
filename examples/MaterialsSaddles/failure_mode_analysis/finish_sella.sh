@@ -9,8 +9,8 @@
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
 #SBATCH --array=0-7
-#SBATCH --output=/scratch/gqs7zr/saddleflow/failure_mode_sella_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/failure_mode_sella_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/failure_mode_sella_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/failure_mode_sella_%A_%a.err
 #SBATCH --no-requeue
 
 # Finish the Sella labelling of a run directory whose single job hit its time limit. Each array task

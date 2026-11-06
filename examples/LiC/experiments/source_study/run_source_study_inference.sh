@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_source_eval_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_source_eval_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_source_eval_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_source_eval_%j.err
 #SBATCH --no-requeue
 
 set -euo pipefail

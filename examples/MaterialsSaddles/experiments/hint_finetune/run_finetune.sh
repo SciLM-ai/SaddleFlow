@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=320G
 #SBATCH --time=2-00:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/hint_finetune_%x_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/hint_finetune_%x_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/hint_finetune_%x_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/hint_finetune_%x_%j.err
 #SBATCH --no-requeue
 
 # finetune.py on one node, one process per GPU, started directly by this script (no srun: on this cluster

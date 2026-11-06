@@ -220,10 +220,12 @@ def starts(args, group, kind, seed=0):
 
 # ---------------------------------------------------------------- models
 def load_finetuned(ckpt, device, live=False):
-    """The fine-tuned FlowMatchingLoss module (backbone with HintFiLM, head) with the checkpoint's EMA weights."""
+    """The fine-tuned FlowMatchingLoss module (backbone with HintFiLM, head) with the checkpoint's EMA weights.
+    W2 is checked to be zero for a --parity-even run, and zeroed in any checkpoint when SF_PARITY_EVEN=1."""
     import torch
     from safetensors.torch import load_file
     import finetune as ft
+    from saddleflow.utils.parity import assert_parity_even, parity_from_env
     ckpt = Path(ckpt)
     cfg = json.loads((ckpt.parent / "config.json").read_text())["extras"]["finetune"]
     loss, _, _ = ft.build(SimpleNamespace(**cfg), device)
@@ -239,6 +241,9 @@ def load_finetuned(ckpt, device, live=False):
         with torch.no_grad():
             for p, s in zip(params, shadow):
                 p.copy_(s.to(p.device))
+    parity_from_env(loss.backbone)
+    if cfg.get("parity_even"):
+        assert_parity_even(loss.backbone)
     return loss.eval()
 
 
@@ -315,7 +320,9 @@ def land(args, out):
             model = load_finetuned(args.ckpt, args.device, args.live)
         else:
             from saddleflow import SaddleFlow
+            from saddleflow.utils.parity import parity_from_env
             model = SaddleFlow.from_pretrained("SciLM/SaddleFlow", device=args.device)
+            parity_from_env(model.backbone)
         for arm in arms:
             _, kind, hinted, passes, steps = ARMS[arm]
             seed = START_SEED.get(arm, 0)

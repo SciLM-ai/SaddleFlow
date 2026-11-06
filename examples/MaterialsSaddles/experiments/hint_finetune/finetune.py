@@ -36,6 +36,12 @@ Options (both off by default, which is the pilot):
                  of a training region: target its saddle S, a hint from that region, t ~ U(0.7, 0.95), the source
                  placed so the straight line to S passes through y at t (flow_time: no x_t perturbation). Training
                  draws only.
+    --replay-only  continue the released model's own training: mp20bat replay rows only (each pair is two replay
+                 records, so a batch holds as many records as the pilot's), no hint layers at all, no hint field;
+                 validation on the replay val split. --labels is not needed.
+    --parity-even  W2 = 0 in every m > 0 SO(2) layer of the backbone (saddleflow.utils.parity), applied after the
+                 released weights load and kept at zero by a gradient hook: mirror-equivariant by construction.
+                 The frozen UMA used for energies and forces is a separate model and is not touched.
 
 Objective: MSE (not the released Huber), so several saddles sharing a hint stay separate distributions and the
 start noise chooses among them; convergent target, x_t perturbation 0.05 A, CoM-symmetric loss, as released.
@@ -68,6 +74,7 @@ from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss  # noqa: E402
 from saddleflow.models import GlobalAttn, VelocityHead  # noqa: E402
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone  # noqa: E402
 from saddleflow.utils import TrainingConfig, load_uma_backbone, train  # noqa: E402
+from saddleflow.utils.parity import assert_parity_even, enforce_parity_even  # noqa: E402
 
 DATA = os.environ.get("SADDLEFLOW_DATA", "/scratch/gqs7zr/saddleflow")   # data root; the CS cluster sets /bigtemp/gqs7zr/saddleflow
 MP20BAT = f"{DATA}/MaterialsSaddles/mp20bat"
@@ -76,7 +83,7 @@ DATASET_FILE = f"{DATA}/practicality/hf/mp20bat/train/mp20bat_train_0000.aselmdb
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--labels", required=True, help="tierb.py labels.json")
+    p.add_argument("--labels", default=None, help="tierb.py labels.json (not needed with --replay-only)")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--replay-dir", default=MP20BAT, help="MaterialsSaddles subset directory (train/ and val/)")
     p.add_argument("--init", default="SciLM/SaddleFlow", help="released model: Hub repo or local directory")
@@ -93,6 +100,8 @@ def parse_args():
     p.add_argument("--inversion-prob", type=float, default=0.0, help="share of training records inverted (r -> -r)")
     p.add_argument("--frames", default=None, help="frames.py frames.json: near-saddle frames in the hinted half")
     p.add_argument("--frame-prob", type=float, default=0.3, help="share of hinted rows replaced by a frame (0.3: 15%% of a batch)")
+    p.add_argument("--replay-only", action="store_true", help="replay rows only, no hint layers (continued training)")
+    p.add_argument("--parity-even", action="store_true", help="W2 = 0 in the backbone's SO(2) layers (mirror-equivariant)")
     p.add_argument("--path-u-power", type=float, default=2.0)
     # Objective (released values unless noted).
     p.add_argument("--loss-type", default="mse", choices=["mse", "huber"])
@@ -248,7 +257,7 @@ class Replay:
         r = self.ds[i]
         n = int(r["Z"].shape[0])
         r["hint_field"] = torch.zeros(n, 3)
-        if rng.random() < self.args.replay_hint_prob:
+        if not getattr(self.args, "replay_only", False) and rng.random() < self.args.replay_hint_prob:
             E = r["start_pos"].double().numpy()
             m = Atoms(numbers=r["Z"].numpy(), positions=E, cell=r["cell"].double().numpy(), pbc=True)
             hints = hl.make_hints(m, r["saddle_un_pos"].double().numpy())
@@ -313,8 +322,9 @@ def build(args, device):
     for block in raw.blocks:                         # --unfreeze-uma-all, as in the paper model
         for p in block.parameters():
             p.requires_grad_(True)
+    hinted = not getattr(args, "replay_only", False)             # configs written before the flag are hinted
     backbone = TimeFiLMBackbone(raw, inject_block_indices=list(config["film_blocks"]), inject_force=False,
-                                inject_hint=True).to(device)
+                                inject_hint=hinted).to(device)
     attn = GlobalAttn(sphere_channels=raw.sphere_channels, lmax=raw.lmax, num_heads=8, num_layers=0).to(device)
     head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax, depth=int(config["head_depth"])).to(device)
     loss = PairLoss(FlowMatchingConfig(
@@ -326,13 +336,16 @@ def build(args, device):
     missing = [k for k in missing if not k.startswith(("backbone.hint_films.", "backbone.film.", "global_attn."))]
     if unexpected or missing:
         raise RuntimeError(f"released weights do not match: missing {missing[:5]}, unexpected {unexpected[:5]}")
-    hint = [p for p in backbone.hint_films.parameters()]
+    if getattr(args, "parity_even", False):          # configs written before the flag have no such key
+        enforce_parity_even(raw)
+        assert_parity_even(raw)
+    hint = [p for p in backbone.hint_films.parameters()] if hinted else []
     uma = [p for p in raw.parameters() if p.requires_grad]
     taken = {id(p) for p in hint + uma}
     rest = [p for p in loss.parameters() if p.requires_grad and id(p) not in taken]
     groups = [{"name": "head_film", "params": rest, "lr": args.learning_rate},
               {"name": "uma_blocks", "params": uma, "lr": args.uma_lr},
-              {"name": "hint_films", "params": hint, "lr": args.hint_lr}]
+              {"name": "hint_films", "params": hint, "lr": args.hint_lr}][:3 if hinted else 2]
     return loss, groups, config
 
 
@@ -346,20 +359,34 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
-    tierb_train = (TierBRows(args.labels, False, args) if args.hint_rows == "tierb"
-                   else DatasetRows(args.dataset_file, args.labels, args))
-    tierb_val = TierBRows(args.labels, True, args)
     replay_train, replay_val = Replay("train", args), Replay("val", args)
-    frames = FrameRows(args.frames, args) if args.frames else None
-    train_ds = Pairs(tierb_train, replay_train, inversion=args.inversion_prob, frames=frames, frame_prob=args.frame_prob)
-    val_ds = Pairs(tierb_val, replay_val, fixed_seed=args.seed, size=args.max_val_pairs) if len(tierb_val) else None
+    if args.replay_only:
+        if args.frames or args.inversion_prob or args.hint_rows != "tierb":
+            raise SystemExit("--replay-only takes no --frames, --inversion-prob or --hint-rows")
+        # Item i = (replay record i, a random replay record): Pairs with the replay set in both halves.
+        train_ds = Pairs(replay_train, replay_train)
+        val_ds = Pairs(replay_val, replay_val, fixed_seed=args.seed, size=args.max_val_pairs)
+    else:
+        if not args.labels:
+            raise SystemExit("--labels is required unless --replay-only")
+        tierb_train = (TierBRows(args.labels, False, args) if args.hint_rows == "tierb"
+                       else DatasetRows(args.dataset_file, args.labels, args))
+        tierb_val = TierBRows(args.labels, True, args)
+        frames = FrameRows(args.frames, args) if args.frames else None
+        train_ds = Pairs(tierb_train, replay_train, inversion=args.inversion_prob, frames=frames, frame_prob=args.frame_prob)
+        val_ds = Pairs(tierb_val, replay_val, fixed_seed=args.seed, size=args.max_val_pairs) if len(tierb_val) else None
     loss, groups, config = build(args, device)
-    if local_rank == 0:
-        n = {g["name"]: sum(p.numel() for p in g["params"]) for g in groups}
+    if local_rank == 0 and args.replay_only:
+        print(f"[finetune] replay only, no hint layers: train {len(replay_train)}, val {len(val_ds)} pairs; "
+              f"loss {args.loss_type}; parity-even (W2 = 0) {args.parity_even}")
+    elif local_rank == 0:
         print(f"[finetune] hinted rows ({args.hint_rows}): train {len(tierb_train)} ({len(tierb_train.minima)} minima"
               + (f"; {tierb_train.skipped} triplets in Tier B element sets left out" if args.hint_rows == "dataset" else "")
               + f"), Tier B held out {len(tierb_val)}; replay train {len(replay_train)}, val {len(replay_val)}; "
-              f"inversion {args.inversion_prob}; frames {len(frames) if frames else 0} (p {args.frame_prob if frames else 0})")
+              f"inversion {args.inversion_prob}; frames {len(frames) if frames else 0} (p {args.frame_prob if frames else 0}); "
+              f"parity-even (W2 = 0) {args.parity_even}")
+    if local_rank == 0:
+        n = {g["name"]: sum(p.numel() for p in g["params"]) for g in groups}
         print(f"[finetune] world {world}, {args.batch_pairs} pairs ({2 * args.batch_pairs} records) per GPU; "
               f"trainable parameters {n}")
 
@@ -370,11 +397,13 @@ def main():
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay, mixed_precision="no", seed=args.seed,
         log_every=10, save_every_epochs=10 ** 6, save_every_steps=args.save_every_steps,
         val_every_steps=args.val_every_steps if val_ds is not None else 0, resume_from=args.resume_from,
-        extras={"finetune": vars(args), "released_config": config, "inject_hint": True, "hint_training": args.hint_rows,
+        extras={"finetune": vars(args), "released_config": config, "inject_hint": not args.replay_only,
+                "hint_training": "none" if args.replay_only else args.hint_rows,
                 "film_blocks": config["film_blocks"], "head_depth": config["head_depth"], "backbone": args.backbone,
                 "early_time_film": True, "early_time_film_blocks": ",".join(map(str, config["film_blocks"])),
                 "loss_type": args.loss_type, "delta_endpoint_channels": 0, "attn_layers": 0,
-                "unfreeze_uma_all": True, "xt_target_correction": True, "com_symmetric_loss": True},
+                "unfreeze_uma_all": True, "xt_target_correction": True, "com_symmetric_loss": True,
+                "parity_even": args.parity_even},
     )
     train(loss, train_ds, cfg, val_dataset=val_ds, val_every_epochs=10 ** 6, param_groups=groups)
 

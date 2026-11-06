@@ -177,7 +177,7 @@ oracle-conditioning proof of concept, not an oracle-free inference method.
 Training logs include per-batch geometry counts and mean lambda1/lambda2/gap.
 
 The batch launcher allows the usual A100/A40/B200/A6000/RTXPro6000 GPUs
-and writes `/scratch/gqs7zr/saddleflow/lic_conditioning_JOBID.out`, `.err`, and
+and writes `/scratch/gqs7zr/saddleflow/logs/lic_conditioning_JOBID.out`, `.err`, and
 `lic_conditioning_JOBID/`. Its wall-time request is 24 hours; the full curvature
 run has NOT been GPU-timed yet. Override the allocation as appropriate and use
 the existing checkpoint/resume controls if needed, e.g. `--save-every-steps

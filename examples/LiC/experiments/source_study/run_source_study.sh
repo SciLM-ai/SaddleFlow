@@ -9,8 +9,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_source_study_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_source_study_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_source_study_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_source_study_%A_%a.err
 #SBATCH --no-requeue
 
 # Prepare the split once BEFORE submitting this four-arm array.

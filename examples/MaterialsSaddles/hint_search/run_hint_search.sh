@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/hint_search_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/hint_search_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/hint_search_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/hint_search_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of the mp20bat hint search; submit_hint_search.sh chains them. MODE is one of

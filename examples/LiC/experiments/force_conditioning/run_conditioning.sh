@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_conditioning_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_conditioning_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_conditioning_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_conditioning_%j.err
 #SBATCH --no-requeue
 
 # Flags opt in; no flags runs the ordinary baseline recipe.

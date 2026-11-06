@@ -66,7 +66,7 @@ The launcher uses the original TS-denoise checkpoint, `--starts mixed` and
 `--restarts 2`. Results go to a fresh directory for each job:
 `/scratch/gqs7zr/saddleflow/lic_saddle_search_threeway_<JOBID>/`.
 Stdout and stderr go to
-`/scratch/gqs7zr/saddleflow/lic_saddle_search_<JOBID>.out` and `.err`.
+`/scratch/gqs7zr/saddleflow/logs/lic_saddle_search_<JOBID>.out` and `.err`.
 The parent scratch directory must exist before submission, since Slurm opens
 the logs before executing the script. This directory already holds the model
 checkpoints in the current setup.
@@ -74,7 +74,7 @@ checkpoints in the current setup.
 Watch progress with the job ID printed by `sbatch`:
 
 ```bash
-tail -f /scratch/gqs7zr/saddleflow/lic_saddle_search_<JOBID>.out
+tail -f /scratch/gqs7zr/saddleflow/logs/lic_saddle_search_<JOBID>.out
 ```
 
 Extra arguments after the script name are forwarded to the Python benchmark:

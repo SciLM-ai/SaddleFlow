@@ -9,8 +9,8 @@
 #SBATCH --mem=64G
 #SBATCH --time=36:00:00
 #SBATCH --signal=USR1@120
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_kappa_audit_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_kappa_audit_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_kappa_audit_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_kappa_audit_%j.err
 #SBATCH --no-requeue
 
 # Audit ALL stored paths; publish partial CPU-plottable snapshots.

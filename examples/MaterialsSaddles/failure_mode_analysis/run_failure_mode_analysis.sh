@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/failure_mode_analysis_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/failure_mode_analysis_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/failure_mode_analysis_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/failure_mode_analysis_%j.err
 #SBATCH --no-requeue
 
 # Landing points of the released unconditional model from test-set minima, labelled by Sella.

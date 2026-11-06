@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/mp20_mirror_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/mp20_mirror_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/mp20_mirror_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/mp20_mirror_%j.err
 #SBATCH --no-requeue
 
 # Inversion-equivariance test of the released model on a failure-mode run (mirror_test.py).

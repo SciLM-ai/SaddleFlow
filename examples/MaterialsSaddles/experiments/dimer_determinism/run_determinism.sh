@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/dimer_det_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/dimer_det_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/dimer_det_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/dimer_det_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of the dimer determinism experiment on one A100 80GB (submit_determinism.sh chains them).

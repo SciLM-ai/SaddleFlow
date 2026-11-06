@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/higher_order_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/higher_order_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/higher_order_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/higher_order_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # Averaging and integration test of the higher-order landing points (higher_order_test.py).

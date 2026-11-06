@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/hint_start_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/hint_start_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/hint_start_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/hint_start_%j.err
 #SBATCH --no-requeue
 
 # The released model from hint starts (hint_start.py) on one GPU: rollouts, Sella (WORKERS processes),

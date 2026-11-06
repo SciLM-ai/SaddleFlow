@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_pes_directions_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_pes_directions_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_pes_directions_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_pes_directions_%j.err
 #SBATCH --no-requeue
 
 # Sbatch examples/LiC/experiments/pes_and_recovery/run_pes_directions.sh

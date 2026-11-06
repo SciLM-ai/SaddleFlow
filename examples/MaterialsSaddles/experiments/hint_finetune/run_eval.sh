@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/hint_eval_%x_%A_%a.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/hint_eval_%x_%A_%a.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/hint_eval_%x_%A_%a.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/hint_eval_%x_%A_%a.err
 #SBATCH --no-requeue
 
 # One stage of eval_hints.py (submit_eval.sh chains them, each as its own job):

@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_recovery_mmf_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_recovery_mmf_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_recovery_mmf_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_recovery_mmf_%j.err
 #SBATCH --no-requeue
 
 # One fixed fold, matched continuations, autonomous evaluation + audit.

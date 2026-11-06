@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=40G
 #SBATCH --time=04:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_pes_adoption_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_pes_adoption_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_pes_adoption_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_pes_adoption_%j.err
 #SBATCH --no-requeue
 
 # Existing-checkpoint diagnostic only. No training or optimizer.

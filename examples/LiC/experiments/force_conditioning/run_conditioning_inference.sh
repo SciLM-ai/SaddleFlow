@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output=/scratch/gqs7zr/saddleflow/lic_conditioning_infer_%j.out
-#SBATCH --error=/scratch/gqs7zr/saddleflow/lic_conditioning_infer_%j.err
+#SBATCH --output=/scratch/gqs7zr/saddleflow/logs/lic_conditioning_infer_%j.out
+#SBATCH --error=/scratch/gqs7zr/saddleflow/logs/lic_conditioning_infer_%j.err
 #SBATCH --no-requeue
 
 # Defaults reproduce the 48k-checkpoint exact-false-bridge check.

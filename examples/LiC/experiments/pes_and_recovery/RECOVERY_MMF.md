@@ -331,7 +331,7 @@ for lambda or deadband selection. This does not imply a 0.1 ratio at every step.
 
 Results: `/scratch/gqs7zr/saddleflow/lic_recovery_mmf_JOBID/`
 
-Logs: `/scratch/gqs7zr/saddleflow/lic_recovery_mmf_JOBID.out` and `.err`.
+Logs: `/scratch/gqs7zr/saddleflow/logs/lic_recovery_mmf_JOBID.out` and `.err`.
 
 The batch job runs preparation, calibration, R0/R1/R2 training, the fixed-probe
 audit, and then final-checkpoint evaluation. It does not select a checkpoint
