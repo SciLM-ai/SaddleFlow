@@ -1,0 +1,14 @@
+# Log lines of the run that trained FM1 (runs/FM1): the launcher's line for each of the two launches, and the training
+# log's start, resume and end. Job 1034084 (2026-09-29) and job 1036605 (2026-10-01), 64 GH200 nodes each.
+
+## start (job 1034084; the first attempt minutes earlier failed with EADDRINUSE on the default port)
+[foundation] 64 nodes (c609-[052,061,072,121,132,141-142,151-152],c610-111,c611-[121,141-142],c612-[081-082,101,112,131,142,152],c613-[002,022,072,122],c619-[001,032,042,051],c620-[051-052],c622-[051-052],c634-[032,041,152],c635-[001,012,021-022,061,092,101-102,111-112],c636-[082,091-092,121-122],c637-012,c638-[062,071,081-082],c639-152,c640-[001,071-072],c641-[001-002,011,071-072]) master c609-052:44383 warmup 16000 ticks -> /scratch/08405/ilgar/saddleflow/campaigns/2026-09-29_v2_foundation/runs/FM1  Tue Sep 29 02:48:27 PM CDT 2026
+[train] total steps: 8462878  (epochs 1 × 132233 batches)
+[train] starting at epoch 0, global step 0
+
+## resume from checkpoint_step_00090000 (job 1036605, FOUNDATION_PORT=44391, extra argument --resume-from <runs/FM1>/checkpoint_step_00090000)
+[foundation] 64 nodes (c608-122,c610-[021,031-032,061,081,111],c611-[111-112,121,141-142],c612-[052,081,092,101,112,131,142],c619-[042,051,132],c620-[051,151],c621-031,c622-[051-052],c634-[031-032,041-042,152],c635-[001,012,021-022,031,092,101-102,111-112],c636-[081-082,091-092,121-122],c638-[062,071,081-082,091],c639-152,c640-[001-002,011,071-072],c641-[001-002,011,071-072]) master c608-122:44391 warmup 16000 ticks -> /scratch/08405/ilgar/saddleflow/campaigns/2026-09-29_v2_foundation/runs/FM1  Thu Oct  1 05:57:56 PM CDT 2026
+[train] total steps: 8462878  (epochs 1 × 132233 batches)
+[train] starting at epoch 0, global step 90000
+[train] resume: epoch 0, skipping the first 90000 of 132233 batches (already trained)
+[train] done. total time 1361.28 min

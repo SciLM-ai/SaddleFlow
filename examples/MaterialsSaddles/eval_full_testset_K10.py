@@ -106,7 +106,7 @@ def parse_args():
 # Mirrors sample_and_distance_eval.py::_build_loss_module exactly so the
 # safetensors keys align with the checkpoint architecture.
 
-def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
+def _build_loss_module(config: dict, device: str, inject_flag: bool = False) -> FlowMatchingLoss:
     extras = config.get("extras", {})
     backbone_name = extras.get("backbone", "uma-s-1p2")
     inject_str = extras.get("early_time_film_blocks", "-2,-1")
@@ -168,7 +168,7 @@ def _build_loss_module(config: dict, device: str) -> FlowMatchingLoss:
     sc, lmax = raw_backbone.sphere_channels, raw_backbone.lmax
 
     backbone = TimeFiLMBackbone(
-        raw_backbone, inject_block_indices=inject_blocks, inject_force=inject_force,
+        raw_backbone, inject_block_indices=inject_blocks, inject_force=inject_force, inject_flag=inject_flag,
     ).to(device)
     attn = GlobalAttn(
         sphere_channels=sc, lmax=lmax,
@@ -258,8 +258,9 @@ def load_model(ckpt_dir: Path, device: str, use_ema: bool = False):
           f"backbone={config['extras'].get('backbone')} "
           f"delta_C={config['extras'].get('delta_endpoint_channels')} "
           f"force_C={config['extras'].get('force_field_channels')}")
-    loss_module = _build_loss_module(config, device)
     state = load_file(str(ckpt_dir / "model.safetensors"))
+    # A model trained with the per-atom flag input (train.py --inject-flag) carries backbone.flag_films.*.
+    loss_module = _build_loss_module(config, device, inject_flag=any(k.startswith("backbone.flag_films.") for k in state))
     missing, unexpected = loss_module.load_state_dict(state, strict=False)
     print(f"[load] loaded {len(state)} tensors  "
           f"missing={len(missing)}  unexpected={len(unexpected)}")

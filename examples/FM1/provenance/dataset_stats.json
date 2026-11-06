@@ -1,0 +1,26 @@
+{
+  "delta_norm_mean": 2.0,
+  "per_subset": [
+    {
+      "subset": "lemat",
+      "delta_norm_mean": 2.0,
+      "num_triplets": 31322917
+    },
+    {
+      "subset": "oc20",
+      "delta_norm_mean": 2.0,
+      "num_triplets": 2367718
+    },
+    {
+      "subset": "oc22",
+      "delta_norm_mean": 2.0,
+      "num_triplets": 152593
+    },
+    {
+      "subset": "mp20bat",
+      "delta_norm_mean": 2.0,
+      "num_triplets": 34031
+    }
+  ],
+  "total_records": 67754518
+}

@@ -1,0 +1,8 @@
+{
+  "test_loss_live": 0.14829823281615973,
+  "test_loss_ema": 0.13365655113011599,
+  "test_loss": 0.13365655113011599,
+  "global_step": 132233,
+  "epoch": 1,
+  "weights": "live+ema"
+}

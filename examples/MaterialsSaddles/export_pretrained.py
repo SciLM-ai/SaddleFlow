@@ -4,7 +4,8 @@
 
 Writes <dir>/model.safetensors (the EMA weights by default, `--live` for the point estimate) and
 <dir>/config.json (the UMA backbone configuration, the time-FiLM blocks, the head depth, the trained
-tasks and the inference defaults). Only unconditional models (--delta-endpoint-channels 0) are supported.
+tasks, the inference defaults and whether the backbone takes the per-atom flag of train.py --inject-flag).
+Only unconditional models (--delta-endpoint-channels 0) are supported.
 """
 from __future__ import annotations
 
@@ -62,6 +63,7 @@ def main():
         "backbone": uma_backbone_config(ex["backbone"]),
         "film_blocks": [int(b) for b in ex["early_time_film_blocks"].split(",")],
         "head_depth": int(ex["head_depth"]),
+        "flag": bool(model.backbone.inject_flag),
         "tasks": {"default": "omat", "map": task_map, "trained": sorted(set(task_map.values()))},
         "inference": {**INFERENCE, "sigma": float(ex.get("path_noise_sigma", INFERENCE["sigma"]))},
         "weights": "live" if a.live else "ema",
