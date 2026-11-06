@@ -100,6 +100,13 @@ def test_w2_stays_zero_in_training(model):
         assert_parity_even(model.backbone)
 
 
+def test_frozen_w2_needs_no_hook(model):
+    for p in model.backbone.parameters():
+        p.requires_grad_(False)
+    enforce_parity_even(model.backbone)
+    assert_parity_even(model.backbone)
+
+
 def test_cached_block_matrix_refused(model):
     from fairchem.core.models.uma.nn.so2_layers import SO2_m_Conv_Block
     model.backbone.extra = SO2_m_Conv_Block(1, 4, 4, 2, 2)

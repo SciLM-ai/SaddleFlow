@@ -13,17 +13,18 @@
 #SBATCH --no-requeue
 
 # mirror_test.py on the CS cluster, one GPU (data and caches under /bigtemp, weights offline, as run_eval_cs.sh).
-# CKPT: a fine-tune checkpoint directory, or 'released'. OUT defaults to mirror_test/<run name> (the checkpoint's
-# run directory, or 'released').
+# MODEL: fm1, fm2 or a release directory. DATASET: a directory of .aselmdb shards or a .traj of triplets (default mp20bat test).
+# OUT defaults to mirror_test/<model name>. Pass extra arguments after the script (--n_minima 500).
 #   export TMPDIR=/tmp
-#   CKPT=released sbatch --export=ALL run_mirror_test_cs.sh
-#   CKPT=/bigtemp/gqs7zr/saddleflow/hint_finetune/runs/inversion_6751338/checkpoint_final sbatch --export=ALL run_mirror_test_cs.sh
+#   MODEL=fm1 sbatch --export=ALL run_mirror_test_cs.sh
+#   MODEL=fm2 DATASET=<dir> sbatch --export=ALL run_mirror_test_cs.sh --n_minima 200
 set -euo pipefail
 REPO="${SADDLEFLOW_REPO:-/u/gqs7zr/SaddleFlow}"
 PYTHON="${SADDLEFLOW_PYTHON:-/u/gqs7zr/.conda/envs/saddleflow/bin/python}"
 export SADDLEFLOW_DATA="${SADDLEFLOW_DATA:-/bigtemp/gqs7zr/saddleflow}"
-CKPT="${CKPT:?Pass CKPT=<checkpoint dir> or CKPT=released}"
-NAME=released; [ "$CKPT" = released ] || NAME=$(basename "$(dirname "$CKPT")")
+MODEL="${MODEL:?Pass MODEL=fm1, fm2 or a release directory}"
+DATASET="${DATASET:-$SADDLEFLOW_DATA/MaterialsSaddles/mp20bat/test}"
+NAME=$(basename "$MODEL")
 OUT="${OUT:-$SADDLEFLOW_DATA/mirror_test/$NAME}"
 cd "$REPO"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
@@ -36,5 +37,5 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$CACHE/xdg}" FAIRCHEM_CACHE_DIR="${FAIR
 export OMP_NUM_THREADS=4
 git log -1 --format="code: %h %s"; git status --short -uno | sed 's/^/  uncommitted: /'
 nvidia-smi --query-gpu=name --format=csv,noheader
-echo "CKPT=$CKPT  OUT=$OUT"
-"$PYTHON" -u examples/MaterialsSaddles/experiments/mirror_test/mirror_test.py --ckpt "$CKPT" --out-dir "$OUT" "$@"
+echo "MODEL=$MODEL  DATASET=$DATASET  OUT=$OUT"
+"$PYTHON" -u examples/MaterialsSaddles/mirror_test.py --model "$MODEL" --dataset "$DATASET" --out-dir "$OUT" "$@"

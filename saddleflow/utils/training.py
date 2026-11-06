@@ -25,6 +25,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
+from .parity import assert_parity_even, zero_w2_
+
 
 def identity_collate(batch):
     """Pass-through collate — yields `list[dict]`. Needed because samples have
@@ -76,6 +78,9 @@ class TrainingConfig:
     # checkpoint also uses EMA weights, so fine-tuning starts from the model
     # whose behavior was actually measured.
     init_weights_use_ema: bool = False
+    # W2 = 0 in the backbone (saddleflow.utils.parity). The caller adds the gradient hook; train() zeroes W2 again after
+    # --init-weights, which would otherwise bring it back, and checks it before the first step.
+    parity_even: bool = False
 
     # --- Benchmark instrumentation (all no-ops at defaults; production unaffected) ---
     # If > 0, stop after this many optimizer steps regardless of num_epochs. Also
@@ -315,6 +320,9 @@ def train(
                 f"(missing={len(missing)}, unexpected={len(unexpected)})"
             )
 
+        if config.parity_even:
+            zero_w2_(unwrapped_model.backbone)
+
         # EMA was constructed before the initializer was applied.  Reset its
         # shadow to the loaded starting model; otherwise a new fine-tuning run
         # would blend its final weights with the pre-initialisation random state.
@@ -334,6 +342,8 @@ def train(
             meta = json.loads(meta_path.read_text())
             start_epoch = int(meta.get("epoch", 0))
             global_step = int(meta.get("global_step", 0))
+    if config.parity_even:
+        assert_parity_even(accelerator.unwrap_model(loss_module).backbone)
 
     if accelerator.is_main_process:
         n_params = sum(p.numel() for p in trainable)

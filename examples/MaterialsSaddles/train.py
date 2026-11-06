@@ -432,6 +432,9 @@ def parse_args():
                    help="mover starts: share at the start (u = 0); the rest on the start -> saddle line, u ~ U(0, 1)")
     p.add_argument("--inject-flag", action="store_true",
                    help="flag the mover set through TimeFiLMBackbone's per-atom flag input (needs --early-time-film)")
+    p.add_argument("--parity-even", action="store_true",
+                   help="W2 = 0 in every m > 0 SO(2) layer of the backbone, kept at zero in training: mirror-equivariant "
+                        "by construction (saddleflow.utils.parity)")
     p.add_argument("--align-com", action="store_true",
                    help="systems without fixed atoms: remove the saddle's and partner's rigid drift from the start")
 
@@ -767,6 +770,10 @@ def main():
             raise SystemExit("--force-film and --inject-flag require --early-time-film")
         backbone = raw_backbone
 
+    if args.parity_even:
+        from saddleflow.utils.parity import enforce_parity_even
+        enforce_parity_even(raw_backbone)
+
     attn = GlobalAttn(sphere_channels=sc, lmax=lmax,
                        num_heads=args.attn_heads, num_layers=args.attn_layers).to(args.device)
     head_delta_C = args.delta_endpoint_channels if args.mode == 1 else 0
@@ -962,6 +969,7 @@ def main():
         val_every_steps=args.val_every_steps,
         init_weights=args.init_weights,
         resume_from=args.resume_from,
+        parity_even=args.parity_even,
         extras={
             "mode": args.mode,
             "delta_endpoint_channels": head_delta_C,
@@ -1021,6 +1029,7 @@ def main():
             "path_noise_sigma": args.path_noise_sigma,
             "path_u_power": args.path_u_power,
             "init_weights": args.init_weights,
+            "parity_even": args.parity_even,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
             "shards_dirs": {s: str(staged[s]) for s in subsets},

@@ -69,7 +69,7 @@ def enforce_parity_even(module):
     zero_w2_(module)
     for _, conv in so2_layers(module):
         w, i = _w2(conv)
-        if not getattr(w, "_parity_hook", False):        # mixture-of-experts layers can be shared
+        if w.requires_grad and not getattr(w, "_parity_hook", False):    # frozen: stays zero; experts can be shared
 
             def hook(g, i=i):
                 g = g.clone()

@@ -13,9 +13,11 @@ class SearchStopped(Exception):
 
 
 def run_sella(pes, x0, *, max_steps=100, max_force_calls=800,
-              fmax_tol=0.005, delta0=0.1, callback=None, v0=None, stop=None, return_hessian=False):
+              fmax_tol=0.005, delta0=0.1, callback=None, v0=None, stop=None, return_hessian=False, order=1, eta=1e-4):
     """Sella from x0 on the counted PES.
 
+    order: the saddle order to converge to (1 = first-order saddle).
+    eta: finite-difference step (A) of Sella's Hessian-vector products; also the floor of its trust radius.
     v0: initial guess for the lowest mode, over the free degrees of freedom (pes.dofs.pack layout); only
         Sella's first iterative diagonalisation uses it.
     stop: optional rule called after every accepted step as stop(x, energy) -> reason or None; a reason
@@ -53,7 +55,7 @@ def run_sella(pes, x0, *, max_steps=100, max_force_calls=800,
 
     try:
         constraints = Constraints(pes.atoms)
-        optimizer = Sella(pes.atoms, order=1, constraints=constraints,
+        optimizer = Sella(pes.atoms, order=order, eta=eta, constraints=constraints,
                           internal=False, delta0=delta0, logfile=None)
         if v0 is not None:
             # Sella keeps v0 in its own free coordinates, known only once the optimizer exists.
