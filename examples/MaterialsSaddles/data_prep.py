@@ -41,13 +41,15 @@ TRIPLETS_PER_FILE = 50_000
 # Triplet counts of the v2 release (verified against every file when it was written).
 # They pin the file lists and double as a completeness / consistency check. lemat train excludes the 2 triplets
 # with broken forces that the release dropped (lemat_train_0213 and lemat_train_0479 hold 49,999 each); mp20bat
-# train excludes the 2 one-atom triplets dropped on 2026-10-08.
+# train excludes the 2 one-atom triplets dropped on 2026-10-08. oc22 is the cleaned release on main (2026-10-22): its
+# removed and tier2 triplets left the files partly full, so the file count no longer follows from the triplet count.
 EXPECTED_TRIPLETS = {
     "lemat":   {"train": 28_223_514, "val": 1_533_392, "test": 1_566_009},
     "oc20":    {"train": 2_133_114,  "val": 123_751,   "test": 110_853},
-    "oc22":    {"train": 139_175,    "val": 6_557,     "test": 6_861},
+    "oc22":    {"train": 95_774,     "val": 4_449,     "test": 4_799},
     "mp20bat": {"train": 31_044,     "val": 1_454,     "test": 1_531},
 }
+EXPECTED_FILES = {("oc22", "train"): 3}
 ALL_SUBSETS: tuple[str, ...] = tuple(EXPECTED_TRIPLETS.keys())
 
 
@@ -69,7 +71,7 @@ def materials_saddles_root() -> Path:
 def expected_files(subset: str, split: str) -> list[str]:
     """Repository paths of the files of one subset/split, in order."""
     n = EXPECTED_TRIPLETS[subset][split]
-    k = (n + TRIPLETS_PER_FILE - 1) // TRIPLETS_PER_FILE
+    k = EXPECTED_FILES.get((subset, split), (n + TRIPLETS_PER_FILE - 1) // TRIPLETS_PER_FILE)
     return [f"{subset}/{split}/{subset}_{split}_{i:04d}.aselmdb" for i in range(k)]
 
 

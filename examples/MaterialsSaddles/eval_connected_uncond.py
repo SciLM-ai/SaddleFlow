@@ -391,10 +391,16 @@ def main():
             f.flush()
             print(f"  {len(rows)}/{len(endpoints)}", flush=True)
 
-    save_results(out, rows)
-    text = report(args, minima, rows)
-    (out / "report.txt").write_text(text)
-    print(text)
+        save_results(out, rows)
+        text = report(args, minima, rows)
+        (out / "report.txt").write_text(text)
+        print(text, flush=True)
+
+        # Everything is on disk. A worker can survive the pool's SIGTERM, and the pool then waits for it forever, so
+        # kill the workers and leave without the pool's shutdown.
+        for worker in multiprocessing.active_children():
+            worker.kill()
+        os._exit(0)
 
 
 if __name__ == "__main__":
