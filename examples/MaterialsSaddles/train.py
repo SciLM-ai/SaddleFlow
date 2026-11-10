@@ -435,6 +435,10 @@ def parse_args():
     p.add_argument("--parity-even", action="store_true",
                    help="W2 = 0 in every m > 0 SO(2) layer of the backbone, kept at zero in training: mirror-equivariant "
                         "by construction (saddleflow.utils.parity)")
+    p.add_argument("--w2-gate-width", type=int, default=0,
+                   help="keep W2 but gate it with this many learned per-bond pseudoscalars per block: "
+                        "mirror-equivariant by construction (saddleflow.models.w2_gate; built by TimeFiLMBackbone, "
+                        "needs --early-time-film; 0 = off). Excludes --parity-even")
     p.add_argument("--align-com", action="store_true",
                    help="systems without fixed atoms: remove the saddle's and partner's rigid drift from the start")
 
@@ -759,15 +763,18 @@ def main():
 
     if args.early_time_film:
         inject_idx = [int(x) for x in args.early_time_film_blocks.split(",")]
+        if args.w2_gate_width and args.parity_even:
+            raise SystemExit("--w2-gate-width keeps W2 and --parity-even zeroes it: use one of them")
         backbone = TimeFiLMBackbone(
             raw_backbone, inject_block_indices=inject_idx,
             inject_force=args.force_film, inject_flag=args.inject_flag,
+            w2_gate_width=args.w2_gate_width,
         ).to(args.device)
         print(f"[train] backbone wrapped with TimeFiLMBackbone — time-FiLM "
-              f"at blocks {inject_idx}  force_film={args.force_film}")
+              f"at blocks {inject_idx}  force_film={args.force_film}  w2_gate_width={args.w2_gate_width}")
     else:
-        if args.force_film or args.inject_flag:
-            raise SystemExit("--force-film and --inject-flag require --early-time-film")
+        if args.force_film or args.inject_flag or args.w2_gate_width:
+            raise SystemExit("--force-film, --inject-flag and --w2-gate-width require --early-time-film")
         backbone = raw_backbone
 
     if args.parity_even:
@@ -1030,6 +1037,8 @@ def main():
             "path_u_power": args.path_u_power,
             "init_weights": args.init_weights,
             "parity_even": args.parity_even,
+            "w2_gate_width": int(args.w2_gate_width),
+            "w2_gate_scale": float(backbone.w2_gate_scale) if args.w2_gate_width else None,
             "limit_triplets": args.limit_triplets,
             "dataset": f"MaterialsSaddles ({','.join(subsets)})",
             "shards_dirs": {s: str(staged[s]) for s in subsets},

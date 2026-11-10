@@ -169,6 +169,8 @@ def _build_loss_module(config: dict, device: str, inject_flag: bool = False) -> 
 
     backbone = TimeFiLMBackbone(
         raw_backbone, inject_block_indices=inject_blocks, inject_force=inject_force, inject_flag=inject_flag,
+        w2_gate_width=int(extras.get("w2_gate_width") or 0),
+        **({"w2_gate_scale": float(extras["w2_gate_scale"])} if extras.get("w2_gate_scale") else {}),
     ).to(device)
     attn = GlobalAttn(
         sphere_channels=sc, lmax=lmax,

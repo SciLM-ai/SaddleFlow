@@ -33,6 +33,7 @@ import torch.nn as nn
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
 
 from .time_film import TimeFiLM
+from .w2_gate import DEFAULT_SCALE, install_w2_gates
 
 
 class ForceFiLM(nn.Module):
@@ -97,6 +98,8 @@ class TimeFiLMBackbone(nn.Module):
         inject_force: bool = False,
         inject_hint: bool = False,
         inject_flag: bool = False,
+        w2_gate_width: int = 0,
+        w2_gate_scale: float = DEFAULT_SCALE,
     ):
         """Args:
             inject_force: if True, ALSO apply a per-injection-point ForceFiLM
@@ -105,9 +108,18 @@ class TimeFiLMBackbone(nn.Module):
                 unfrozen UMA blocks via FiLM, not just at the head).
             inject_hint: if True, also apply a per-injection-point HintFiLM that adds the projected
                 hint field passed to forward(..., hint=h).
+            w2_gate_width: if > 0, gate the W2 path of every SO(2) layer of every backbone block with that many
+                learned per-bond pseudoscalars (saddleflow.models.w2_gate), which keeps W2 and makes the backbone
+                mirror-equivariant by construction. The gate starts at zero, so at init the wrapper equals the
+                backbone with W2 = 0 (not the backbone itself).
+            w2_gate_scale: the fixed constant the gates' pseudoscalars are multiplied by (w2_gate.DEFAULT_SCALE).
         """
         super().__init__()
         self.backbone = backbone
+        self.w2_gate_width = int(w2_gate_width)
+        self.w2_gate_scale = float(w2_gate_scale)
+        if self.w2_gate_width:
+            install_w2_gates(backbone, self.w2_gate_width, self.w2_gate_scale)
         if inject_block_indices is None:
             inject_block_indices = [-1]
         # Resolve negative indices once so we can compare against block ids.

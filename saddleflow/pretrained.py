@@ -29,6 +29,7 @@ from .data.transforms import mic_displacement, wrap_positions
 from .flow.matching import apply_output_projections, build_atomic_data
 from .models.time_filmed_backbone import TimeFiLMBackbone
 from .models.velocity_head import VelocityHead
+from .models.w2_gate import DEFAULT_SCALE
 
 DEFAULT_REPO = "SciLM/SaddleFlow"
 CONFIG_NAME = "config.json"
@@ -61,8 +62,9 @@ class SaddleFlow(nn.Module):
 
     `config` holds the UMA backbone configuration (`backbone`), the blocks that carry a time-FiLM
     (`film_blocks`), the head depth (`head_depth`), the tasks the model was trained on (`tasks`, with any
-    remapping such as oc22 -> oc20), the inference defaults (`inference`) and whether the backbone takes a per-atom
-    flag of the displaced atoms (`flag`).
+    remapping such as oc22 -> oc20), the inference defaults (`inference`), whether the backbone takes a per-atom
+    flag of the displaced atoms (`flag`) and the width and fixed scale of its W2 gates (`w2_gate_width`, 0 or
+    absent for none, and `w2_gate_scale`; saddleflow.models.w2_gate).
     """
 
     def __init__(self, config: dict):
@@ -72,7 +74,9 @@ class SaddleFlow(nn.Module):
         self.config = config
         raw = eSCNMDMoeBackbone(**{**config["backbone"], **_INFERENCE_OVERRIDES})
         self.backbone = TimeFiLMBackbone(raw, inject_block_indices=list(config["film_blocks"]),
-                                         inject_force=False, inject_flag=bool(config.get("flag", False)))
+                                         inject_force=False, inject_flag=bool(config.get("flag", False)),
+                                         w2_gate_width=int(config.get("w2_gate_width", 0)),
+                                         w2_gate_scale=float(config.get("w2_gate_scale", DEFAULT_SCALE)))
         self.velocity_head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax,
                                           depth=int(config["head_depth"]))
         self.eval()
