@@ -29,7 +29,7 @@ from .data.transforms import mic_displacement, wrap_positions
 from .flow.matching import apply_output_projections, build_atomic_data
 from .models.time_filmed_backbone import TimeFiLMBackbone
 from .models.velocity_head import VelocityHead
-from .models.w2_gate import DEFAULT_SCALE
+from .models.conv_layer_separation import CONFIG_KEY as SEPARATION_KEY, check_mode
 
 DEFAULT_REPO = "SciLM/SaddleFlow"
 CONFIG_NAME = "config.json"
@@ -63,8 +63,8 @@ class SaddleFlow(nn.Module):
     `config` holds the UMA backbone configuration (`backbone`), the blocks that carry a time-FiLM
     (`film_blocks`), the head depth (`head_depth`), the tasks the model was trained on (`tasks`, with any
     remapping such as oc22 -> oc20), the inference defaults (`inference`), whether the backbone takes a per-atom
-    flag of the displaced atoms (`flag`) and the width and fixed scale of its W2 gates (`w2_gate_width`, 0 or
-    absent for none, and `w2_gate_scale`; saddleflow.models.w2_gate).
+    flag of the displaced atoms (`flag`) and whether its conv layers are separated (`conv_layer_separation`, absent
+    for no; saddleflow.models.conv_layer_separation). `mode` says which of the two the loaded model runs.
     """
 
     def __init__(self, config: dict):
@@ -75,8 +75,7 @@ class SaddleFlow(nn.Module):
         raw = eSCNMDMoeBackbone(**{**config["backbone"], **_INFERENCE_OVERRIDES})
         self.backbone = TimeFiLMBackbone(raw, inject_block_indices=list(config["film_blocks"]),
                                          inject_force=False, inject_flag=bool(config.get("flag", False)),
-                                         w2_gate_width=int(config.get("w2_gate_width", 0)),
-                                         w2_gate_scale=float(config.get("w2_gate_scale", DEFAULT_SCALE)))
+                                         conv_layer_separation=bool(config.get(SEPARATION_KEY, False)))
         self.velocity_head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax,
                                           depth=int(config["head_depth"]))
         self.eval()
@@ -108,6 +107,11 @@ class SaddleFlow(nn.Module):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         return model.to(device).eval()
+
+    @property
+    def mode(self) -> str:
+        """"stock" or "conv_layer_separation", checked against the config."""
+        return check_mode(self.backbone, bool(self.config.get(SEPARATION_KEY, False)))
 
     @property
     def device(self) -> torch.device:

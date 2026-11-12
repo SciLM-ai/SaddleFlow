@@ -4,8 +4,8 @@
 
 Writes <dir>/model.safetensors (the EMA weights by default, `--live` for the point estimate) and
 <dir>/config.json (the UMA backbone configuration, the time-FiLM blocks, the head depth, the trained
-tasks, the inference defaults, whether the backbone takes the per-atom flag of train.py --inject-flag and the
-width and fixed scale of its W2 gates, train.py --w2-gate-width).
+tasks, the inference defaults, whether the backbone takes the per-atom flag of train.py --inject-flag and whether
+its conv layers are separated, train.py --conv-layer-separation).
 Only unconditional models (--delta-endpoint-channels 0) are supported.
 """
 from __future__ import annotations
@@ -65,8 +65,7 @@ def main():
         "film_blocks": [int(b) for b in ex["early_time_film_blocks"].split(",")],
         "head_depth": int(ex["head_depth"]),
         "flag": bool(model.backbone.inject_flag),
-        "w2_gate_width": int(model.backbone.w2_gate_width),
-        "w2_gate_scale": float(model.backbone.w2_gate_scale),
+        "conv_layer_separation": bool(model.backbone.conv_layer_separation),
         "tasks": {"default": "omat", "map": task_map, "trained": sorted(set(task_map.values()))},
         "inference": {**INFERENCE, "sigma": float(ex.get("path_noise_sigma", INFERENCE["sigma"]))},
         "weights": "live" if a.live else "ema",

@@ -44,6 +44,7 @@ def main():
     starts = original_starts(args.run_dir, s)
     tids = [int(a.info["tid"]) for a in proposals]
     sf = SaddleFlow.from_pretrained(s["model"], device="cuda")
+    print(f"model {s['model']}: mode {sf.mode}", flush=True)
     landing = {}
     for name, R in MAPS.items():
         moved = [transform_structure(starts[t], R) for t in tids]
@@ -62,7 +63,7 @@ def main():
     natoms = np.array([len(a) for a in proposals])
 
     q = lambda v: "  ".join(f"{x:7.4f}" for x in np.quantile(v, [0.5, 0.9, 0.99, 1.0]))
-    lines = ["Mirror test on mp20bat: is the released model inversion-equivariant?", "=" * 100,
+    lines = ["Mirror test on mp20bat: is the released model inversion-equivariant?", f"Model mode: {sf.mode}", "=" * 100,
              f"{len(tids)} starts (exact noise of the run), released schedule {s['inference']}. Largest per-atom "
              "distance (A, rigid shift removed) between the landing point of the mapped start, mapped back, and the "
              "unchanged landing point.", "",

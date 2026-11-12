@@ -28,12 +28,14 @@ shape (N, num_sph, sphere_channels)) and returns the FiLM'd version.
 
 from __future__ import annotations
 
+import functools
+
 import torch
 import torch.nn as nn
 from fairchem.core.models.uma.nn.so3_layers import SO3_Linear
 
 from .time_film import TimeFiLM
-from .w2_gate import DEFAULT_SCALE, install_w2_gates
+from .conv_layer_separation import apply_conv_layer_separation
 
 
 class ForceFiLM(nn.Module):
@@ -98,8 +100,7 @@ class TimeFiLMBackbone(nn.Module):
         inject_force: bool = False,
         inject_hint: bool = False,
         inject_flag: bool = False,
-        w2_gate_width: int = 0,
-        w2_gate_scale: float = DEFAULT_SCALE,
+        conv_layer_separation: bool = False,
     ):
         """Args:
             inject_force: if True, ALSO apply a per-injection-point ForceFiLM
@@ -108,18 +109,16 @@ class TimeFiLMBackbone(nn.Module):
                 unfrozen UMA blocks via FiLM, not just at the head).
             inject_hint: if True, also apply a per-injection-point HintFiLM that adds the projected
                 hint field passed to forward(..., hint=h).
-            w2_gate_width: if > 0, gate the W2 path of every SO(2) layer of every backbone block with that many
-                learned per-bond pseudoscalars (saddleflow.models.w2_gate), which keeps W2 and makes the backbone
-                mirror-equivariant by construction. The gate starts at zero, so at init the wrapper equals the
-                backbone with W2 = 0 (not the backbone itself).
-            w2_gate_scale: the fixed constant the gates' pseudoscalars are multiplied by (w2_gate.DEFAULT_SCALE).
+            conv_layer_separation: if True, combine the two SO(2) convolutions of every backbone block so that
+                each edge message keeps only its mirror-commuting part (saddleflow.models.conv_layer_separation):
+                the backbone is mirror-equivariant by construction with every weight kept and no new parameters.
+                At init the wrapper is then not the backbone itself but its mirror-symmetrised version.
         """
         super().__init__()
         self.backbone = backbone
-        self.w2_gate_width = int(w2_gate_width)
-        self.w2_gate_scale = float(w2_gate_scale)
-        if self.w2_gate_width:
-            install_w2_gates(backbone, self.w2_gate_width, self.w2_gate_scale)
+        self.conv_layer_separation = bool(conv_layer_separation)
+        if self.conv_layer_separation:
+            apply_conv_layer_separation(backbone)
         if inject_block_indices is None:
             inject_block_indices = [-1]
         # Resolve negative indices once so we can compare against block ids.
@@ -181,7 +180,9 @@ class TimeFiLMBackbone(nn.Module):
         for film_idx, block_idx in enumerate(self.inject_block_indices):
             block = backbone.blocks[block_idx]
             handle = block.register_forward_pre_hook(
-                self._make_pre_hook(film_idx),
+                # A partial of a bound method, not a closure: copy.deepcopy rebinds a bound method to the copy, but
+                # keeps a closure as is, so a copy's hooks would read the original's state and weights.
+                functools.partial(self._pre_hook, film_idx),
                 with_kwargs=True,
             )
             self._handles.append(handle)
@@ -198,41 +199,35 @@ class TimeFiLMBackbone(nn.Module):
     def num_layers(self) -> int:
         return self.backbone.num_layers
 
-    def _make_pre_hook(self, film_idx: int):
-        """Make a pre-hook that uses the `film_idx`-th FiLM module.
+    def _pre_hook(self, film_idx: int, module, args, kwargs):
+        """Forward pre-hook that applies the `film_idx`-th FiLM module(s).
 
         UMA's eSCNMD_Block.forward takes `x_message` as its first positional
         argument plus a number of auxiliary tensors (edge index, wigner,
         envelopes, etc.). We modify only `x_message`; other args pass through.
         """
-        film = self.films[film_idx]
-        force_film = self.force_films[film_idx] if self.inject_force else None
-        hint_film = self.hint_films[film_idx] if self.inject_hint else None
-        flag_film = self.flag_films[film_idx] if self.inject_flag else None
-        def hook(module, args, kwargs):
-            if self._t is None or self._batch_idx is None:
-                # v7-2b static-featurisation mode: caller invoked
-                # `forward_static(data)` to encode a time-free reference
-                # geometry (R or P). Skip both FiLMs by returning None — the
-                # block then receives `args` and `kwargs` unchanged.
-                return None
-            x_message = args[0]
-            x_filmed = film(x_message, self._t, self._batch_idx)
-            # Force-FiLM is conditionally applied: skip when self._force is None,
-            # which lets the caller use a "compute force first, then forward
-            # again with force" two-pass scheme without re-instantiating.
-            if force_film is not None and self._force is not None:
-                x_filmed = force_film(x_filmed, self._force)
-            if hint_film is not None:
-                if self._hint is None:
-                    raise ValueError("this backbone was built with inject_hint=True; pass hint=(N, 3)")
-                x_filmed = hint_film(x_filmed, self._hint)
-            if flag_film is not None and self._flag is not None:
-                add = torch.zeros_like(x_filmed)
-                add[:, 0, :] = flag_film(self._flag.to(x_filmed.dtype).unsqueeze(-1))
-                x_filmed = x_filmed + add
-            return (x_filmed,) + args[1:], kwargs
-        return hook
+        if self._t is None or self._batch_idx is None:
+            # v7-2b static-featurisation mode: caller invoked
+            # `forward_static(data)` to encode a time-free reference
+            # geometry (R or P). Skip both FiLMs by returning None — the
+            # block then receives `args` and `kwargs` unchanged.
+            return None
+        x_message = args[0]
+        x_filmed = self.films[film_idx](x_message, self._t, self._batch_idx)
+        # Force-FiLM is conditionally applied: skip when self._force is None,
+        # which lets the caller use a "compute force first, then forward
+        # again with force" two-pass scheme without re-instantiating.
+        if self.inject_force and self._force is not None:
+            x_filmed = self.force_films[film_idx](x_filmed, self._force)
+        if self.inject_hint:
+            if self._hint is None:
+                raise ValueError("this backbone was built with inject_hint=True; pass hint=(N, 3)")
+            x_filmed = self.hint_films[film_idx](x_filmed, self._hint)
+        if self.inject_flag and self._flag is not None:
+            add = torch.zeros_like(x_filmed)
+            add[:, 0, :] = self.flag_films[film_idx](self._flag.to(x_filmed.dtype).unsqueeze(-1))
+            x_filmed = x_filmed + add
+        return (x_filmed,) + args[1:], kwargs
 
     def forward(
         self,

@@ -44,6 +44,7 @@ from saddleflow.data import MaterialsSaddlesDataset  # noqa: E402
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss  # noqa: E402
 from saddleflow.flow.sampler import sample_saddles  # noqa: E402
 from saddleflow.models import GlobalAttn, VelocityHead  # noqa: E402
+from saddleflow.models.conv_layer_separation import check_mode  # noqa: E402
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone  # noqa: E402
 from saddleflow.utils import load_uma_backbone  # noqa: E402
 from saddleflow.utils.eval import rmsd_pbc  # noqa: E402
@@ -169,8 +170,7 @@ def _build_loss_module(config: dict, device: str, inject_flag: bool = False) -> 
 
     backbone = TimeFiLMBackbone(
         raw_backbone, inject_block_indices=inject_blocks, inject_force=inject_force, inject_flag=inject_flag,
-        w2_gate_width=int(extras.get("w2_gate_width") or 0),
-        **({"w2_gate_scale": float(extras["w2_gate_scale"])} if extras.get("w2_gate_scale") else {}),
+        conv_layer_separation=bool(extras.get("conv_layer_separation", False)),
     ).to(device)
     attn = GlobalAttn(
         sphere_channels=sc, lmax=lmax,
@@ -268,6 +268,9 @@ def load_model(ckpt_dir: Path, device: str, use_ema: bool = False):
           f"missing={len(missing)}  unexpected={len(unexpected)}")
     if unexpected:
         raise RuntimeError(f"unexpected keys in checkpoint: {unexpected[:5]}")
+    # A conv-layer-separation checkpoint has the stock state dict, so only its config tells it apart.
+    mode = check_mode(loss_module.backbone, bool(config["extras"].get("conv_layer_separation", False)))
+    print(f"[load] mode: {mode}")
     if use_ema:
         from saddleflow.utils.checkpointing import load_ema_weights
         load_ema_weights(str(ckpt_dir), [loss_module], device, use_ema=True)

@@ -79,7 +79,9 @@ def main():
 
     rows = [dict(minimum=i, formula=m.get_chemical_formula(), n_atoms=len(m), task=m.info["task_name"])
             for i, m in enumerate(minima)]
-    lines = [f"Mirror test: {args.model} on {args.dataset}" + (" (W2 zeroed at load)" if w2_zero else ""), "=" * 100, "",
+    mode = model.mode + (", W2 zeroed at load" if w2_zero else "")
+    print(f"mode: {mode}", flush=True)
+    lines = [f"Mirror test: {args.model} on {args.dataset}", f"Model mode: {mode}", "=" * 100, "",
              f"{len(starts)} minima, one noised start each. Largest per-atom distance (A) between the mapped start's "
              "landing, mapped back, and the unchanged landing.", "",
              f"  map                        p50      p90      p99      max |  > {NEAR} A    > 1 A"]

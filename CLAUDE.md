@@ -4,9 +4,6 @@
 - If a plot genuinely needs visual inspection, view at most one or two per session.
 
 
-
-<<<<<<< HEAD
-=======
 SaddleFlow generates transition-state (first-order saddle) structures for periodic materials by **flow matching**.
 The velocity field is Meta FAIR's pretrained **UMA** backbone (`uma-s-1p2` or `uma-m-1p1`) with an equivariant
 **time-FiLM** at selected backbone blocks (all of them in the paper model), an optional global-attention layer
@@ -206,4 +203,3 @@ Plain PyTorch + Hugging Face `accelerate` (`saddleflow/utils/training.py`); no H
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
->>>>>>> main

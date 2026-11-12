@@ -1,46 +1,49 @@
 #!/bin/bash
-# Does gating W2, rather than zeroing it, keep mirror equivariance and recover the precision W2 = 0 lost? FM2
-# fine-tuned on oc22 with W2 gates. Rivanna paths. The companion of run_fm2_w2_oc22.sh, whose models are the controls.
+# Does keeping W2, with each edge message reduced to its mirror-commuting part, keep mirror equivariance and recover
+# the precision W2 = 0 lost? FM2 fine-tuned on oc22 with conv-layer separation. Rivanna paths. The companion of
+# run_fm2_w2_oc22.sh, whose models are the controls.
 #
-# W2 gating (saddleflow/models/w2_gate.py): every m > 0 SO(2) layer keeps its W2 path, multiplied by a learned
-# per-bond pseudoscalar, which makes the backbone mirror-equivariant by construction like W2 = 0 does, but leaves W2
-# usable wherever a bond's surroundings are handed. The gate starts at zero, so training starts from FM2 with W2 = 0,
-# the same starting point as the w2 model.
+# Conv-layer separation (saddleflow/models/conv_layer_separation.py): in each block, conv1's W1 and W2 results are
+# carried as two streams through the gate and recombined in conv2 as V1 o + i V2 p, so every edge message is
+# [V1 g W1 - V2 g W2] z: the part of FM2's message that commutes with a mirror. No weight changes, no new parameters,
+# nothing is zeroed. Training starts from FM2's mirror-symmetrised messages, not from FM2 with W2 = 0.
 #
-# The four models (only w2_gated is trained here; the others come from run_fm2_w2_oc22.sh and its 300-minima
-# evaluation):
-#     fm2       FM2 as released, no fine-tuning
-#     plain     FM2 fine-tuned on oc22
-#     w2        FM2 with W2 = 0, fine-tuned on oc22 (--parity-even)
-#     w2_gated  FM2 with W2 gates, fine-tuned on oc22 (--w2-gate-width is the only difference from plain)
+# The four models (only conv_layer_separation is trained here; the others come from run_fm2_w2_oc22.sh and its
+# 300-minima evaluation):
+#     fm2                    FM2 as released, no fine-tuning
+#     plain                  FM2 fine-tuned on oc22
+#     w2                     FM2 with W2 = 0, fine-tuned on oc22 (--parity-even)
+#     conv_layer_separation  FM2 with conv-layer separation, fine-tuned on oc22 (--conv-layer-separation is the
+#                            only difference from plain)
 #
 # Everything else is as in run_fm2_w2_oc22.sh: the same recipe, the same training seed (42, train.py's default,
 # which plain and w2 used), the same tests with the same seed (0), so the same minima and starting noise.
 #
 # What runs:
-#     train     w2_gated: the plain recipe plus --w2-gate-width, then export to <ckpt>/release
-#     test      mirror_test.py (200 minima), then eval_connected_uncond.py (300 minima x 5), on the oc22 test split
-#     compare   compare_connected.py: w2_gated against fm2, plain and w2, and the four mirror reports
+#     train     conv_layer_separation: the plain recipe plus --conv-layer-separation, then export to <ckpt>/release
+#     test      mirror_test.py (200 minima), then eval_connected_uncond.py (300 minima x 5), on the oc22 test split;
+#               both print and record the model's mode, which must be conv_layer_separation
+#     compare   compare_connected.py: conv_layer_separation against fm2, plain and w2, and the four mirror reports
 #
 # Run it once, from anywhere; it submits every job, each waiting for what it needs. ACCOUNT has no default: name the
 # allocation for each run.
-#     ACCOUNT=<allocation> bash examples/MaterialsSaddles/run_fm2_w2_gated_oc22.sh
+#     ACCOUNT=<allocation> bash examples/MaterialsSaddles/run_fm2_conv_layer_separation_oc22.sh
 #
 # Where everything goes:
-#     /scratch/gqs7zr/saddleflow/ckpts/fm2_oc22_w2_gated/release                   the fine-tuned model
-#     /scratch/gqs7zr/saddleflow/results/fm2_w2_gated_oc22/w2_gated/mirror/report.txt
-#     /scratch/gqs7zr/saddleflow/results/fm2_w2_gated_oc22/w2_gated/connected/report.txt, results.csv, results.json
-#     /scratch/gqs7zr/saddleflow/results/fm2_w2_gated_oc22/compare.txt            the final comparison
-#     /scratch/gqs7zr/saddleflow/results/fm2_w2_gated_oc22/logs/                  every job's .out and .err
+#     /scratch/gqs7zr/saddleflow/ckpts/fm2_oc22_conv_layer_separation/release      the fine-tuned model
+#     /scratch/gqs7zr/saddleflow/results/fm2_conv_layer_separation_oc22/conv_layer_separation/mirror/report.txt
+#     /scratch/gqs7zr/saddleflow/results/fm2_conv_layer_separation_oc22/conv_layer_separation/connected/report.txt,
+#         results.csv, results.json, model_mode.txt
+#     /scratch/gqs7zr/saddleflow/results/fm2_conv_layer_separation_oc22/compare.txt   the final comparison
+#     /scratch/gqs7zr/saddleflow/results/fm2_conv_layer_separation_oc22/logs/         every job's .out and .err
 set -euo pipefail
 
 # ---------------------------------------------------------------- the experiment's settings
 STEPS=10000             # optimizer steps of the fine-tune
 GLOBAL_BATCH=32         # records per step: 8 on each of 4 GPUs
-LEARNING_RATE=5e-4      # head, backbone and gates
+LEARNING_RATE=5e-4      # head and backbone
 EMA_DECAY=0.995         # 1 - 50 / 10000
 TRAIN_SEED=42           # train.py's default: the seed of the plain and w2 fine-tunes
-GATE_WIDTH=16           # pseudoscalars per bond in each block's W2 gate
 N_MINIMA_MIRROR=200
 N_MINIMA_CONNECTED=300
 N_EVALS=5               # rollouts per minimum
@@ -52,14 +55,14 @@ TEST_TIME=1-00:00:00
 # ---------------------------------------------------------------- where things are
 REPO=/sfs/gpfs/tardis/home/gqs7zr/ai4mat/SaddleFlow
 PYTHON=/home/gqs7zr/.conda/envs/saddleflow/bin/python
-SCRIPT=$REPO/examples/MaterialsSaddles/run_fm2_w2_gated_oc22.sh
+SCRIPT=$REPO/examples/MaterialsSaddles/run_fm2_conv_layer_separation_oc22.sh
 DATA=/scratch/gqs7zr/saddleflow
 CACHE=/scratch/gqs7zr/cache
 
 OC22_TEST=$DATA/MaterialsSaddles/oc22/test
 FM2_WEIGHTS=$CACHE/huggingface/hub/models--SciLM--SaddleFlow/snapshots/1d364ab8fc4de2d1d302ca892297df6567d3d90e
-CKPT=$DATA/ckpts/fm2_oc22_w2_gated
-RESULTS=$DATA/results/fm2_w2_gated_oc22
+CKPT=$DATA/ckpts/fm2_oc22_conv_layer_separation
+RESULTS=$DATA/results/fm2_conv_layer_separation_oc22
 CONTROLS_CONNECTED=$DATA/results/fm2_w2_oc22_n300     # <model>/connected for fm2, plain, w2 (300 minima x 5)
 CONTROLS_MIRROR=$DATA/results/fm2_w2_oc22             # <model>/mirror for fm2, plain, w2 (200 minima)
 
@@ -69,12 +72,12 @@ export HF_HOME=$CACHE/huggingface
 export HF_TOKEN_PATH=$HOME/.cache/huggingface/token     # the gated facebook/UMA checkpoints
 
 
-# ---------------------------------------------------------------- train: fine-tune w2_gated, then export it
+# ---------------------------------------------------------------- train: fine-tune conv_layer_separation, then export it
 train() {
     local gpus=4
     mkdir -p "$CKPT"
 
-    # The plain arm's arguments (run_fm2_w2_oc22.sh), plus the seed spelled out and the W2 gates.
+    # The plain arm's arguments (run_fm2_w2_oc22.sh), plus the seed spelled out and conv-layer separation.
     local args=(
         --subsets oc22 --task-name-map oc22=oc20
         --init-weights "$FM2_WEIGHTS" --output-dir "$CKPT"
@@ -88,7 +91,7 @@ train() {
         --mover-start-prob 1 --mover-thresh 0.5 --mover-sigma 0.3 --mover-u0-prob 0.5 --inject-flag
         --mover-all-prob 0.2 --mover-thresh-max 1.0 --mover-ball-prob 0.2 --mover-ball-rmin 3 --mover-ball-rmax 5
         --align-com --log-every 50 --save-every-steps 5000 --val-every-steps 2500 --max-val-records 4000 --num-workers 4
-        --seed $TRAIN_SEED --w2-gate-width $GATE_WIDTH
+        --seed $TRAIN_SEED --conv-layer-separation
     )
 
     # One process per GPU; stop as soon as any fails (the others would wait on it forever).
@@ -113,22 +116,27 @@ train() {
 # ---------------------------------------------------------------- test: mirror test and connected-saddle evaluation
 test_model() {
     local model=$CKPT/release
+    # The state dict is the stock one, so only the config marks the model; refuse a release without it.
+    if ! grep -q '"conv_layer_separation": true' "$model/config.json"; then
+        echo "$model/config.json does not set conv_layer_separation: the model would run as stock FM2" >&2
+        exit 1
+    fi
 
     "$PYTHON" -u examples/MaterialsSaddles/mirror_test.py --model "$model" --dataset "$OC22_TEST" \
-        --n_minima $N_MINIMA_MIRROR --seed $SEED --out-dir "$RESULTS/w2_gated/mirror"
+        --n_minima $N_MINIMA_MIRROR --seed $SEED --out-dir "$RESULTS/conv_layer_separation/mirror"
 
     "$PYTHON" -u examples/MaterialsSaddles/eval_connected_uncond.py --model "$model" --dataset "$OC22_TEST" \
         --n_minima $N_MINIMA_CONNECTED --n_evals $N_EVALS --seed $SEED --eta $SELLA_ETA \
-        --out-dir "$RESULTS/w2_gated/connected"
+        --out-dir "$RESULTS/conv_layer_separation/connected"
 }
 
 
-# ---------------------------------------------------------------- compare: w2_gated beside the three controls
+# ---------------------------------------------------------------- compare: conv_layer_separation beside the three controls
 compare() {
-    local c=$CONTROLS_CONNECTED gated=$RESULTS/w2_gated/connected
+    local c=$CONTROLS_CONNECTED separated=$RESULTS/conv_layer_separation/connected
     for name in fm2 plain w2; do
-        if ! cmp -s "$c/$name/connected/minima.traj" "$gated/minima.traj"; then
-            echo "w2_gated was evaluated on different minima from $name: not comparable" >&2
+        if ! cmp -s "$c/$name/connected/minima.traj" "$separated/minima.traj"; then
+            echo "conv_layer_separation was evaluated on different minima from $name: not comparable" >&2
             exit 1
         fi
     done
@@ -136,17 +144,17 @@ compare() {
     {
         echo "All four models on the same 300 minima x 5 rollouts (seed 0)."
         echo
-        $compare fm2="$c/fm2/connected" plain="$c/plain/connected" w2="$c/w2/connected" w2_gated="$gated"
+        $compare fm2="$c/fm2/connected" plain="$c/plain/connected" w2="$c/w2/connected" conv_layer_separation="$separated"
         echo
-        $compare plain="$c/plain/connected" w2_gated="$gated" | sed -n '/^AGAINST/,$p'
+        $compare plain="$c/plain/connected" conv_layer_separation="$separated" | sed -n '/^AGAINST/,$p'
         echo
-        $compare w2="$c/w2/connected" w2_gated="$gated" | sed -n '/^AGAINST/,$p'
+        $compare w2="$c/w2/connected" conv_layer_separation="$separated" | sed -n '/^AGAINST/,$p'
         for name in fm2 plain w2; do
             echo
             cat "$CONTROLS_MIRROR/$name/mirror/report.txt"
         done
         echo
-        cat "$RESULTS/w2_gated/mirror/report.txt"
+        cat "$RESULTS/conv_layer_separation/mirror/report.txt"
     } > "$RESULTS/compare.txt"
     cat "$RESULTS/compare.txt"
 }
@@ -163,10 +171,10 @@ submit() {
     local test_gpu="--constraint=rtxpro6000 --gres=gpu:1 --cpus-per-task=16 --mem=128G --time=$TEST_TIME"
 
     local train_job test_job last
-    train_job=$(sbatch $common $train_gpus --job-name=train_w2_gated "$SCRIPT" train)
-    test_job=$(sbatch $common $test_gpu --job-name=test_w2_gated --dependency=afterok:$train_job "$SCRIPT" test)
+    train_job=$(sbatch $common $train_gpus --job-name=train_conv_layer_separation "$SCRIPT" train)
+    test_job=$(sbatch $common $test_gpu --job-name=test_conv_layer_separation --dependency=afterok:$train_job "$SCRIPT" test)
     last=$(sbatch --account=$ACCOUNT --partition=standard --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=8G --time=00:30:00 \
-        --no-requeue --parsable $logs --job-name=compare_w2_gated --dependency=afterok:$test_job "$SCRIPT" compare)
+        --no-requeue --parsable $logs --job-name=compare_conv_layer_separation --dependency=afterok:$test_job "$SCRIPT" compare)
 
     echo "train $train_job   test $test_job   compare $last"
     echo "results: $RESULTS"

@@ -24,6 +24,7 @@ Writes to <out-dir>:
     results.csv     one row per endpoint: the scalars (pandas.read_csv)
     results.json    the same rows with positions, forces, eigenvalues and each relaxation (one endpoint per line)
     minima.traj, endpoints.json, results.jsonl      what a rerun reuses
+    model_mode.txt  the mode the model ran in: stock, or conv_layer_separation (config.json, checked at load)
 """
 import argparse
 import csv
@@ -121,25 +122,29 @@ def pick_minima(dataset, n_minima, seed):
 
 # ---------------------------------------------------------------- SaddleFlow
 def load_model(name):
-    """fm1, fm2 or a release directory."""
+    """fm1, fm2 or a release directory, in the mode its config asks for (stock or conv_layer_separation)."""
     from saddleflow import SaddleFlow
 
     if name in REVISIONS:
-        return SaddleFlow.from_pretrained(revision=REVISIONS[name])
-    return SaddleFlow.from_pretrained(name)
+        model = SaddleFlow.from_pretrained(revision=REVISIONS[name])
+    else:
+        model = SaddleFlow.from_pretrained(name)
+    print(f"[model] {name}: mode {model.mode}", flush=True)
+    return model
 
 
 def roll_out(args, minima):
-    """{"minimum", "eval", "positions"} for every rollout."""
+    """({"minimum", "eval", "positions"} for every rollout, the model's mode)."""
     import torch
 
     model = load_model(args.model)
+    mode = model.mode
     proposals = model.propose(minima, n=args.n_evals, seed=args.seed)
     del model
     torch.cuda.empty_cache()
 
     return [dict(minimum=i, eval=j, positions=atoms.positions.tolist())
-            for i, draws in enumerate(proposals) for j, atoms in enumerate(draws)]
+            for i, draws in enumerate(proposals) for j, atoms in enumerate(draws)], mode
 
 
 # ---------------------------------------------------------------- checks on one endpoint
@@ -301,7 +306,7 @@ def verdict(row):
     return "failure"
 
 
-def report(args, minima, rows):
+def report(args, minima, rows, mode):
     n = len(rows)
     errors = [r for r in rows if "endpoint_index" not in r or "error" in r]
     rows = [r for r in rows if r not in errors]
@@ -310,7 +315,7 @@ def report(args, minima, rows):
               "2": [r for r in rows if r["endpoint_index"] == 2],
               ">= 3": [r for r in rows if r["endpoint_index"] >= 3]}
 
-    lines = [f"Connected-saddle evaluation: {args.model} on {args.dataset}", "=" * 100, "",
+    lines = [f"Connected-saddle evaluation: {args.model} on {args.dataset}", f"Model mode: {mode}", "=" * 100, "",
              f"{len(minima)} minima x {args.n_evals} rollouts = {n} SaddleFlow endpoints; {len(errors)} errors", "",
              "HESSIAN INDEX AT THE SADDLEFLOW ENDPOINT",
              "  index                       count   share   fmax p50 (eV/A)"]
@@ -372,10 +377,14 @@ def main():
     print(f"{len(minima)} minima", flush=True)
 
     # the SaddleFlow endpoints
-    endpoints_path = out / "endpoints.json"
+    endpoints_path, mode_path = out / "endpoints.json", out / "model_mode.txt"
     if not endpoints_path.exists():
-        endpoints_path.write_text(json.dumps(roll_out(args, minima)))
+        endpoints, mode = roll_out(args, minima)
+        mode_path.write_text(mode + "\n")
+        endpoints_path.write_text(json.dumps(endpoints))
     endpoints = json.loads(endpoints_path.read_text())
+    mode = mode_path.read_text().strip() if mode_path.exists() else "not recorded (endpoints from an earlier version)"
+    print(f"model mode: {mode}", flush=True)
     print(f"{len(endpoints)} SaddleFlow endpoints", flush=True)
 
     # the checks, skipping endpoints already done
@@ -392,7 +401,7 @@ def main():
             print(f"  {len(rows)}/{len(endpoints)}", flush=True)
 
         save_results(out, rows)
-        text = report(args, minima, rows)
+        text = report(args, minima, rows, mode)
         (out / "report.txt").write_text(text)
         print(text, flush=True)
 

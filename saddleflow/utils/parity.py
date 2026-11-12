@@ -14,7 +14,8 @@ loading, so the separate frozen UMA that computes energies and forces for Sella 
     zero_w2_(m)             zero W2 only (evaluation)
     assert_parity_even(m)   fail if any W2 entry is nonzero, or if fairchem's fast block variant
                             (SO2_m_Conv_Block) is present: it caches [[W1, -W2], [W2, W1]] and would keep the old W2
-    parity_from_env(m)      SF_PARITY_EVEN=1: zero W2 in any loaded checkpoint (no retraining)
+    parity_from_env(m)      SF_PARITY_EVEN=1: zero W2 in any loaded checkpoint (no retraining); refused for a
+                            model with conv-layer separation (saddleflow.models.conv_layer_separation)
     w2_report(m)            ||W1||, ||W2|| per layer
     parity_sign(lmax)       (-1)^l per spherical-harmonic coefficient
 """
@@ -92,6 +93,10 @@ def parity_from_env(module):
     """If SF_PARITY_EVEN=1, zero W2 in `module` (a loaded model or backbone) and check it. Returns whether it did."""
     if os.environ.get(ENV) != "1":
         return False
+    from saddleflow.models.conv_layer_separation import is_separated
+    if is_separated(module):
+        raise RuntimeError(f"{ENV}=1 on a model with conv-layer separation: zeroing W2 would turn it into the W2 = 0 "
+                           f"model. Unset {ENV}")
     n = zero_w2_(module)
     assert_parity_even(module)
     print(f"[parity] {ENV}=1: W2 zeroed in {n} SO(2) layers", flush=True)
