@@ -32,9 +32,13 @@ def main():
     for run in a.runs:
         ends = read(Path(run) / "endpoints.traj", ":")
         hit, own, fell = [], set(), 0
+        nearest, to_own = [], []
         for e in ends:
             d = (e.positions[mobile] - ref) @ inv
             d = np.linalg.norm((d - np.round(d)) @ cell, axis=2).max(axis=1)              # largest atom distance per reference
+            nearest.append(d[1:].min())
+            if e.info.get("saddle") is not None:
+                to_own.append(d[1 + e.info["saddle"]])
             k = int(d.argmin())
             if d[k] < a.tol and k == 0:
                 fell += 1
@@ -46,6 +50,10 @@ def main():
         print(f"{run}: {n} endpoints ({ends[0].info.get('mode')}): dataset saddle {len(hit)} ({len(hit) / n:.0%}), "
               f"fell back {fell} ({fell / n:.0%}), elsewhere {n - len(hit) - fell} ({(n - len(hit) - fell) / n:.0%}); "
               f"distinct saddles reached {len(set(hit))}/{ns}")
+        q = lambda x: "  ".join(f"{name} {np.percentile(x, p):.3f}" for name, p in (("p10", 10), ("median", 50), ("p90", 90)))
+        print(f"    endpoint distance to the nearest dataset saddle (A): {q(nearest)}")
+        if to_own:
+            print(f"    endpoint distance to its own saddle (A): {q(to_own)}")
         if ends[0].info.get("mode") == "movers":
             print(f"    recall: {len(own)}/{ns} saddles reached by at least one of their own draws")
 

@@ -12,6 +12,7 @@ Data: al_triplets.traj, [R, S, P] per triplet (R is the same minimum in all), bo
 starting weights are the released FM2 (Hugging Face SciLM/SaddleFlow, revision fm2; gated: accept its terms and log in).
 
     python examples/Al_adatom/train.py --output-dir examples/Al_adatom/runs/fm2_ft
+    python examples/Al_adatom/train.py --output-dir examples/Al_adatom/runs/fm2_ft_separated --conv-layer-separation
 """
 
 import argparse
@@ -25,6 +26,7 @@ from safetensors.torch import save_file
 from saddleflow.data import TrajTripletDataset
 from saddleflow.flow import FlowMatchingConfig, FlowMatchingLoss
 from saddleflow.models import GlobalAttn, VelocityHead
+from saddleflow.models.conv_layer_separation import check_mode
 from saddleflow.models.time_filmed_backbone import TimeFiLMBackbone
 from saddleflow.utils import TrainingConfig, load_ema_weights, load_uma_backbone, train
 
@@ -44,6 +46,14 @@ def parse_args():
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log-every", type=int, default=50)
+    p.add_argument("--conv-layer-separation", action="store_true",
+                   help="conv-layer separation (saddleflow.models.conv_layer_separation): every edge message keeps only "
+                        "its mirror-commuting part, so the model is mirror-equivariant; same weights, no new parameters")
+    p.add_argument("--max-steps", type=int, default=0, help="stop after N optimizer steps (0: the full run)")
+    p.add_argument("--bench-output", default=None,
+                   help="benchmark run: write step time and peak GPU memory to this JSON after --max-steps; "
+                        "no checkpoint, no export")
+    p.add_argument("--bench-warmup-steps", type=int, default=0, help="benchmark run: steps before timing starts")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -65,7 +75,9 @@ def main():
     for blk in raw.blocks:
         for prm in blk.parameters():
             prm.requires_grad_(True)
-    backbone = TimeFiLMBackbone(raw, inject_block_indices=release_cfg["film_blocks"], inject_flag=True).to(args.device)
+    backbone = TimeFiLMBackbone(raw, inject_block_indices=release_cfg["film_blocks"], inject_flag=True,
+                                conv_layer_separation=args.conv_layer_separation).to(args.device)
+    print(f"[train] mode={check_mode(backbone, args.conv_layer_separation)}")
     attn = GlobalAttn(sphere_channels=raw.sphere_channels, lmax=raw.lmax, num_heads=8, num_layers=0).to(args.device)
     head = VelocityHead(sphere_channels=raw.sphere_channels, input_lmax=raw.lmax,
                         depth=release_cfg["head_depth"]).to(args.device)
@@ -85,9 +97,13 @@ def main():
     cfg = TrainingConfig(output_dir=str(out), num_epochs=args.num_epochs, batch_size=args.batch_size,
                          num_workers=args.num_workers, learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
                          ema_decay=1.0 - 50.0 / steps, seed=args.seed, log_every=args.log_every,
-                         save_every_epochs=args.num_epochs + 1, init_weights=str(init),
-                         extras={"init": f"{args.init}@{args.revision}", "train_traj": args.train_traj})
+                         save_every_epochs=args.num_epochs + 1, init_weights=str(init), max_steps=args.max_steps,
+                         bench_output=args.bench_output, bench_warmup_steps=args.bench_warmup_steps,
+                         extras={"init": f"{args.init}@{args.revision}", "train_traj": args.train_traj,
+                                 "conv_layer_separation": args.conv_layer_separation})
     train(loss_module, dataset, cfg, param_groups=param_groups)
+    if args.bench_output:
+        return
 
     # Export the EMA weights like the release: backbone (with its FiLM and flag layers) and velocity head.
     load_ema_weights(str(out / "checkpoint_final"), [loss_module], args.device)
@@ -95,7 +111,10 @@ def main():
              if k.startswith(("backbone.", "velocity_head.")) and not k.startswith("backbone.film.")}
     rel = out / "release"; rel.mkdir(exist_ok=True)
     save_file(state, str(rel / "model.safetensors"), metadata={"format": "pt"})
-    release_cfg["training_run"] = f"FM2 fine-tuned on {Path(args.train_traj).name} ({args.num_epochs} epochs)"
+    # The state dict is the stock one: only this key makes from_pretrained (and sample.py) run the separated model.
+    release_cfg["conv_layer_separation"] = bool(args.conv_layer_separation)
+    release_cfg["training_run"] = (f"FM2 fine-tuned on {Path(args.train_traj).name} ({args.num_epochs} epochs"
+                                   f"{', conv-layer separation' if args.conv_layer_separation else ''})")
     (rel / "config.json").write_text(json.dumps(release_cfg, indent=2) + "\n")
     print(f"[train] wrote {rel}: run it with  python examples/Al_adatom/sample.py --model {rel}")
 

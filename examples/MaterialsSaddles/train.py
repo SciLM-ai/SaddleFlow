@@ -187,6 +187,11 @@ def parse_args():
     p.add_argument("--num-epochs", type=int, default=20)
     p.add_argument("--max-steps", type=int, default=0,
                    help="stop after N optimizer steps (0 = full run); for smoke tests/benchmarks")
+    p.add_argument("--bench-output", default=None,
+                   help="benchmark run: write throughput and peak GPU memory (rank 0) to this JSON after --max-steps, "
+                        "and skip the final checkpoint and test pass")
+    p.add_argument("--bench-warmup-steps", type=int, default=0,
+                   help="benchmark run: steps before the timing and peak-memory window opens")
     p.add_argument("--batch-size", type=int, default=4,
                    help="Per-process batch size (i.e. per GPU).")
     p.add_argument("--learning-rate", type=float, default=1e-3,
@@ -969,6 +974,7 @@ def main():
         output_dir=str(out_dir),
         num_epochs=args.num_epochs, batch_size=args.batch_size,
         max_steps=args.max_steps,
+        bench_output=args.bench_output, bench_warmup_steps=args.bench_warmup_steps,
         num_workers=args.num_workers,
         learning_rate=args.learning_rate, warmup_steps=args.warmup_steps,
         grad_clip_norm=args.grad_clip_norm, ema_decay=args.ema_decay,

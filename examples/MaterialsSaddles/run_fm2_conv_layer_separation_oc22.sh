@@ -19,11 +19,19 @@
 # Everything else is as in run_fm2_w2_oc22.sh: the same recipe, the same training seed (42, train.py's default,
 # which plain and w2 used), the same tests with the same seed (0), so the same minima and starting noise.
 #
+# Trained on 2 GPUs x 16 records rather than plain's 4 x 8: the same global batch of 32, the same steps and schedule
+# (only which records share a step differs).
+#
 # What runs:
 #     train     conv_layer_separation: the plain recipe plus --conv-layer-separation, then export to <ckpt>/release
 #     test      mirror_test.py (200 minima), then eval_connected_uncond.py (300 minima x 5), on the oc22 test split;
 #               both print and record the model's mode, which must be conv_layer_separation
 #     compare   compare_connected.py: conv_layer_separation against fm2, plain and w2, and the four mirror reports
+#
+# Before the first run, memcheck (not submitted by default) runs the training recipe for 40 steps and reports the
+# peak GPU memory, to choose TRAIN_CONSTRAINT:
+#     sbatch --account=<allocation> --partition=gpu --gres=gpu:2 --constraint=<gpu> --cpus-per-task=16 --mem=160G \
+#         --time=00:30:00 --no-requeue <this script> memcheck
 #
 # Run it once, from anywhere; it submits every job, each waiting for what it needs. ACCOUNT has no default: name the
 # allocation for each run.
@@ -40,7 +48,9 @@ set -euo pipefail
 
 # ---------------------------------------------------------------- the experiment's settings
 STEPS=10000             # optimizer steps of the fine-tune
-GLOBAL_BATCH=32         # records per step: 8 on each of 4 GPUs
+GPUS=2                  # one node; the plain and w2 arms used 4 GPUs x 8 records
+GLOBAL_BATCH=32         # records per step: 16 on each of 2 GPUs, the same 32 as plain and w2
+MEMCHECK_STEPS=40       # memcheck: steps of the training recipe (the peak-memory window opens after 5)
 LEARNING_RATE=5e-4      # head and backbone
 EMA_DECAY=0.995         # 1 - 50 / 10000
 TRAIN_SEED=42           # train.py's default: the seed of the plain and w2 fine-tunes
@@ -50,6 +60,9 @@ N_EVALS=5               # rollouts per minimum
 SEED=0                  # the tests' seed, as for the other three models: the same minima and the same starting noise
 SELLA_ETA=5e-3          # Sella's finite-difference step (A)
 TRAIN_TIME=2-00:00:00
+# memcheck, 2 x 16 records: peak ~61 GB per GPU everywhere; 9.4 s/step on rtxpro6000 (~26 h for 10000 steps),
+# 17.3 s/step on a100_80gb (~48 h, past TRAIN_TIME), so no A100s
+TRAIN_CONSTRAINT="b200|rtxpro6000"
 TEST_TIME=1-00:00:00
 
 # ---------------------------------------------------------------- where things are
@@ -63,6 +76,7 @@ OC22_TEST=$DATA/MaterialsSaddles/oc22/test
 FM2_WEIGHTS=$CACHE/huggingface/hub/models--SciLM--SaddleFlow/snapshots/1d364ab8fc4de2d1d302ca892297df6567d3d90e
 CKPT=$DATA/ckpts/fm2_oc22_conv_layer_separation
 RESULTS=$DATA/results/fm2_conv_layer_separation_oc22
+MEMCHECK_DIR=$DATA/checks/conv_layer_separation/memcheck
 CONTROLS_CONNECTED=$DATA/results/fm2_w2_oc22_n300     # <model>/connected for fm2, plain, w2 (300 minima x 5)
 CONTROLS_MIRROR=$DATA/results/fm2_w2_oc22             # <model>/mirror for fm2, plain, w2 (200 minima)
 
@@ -73,16 +87,15 @@ export HF_TOKEN_PATH=$HOME/.cache/huggingface/token     # the gated facebook/UMA
 
 
 # ---------------------------------------------------------------- train: fine-tune conv_layer_separation, then export it
-train() {
-    local gpus=4
-    mkdir -p "$CKPT"
-
-    # The plain arm's arguments (run_fm2_w2_oc22.sh), plus the seed spelled out and conv-layer separation.
-    local args=(
+# The plain arm's arguments (run_fm2_w2_oc22.sh), plus the seed spelled out and conv-layer separation, into ARGS.
+# $1: optimizer steps, $2: output directory. The global batch stays at 32 whatever GPUS is; the warmup is 250
+# optimizer steps, counted in scheduler ticks (250 x GPUS).
+train_args() {
+    ARGS=(
         --subsets oc22 --task-name-map oc22=oc20
-        --init-weights "$FM2_WEIGHTS" --output-dir "$CKPT"
-        --max-steps $STEPS --num-epochs 1000000 --batch-size $((GLOBAL_BATCH / gpus))
-        --learning-rate $LEARNING_RATE --uma-lr $LEARNING_RATE --warmup-steps $((250 * gpus)) --ema-decay $EMA_DECAY
+        --init-weights "$FM2_WEIGHTS" --output-dir "$2"
+        --max-steps "$1" --num-epochs 1000000 --batch-size $((GLOBAL_BATCH / GPUS))
+        --learning-rate $LEARNING_RATE --uma-lr $LEARNING_RATE --warmup-steps $((250 * GPUS)) --ema-decay $EMA_DECAY
         --backbone uma-m-1p1 --mixed-precision no --grad-clip-norm 1.0 --loss-type huber --huber-delta 0.05
         --delta-endpoint-channels 0 --no-inject-force --no-dimer-residual --no-frozen-force-backbone
         --no-endpoint-features --eigenmode-aux-weight 0 --unfreeze-uma-all
@@ -93,12 +106,14 @@ train() {
         --align-com --log-every 50 --save-every-steps 5000 --val-every-steps 2500 --max-val-records 4000 --num-workers 4
         --seed $TRAIN_SEED --conv-layer-separation
     )
+}
 
-    # One process per GPU; stop as soon as any fails (the others would wait on it forever).
-    export MASTER_ADDR=localhost MASTER_PORT=$((30000 + SLURM_JOB_ID % 30000)) WORLD_SIZE=$gpus
+# One process per GPU running train.py with ARGS; stop as soon as any fails (the others would wait on it forever).
+run_ranks() {
+    export MASTER_ADDR=localhost MASTER_PORT=$((30000 + SLURM_JOB_ID % 30000)) WORLD_SIZE=$GPUS
     local pids=()
-    for rank in $(seq 0 $((gpus - 1))); do
-        RANK=$rank LOCAL_RANK=$rank "$PYTHON" -u examples/MaterialsSaddles/train.py "${args[@]}" &
+    for rank in $(seq 0 $((GPUS - 1))); do
+        RANK=$rank LOCAL_RANK=$rank "$PYTHON" -u examples/MaterialsSaddles/train.py "${ARGS[@]}" &
         pids+=($!)
     done
     for _ in "${pids[@]}"; do
@@ -108,8 +123,34 @@ train() {
             exit 1
         fi
     done
+}
 
+train() {
+    mkdir -p "$CKPT"
+    train_args $STEPS "$CKPT"
+    run_ranks
     "$PYTHON" -u examples/MaterialsSaddles/export_pretrained.py --ckpt "$CKPT/checkpoint_final" --out "$CKPT/release"
+}
+
+
+# ---------------------------------------------------------------- memcheck: peak GPU memory of the training recipe
+# The train stage's exact arguments for MEMCHECK_STEPS steps, in benchmark mode (no final checkpoint, no test pass)
+# and with the end-of-epoch checkpoint off (a 21 GB copy of the weights, EMA and optimizer state). Writes
+# rank 0's peak memory (torch) to bench.json and every GPU's memory use (nvidia-smi, every 2 s) to nvidia_smi.csv.
+memcheck() {
+    local out=$MEMCHECK_DIR/${SLURM_JOB_ID}_$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr ' ' '_')
+    mkdir -p "$out"
+    nvidia-smi --query-gpu=timestamp,index,name,memory.used,memory.total --format=csv -l 2 > "$out/nvidia_smi.csv" &
+    local smi=$!
+    train_args $MEMCHECK_STEPS "$out/run"
+    ARGS+=(--log-every 5 --bench-warmup-steps 5 --bench-output "$out/bench.json" --save-every-epochs 1000000)
+    run_ranks
+    kill $smi
+    rm -rf "$out/run"
+    echo "--- peak memory used per GPU (nvidia-smi, MiB of total)"
+    awk -F', ' 'NR > 1 {sub(/ MiB/, "", $4); sub(/ MiB/, "", $5); if ($4 > peak[$2]) peak[$2] = $4; total[$2] = $5; name[$2] = $3}
+                END {for (g in peak) printf "  GPU %s %s: %d of %d\n", g, name[g], peak[g], total[g]}' "$out/nvidia_smi.csv"
+    cat "$out/bench.json"
 }
 
 
@@ -166,7 +207,7 @@ submit() {
     mkdir -p "$RESULTS/logs" "$CKPT"
     local logs="--output=$RESULTS/logs/%x_%j.out --error=$RESULTS/logs/%x_%j.err"
     local common="--account=$ACCOUNT --partition=gpu --nodes=1 --ntasks=1 --no-requeue --parsable $logs"
-    local train_gpus="--constraint=b200|rtxpro6000|a100_80gb --gres=gpu:4 --cpus-per-task=32 --mem=320G --time=$TRAIN_TIME"
+    local train_gpus="--constraint=$TRAIN_CONSTRAINT --gres=gpu:$GPUS --cpus-per-task=$((8 * GPUS)) --mem=$((80 * GPUS))G --time=$TRAIN_TIME"
     # The controls' 300-minima evaluations ran on rtxpro6000 GPUs.
     local test_gpu="--constraint=rtxpro6000 --gres=gpu:1 --cpus-per-task=16 --mem=128G --time=$TEST_TIME"
 
@@ -185,6 +226,7 @@ submit() {
 cd "$REPO"
 case "${1:-submit}" in
     submit)  submit ;;
+    memcheck) git log -1 --format="code: %h %s"; git status --short -uno | sed 's/^/  uncommitted: /'; memcheck ;;
     train)   git log -1 --format="code: %h %s"; git status --short -uno | sed 's/^/  uncommitted: /'; train ;;
     test)    git log -1 --format="code: %h %s"; test_model ;;
     compare) compare ;;
